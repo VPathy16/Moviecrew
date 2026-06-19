@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moviecrew"
+version = "0.1.0"
+description = "A model-agnostic multi-agent pipeline that turns a concept into a shot-by-shot Veo prompt pipeline."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+dev = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["moviecrew*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
