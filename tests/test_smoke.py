@@ -68,8 +68,9 @@ def test_full_pipeline_builds_a_consistent_project():
     for raw_scene in writer["scenes"]:
         scene = Scene(
             id=raw_scene["id"],
+            slug=raw_scene["slug"],
             title=raw_scene["title"],
-            synopsis=raw_scene["synopsis"],
+            summary=raw_scene["summary"],
             location_id=raw_scene["location_id"],
             character_ids=raw_scene["character_ids"],
             shots=shots_by_scene.get(raw_scene["id"], []),
@@ -85,23 +86,27 @@ def test_full_pipeline_builds_a_consistent_project():
     render_plan = RenderPlan(
         prompts=prompts,
         flags=flags,
-        total_duration_s=editor["total_duration_s"],
+        order=editor["order"],
+        est_duration_s=editor["est_duration_s"],
     )
 
     project = Project(
         title=director["title"],
-        concept=director["concept"],
+        logline=director["logline"],
+        outline=director["outline"],
         bible=bible,
         scenes=scenes,
         render_plan=render_plan,
     )
 
-    # All shot ids referenced by prompts/flags must exist in the scenes.
+    # All shot ids referenced by prompts/flags/order must exist in the scenes.
     all_shot_ids = {shot.id for scene in project.scenes for shot in scene.shots}
     for prompt in project.render_plan.prompts:
         assert prompt.shot_id in all_shot_ids
     for flag in project.render_plan.flags:
-        assert flag.shot_id in all_shot_ids
+        assert flag.target in all_shot_ids
+    for shot_id in project.render_plan.order:
+        assert shot_id in all_shot_ids
 
     # Every shot duration is a legal Veo clip length.
     for scene in project.scenes:

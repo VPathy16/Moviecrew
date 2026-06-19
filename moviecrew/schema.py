@@ -37,7 +37,7 @@ class Character:
     id: str
     name: str
     description: str
-    reference_image_ids: list[str] = field(default_factory=list)
+    reference_images: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -45,7 +45,7 @@ class Location:
     id: str
     name: str
     description: str
-    reference_image_ids: list[str] = field(default_factory=list)
+    reference_images: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -66,8 +66,9 @@ class Shot:
     scene_id: str
     description: str
     duration_s: int
-    camera: str = ""
-    aspect_ratio: str = "16:9"
+    camera_move: str = ""
+    lens: str = ""
+    framing: str = ""
     reference_image_ids: list[str] = field(default_factory=list)
     first_frame_ref: Optional[str] = None
     last_frame_ref: Optional[str] = None
@@ -79,17 +80,14 @@ class Shot:
                 f"shot {self.id}: at most {VEO_MAX_REFERENCE_IMAGES} reference "
                 f"images allowed, got {len(self.reference_image_ids)}"
             )
-        if self.aspect_ratio not in VEO_ASPECT_RATIOS:
-            raise ValueError(
-                f"shot {self.id}: aspect_ratio must be one of {VEO_ASPECT_RATIOS}"
-            )
 
 
 @dataclass
 class Scene:
     id: str
+    slug: str
     title: str
-    synopsis: str
+    summary: str
     location_id: Optional[str] = None
     character_ids: list[str] = field(default_factory=list)
     shots: list[Shot] = field(default_factory=list)
@@ -105,16 +103,21 @@ class VeoPrompt:
     negative_prompt: str = ""
     duration_s: int = VEO_MAX_DURATION_S
     aspect_ratio: str = "16:9"
-    reference_image_ids: list[str] = field(default_factory=list)
+    reference_images: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.duration_s = clamp_duration(self.duration_s)
+        if self.aspect_ratio not in VEO_ASPECT_RATIOS:
+            raise ValueError(
+                f"prompt for shot {self.shot_id}: aspect_ratio must be one of "
+                f"{VEO_ASPECT_RATIOS}"
+            )
 
 
 @dataclass
 class ContinuityFlag:
-    shot_id: str
-    severity: str  # "info" | "warning" | "error"
+    target: str
+    kind: str  # "info" | "warning" | "error"
     message: str
 
 
@@ -122,7 +125,8 @@ class ContinuityFlag:
 class RenderPlan:
     prompts: list[VeoPrompt] = field(default_factory=list)
     flags: list[ContinuityFlag] = field(default_factory=list)
-    total_duration_s: int = 0
+    order: list[str] = field(default_factory=list)
+    est_duration_s: int = 0
 
 
 # --- Project (top-level container) ------------------------------------------
@@ -131,8 +135,9 @@ class RenderPlan:
 @dataclass
 class Project:
     title: str
-    concept: str
+    logline: str
     bible: Bible
+    outline: list[str] = field(default_factory=list)
     scenes: list[Scene] = field(default_factory=list)
     render_plan: Optional[RenderPlan] = None
 
