@@ -9,6 +9,7 @@ from typing import Optional, Sequence
 from .crew import MovieCrew
 from .llm import LLMClient
 from .mock import MockLLMClient
+from .video import RenderResult, StubVideoBackend, VideoBackend
 
 
 def _build_llm(backend: str) -> LLMClient:
@@ -37,6 +38,13 @@ def _print_summary(project) -> None:
             print(f"    [{flag.kind}] {flag.target}: {flag.message}")
 
 
+def _print_render_results(results: list[RenderResult]) -> None:
+    print(f"  render ({len(results)} shots):")
+    for result in results:
+        uri = f" -> {result.uri}" if result.uri else ""
+        print(f"    [{result.backend}] {result.shot_id}: {result.status}{uri}")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="moviecrew")
     parser.add_argument("concept", help="One-line movie concept")
@@ -47,12 +55,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default="mock",
         help="LLM backend to use (default: mock, runs fully offline)",
     )
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render the resulting shots (default: stub backend, runs fully offline)",
+    )
     args = parser.parse_args(argv)
 
     llm = _build_llm(args.backend)
-    project = MovieCrew(llm).make(args.concept)
+    crew = MovieCrew(llm)
+    project = crew.make(args.concept)
 
     _print_summary(project)
+
+    if args.render:
+        video_backend: VideoBackend = StubVideoBackend()
+        results = crew.render(project, video_backend)
+        _print_render_results(results)
 
     if args.out:
         with open(args.out, "w") as f:
