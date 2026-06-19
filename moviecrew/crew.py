@@ -100,7 +100,7 @@ class MovieCrew:
                         negative_prompt=raw_prompt.get("negative_prompt", ""),
                         duration_s=shot.duration_s,
                         aspect_ratio="16:9",
-                        reference_images=shot.reference_image_ids,
+                        reference_images=list(shot.reference_image_ids),
                     )
                 )
                 flags.extend(veo_constraint_flags(prompt_text, shot))
@@ -127,9 +127,9 @@ class MovieCrew:
                         )
                     )
 
-        deduped_flags: dict[tuple[str, str], ContinuityFlag] = {}
+        deduped_flags: dict[tuple[str, str, str], ContinuityFlag] = {}
         for flag in flags:
-            deduped_flags.setdefault((flag.kind, flag.target), flag)
+            deduped_flags.setdefault((flag.kind, flag.target, flag.message), flag)
         flags = list(deduped_flags.values())
 
         editor_out = self.editor.run(shot_ids=[shot.id for shot in all_shots])
