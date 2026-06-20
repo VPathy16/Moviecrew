@@ -23,7 +23,7 @@ from .agents import (
     WriterAgent,
 )
 from .llm import LLMClient
-from .rules import assign_reference_images, veo_constraint_flags
+from .rules import assign_reference_images, normalize_chains, veo_constraint_flags
 from .schema import (
     Bible,
     Character,
@@ -135,6 +135,7 @@ class MovieCrew:
 
         editor_out = self.editor.run(shot_ids=[shot.id for shot in all_shots])
         order = editor_out["order"]
+        chains = normalize_chains(all_shots, order, editor_out.get("chains", []))
 
         est_duration_s = sum(shot.duration_s for shot in all_shots)
 
@@ -142,6 +143,7 @@ class MovieCrew:
             prompts=prompts,
             flags=flags,
             order=order,
+            chains=chains,
             est_duration_s=est_duration_s,
         )
 
@@ -157,10 +159,19 @@ class MovieCrew:
     def render(self, project: Project, backend: VideoBackend) -> list[RenderResult]:
         """Render every prompt in project.render_plan through `backend`, in
         render_plan.order. Pure orchestration: makes no network calls itself.
+
+        Chain-aware: a shot that continues a Veo extend-chain is rendered
+        with extend_from set to its predecessor's shot id within that chain;
+        a chain's first shot (or a standalone shot) gets extend_from=None.
         """
         render_plan = project.render_plan
         if render_plan is None:
             return []
+
+        extend_from_by_shot_id: dict[str, Optional[str]] = {}
+        for chain in render_plan.chains:
+            for predecessor, shot_id in zip(chain, chain[1:]):
+                extend_from_by_shot_id[shot_id] = predecessor
 
         prompts_by_shot_id = {prompt.shot_id: prompt for prompt in render_plan.prompts}
         results: list[RenderResult] = []
@@ -168,5 +179,7 @@ class MovieCrew:
             prompt = prompts_by_shot_id.get(shot_id)
             if prompt is None:
                 continue
-            results.append(backend.render(prompt))
+            results.append(
+                backend.render(prompt, extend_from=extend_from_by_shot_id.get(shot_id))
+            )
         return results

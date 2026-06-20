@@ -10,7 +10,14 @@ from __future__ import annotations
 
 import re
 
-from .schema import VEO_MAX_REFERENCE_IMAGES, Bible, ContinuityFlag, Scene, Shot
+from .schema import (
+    VEO_MAX_CHAIN_SEGMENTS,
+    VEO_MAX_REFERENCE_IMAGES,
+    Bible,
+    ContinuityFlag,
+    Scene,
+    Shot,
+)
 
 _ON_SCREEN_TEXT_RE = re.compile(
     r"\b(text|caption|subtitle|title card|sign(?:age)?|reads?:|written)\b", re.IGNORECASE
@@ -82,3 +89,46 @@ def veo_constraint_flags(prompt_text: str, shot: Shot) -> list[ContinuityFlag]:
         )
 
     return flags
+
+
+def normalize_chains(
+    shots: list[Shot], order: list[str], raw_chains: list[list[str]]
+) -> list[list[str]]:
+    """Turn the editor's raw chain grouping into something deterministic and
+    Veo-legal.
+
+    Drops unknown shot ids, sorts each chain's members by their position in
+    `order`, splits any chain longer than VEO_MAX_CHAIN_SEGMENTS into
+    consecutive sub-chains, assigns every shot in `order` that the editor
+    left ungrouped to its own singleton chain, and returns chains ordered by
+    the order-index of their first member.
+    """
+    valid_ids = {shot.id for shot in shots} & set(order)
+    index_by_id = {shot_id: i for i, shot_id in enumerate(order)}
+
+    assigned: set[str] = set()
+    chains: list[list[str]] = []
+    for raw_chain in raw_chains:
+        members = [
+            shot_id
+            for shot_id in raw_chain
+            if shot_id in valid_ids and shot_id not in assigned
+        ]
+        if not members:
+            continue
+        members.sort(key=lambda shot_id: index_by_id[shot_id])
+        assigned.update(members)
+        chains.append(members)
+
+    for shot_id in order:
+        if shot_id in valid_ids and shot_id not in assigned:
+            chains.append([shot_id])
+            assigned.add(shot_id)
+
+    split_chains: list[list[str]] = []
+    for chain in chains:
+        for start in range(0, len(chain), VEO_MAX_CHAIN_SEGMENTS):
+            split_chains.append(chain[start : start + VEO_MAX_CHAIN_SEGMENTS])
+
+    split_chains.sort(key=lambda chain: index_by_id[chain[0]])
+    return split_chains

@@ -31,8 +31,17 @@ class RenderResult:
     raw: Optional[dict[str, Any]] = None
 
 
-def build_request(prompt: VeoPrompt, *, model: str = DEFAULT_VEO_MODEL) -> dict[str, Any]:
-    """The backend-agnostic request payload every VideoBackend builds from a VeoPrompt."""
+def build_request(
+    prompt: VeoPrompt,
+    *,
+    model: str = DEFAULT_VEO_MODEL,
+    extend_from: Optional[str] = None,
+) -> dict[str, Any]:
+    """The backend-agnostic request payload every VideoBackend builds from a
+    VeoPrompt. `extend_from` is the shot id of the clip this one continues
+    from (Veo's extend-final-frame feature); None for a chain's first shot
+    or a standalone shot.
+    """
     return {
         "model": model,
         "prompt": prompt.prompt,
@@ -40,6 +49,7 @@ def build_request(prompt: VeoPrompt, *, model: str = DEFAULT_VEO_MODEL) -> dict[
         "duration_s": prompt.duration_s,
         "aspect_ratio": prompt.aspect_ratio,
         "reference_images": list(prompt.reference_images),
+        "extend_from": extend_from,
     }
 
 
@@ -49,7 +59,7 @@ class VideoBackend(ABC):
     name: str = ""
 
     @abstractmethod
-    def render(self, prompt: VeoPrompt) -> RenderResult:
+    def render(self, prompt: VeoPrompt, *, extend_from: Optional[str] = None) -> RenderResult:
         raise NotImplementedError
 
 
@@ -64,8 +74,8 @@ class StubVideoBackend(VideoBackend):
     def __init__(self, model: str = DEFAULT_VEO_MODEL) -> None:
         self.model = model
 
-    def render(self, prompt: VeoPrompt) -> RenderResult:
-        request = build_request(prompt, model=self.model)
+    def render(self, prompt: VeoPrompt, *, extend_from: Optional[str] = None) -> RenderResult:
+        request = build_request(prompt, model=self.model, extend_from=extend_from)
         return RenderResult(
             shot_id=prompt.shot_id,
             status="stubbed",
@@ -107,8 +117,8 @@ class VeoBackend(VideoBackend):
         self.model = model
         self._client = genai.Client(api_key=api_key)
 
-    def render(self, prompt: VeoPrompt) -> RenderResult:
-        build_request(prompt, model=self.model)
+    def render(self, prompt: VeoPrompt, *, extend_from: Optional[str] = None) -> RenderResult:
+        build_request(prompt, model=self.model, extend_from=extend_from)
 
         # TODO: the exact generate-video call isn't wired up yet — the
         # google-genai Veo config field names for negative_prompt,

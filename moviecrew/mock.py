@@ -118,6 +118,7 @@ _RESPONSES: dict[str, dict[str, Any]] = {
     },
     "editor": {
         "order": ["sc1-sh1", "sc1-sh2"],
+        "chains": [["sc1-sh1", "sc1-sh2"]],
         "est_duration_s": 12,
     },
 }
