@@ -35,6 +35,7 @@ from .schema import (
     Shot,
     VeoPrompt,
 )
+from .video import RenderResult, VideoBackend
 
 
 class MovieCrew:
@@ -152,3 +153,20 @@ class MovieCrew:
             scenes=scenes,
             render_plan=render_plan,
         )
+
+    def render(self, project: Project, backend: VideoBackend) -> list[RenderResult]:
+        """Render every prompt in project.render_plan through `backend`, in
+        render_plan.order. Pure orchestration: makes no network calls itself.
+        """
+        render_plan = project.render_plan
+        if render_plan is None:
+            return []
+
+        prompts_by_shot_id = {prompt.shot_id: prompt for prompt in render_plan.prompts}
+        results: list[RenderResult] = []
+        for shot_id in render_plan.order:
+            prompt = prompts_by_shot_id.get(shot_id)
+            if prompt is None:
+                continue
+            results.append(backend.render(prompt))
+        return results
