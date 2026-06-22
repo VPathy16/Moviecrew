@@ -9,7 +9,7 @@ from typing import Optional, Sequence
 from .crew import MovieCrew
 from .llm import LLMClient
 from .mock import MockLLMClient
-from .video import RenderResult, StubVideoBackend, VideoBackend
+from .video import RenderResult, StubVideoBackend, VeoBackend, VideoBackend
 
 
 def _build_llm(backend: str) -> LLMClient:
@@ -60,6 +60,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Render the resulting shots (default: stub backend, runs fully offline)",
     )
+    parser.add_argument(
+        "--video-backend",
+        choices=["stub", "veo"],
+        default="stub",
+        help=(
+            "Video backend used by --render (default: stub, runs fully offline; "
+            "veo calls the real Veo API and requires a GEMINI_API_KEY/GOOGLE_API_KEY "
+            "and the google-genai extra)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     llm = _build_llm(args.backend)
@@ -69,7 +79,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _print_summary(project)
 
     if args.render:
-        video_backend: VideoBackend = StubVideoBackend()
+        video_backend: VideoBackend = StubVideoBackend() if args.video_backend == "stub" else VeoBackend()
         results = crew.render(project, video_backend)
         _print_render_results(results)
 
