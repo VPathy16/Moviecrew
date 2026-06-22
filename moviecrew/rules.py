@@ -109,15 +109,14 @@ def normalize_chains(
     assigned: set[str] = set()
     chains: list[list[str]] = []
     for raw_chain in raw_chains:
-        members = [
-            shot_id
-            for shot_id in raw_chain
-            if shot_id in valid_ids and shot_id not in assigned
-        ]
+        members = []
+        for shot_id in raw_chain:
+            if shot_id in valid_ids and shot_id not in assigned:
+                assigned.add(shot_id)
+                members.append(shot_id)
         if not members:
             continue
         members.sort(key=lambda shot_id: index_by_id[shot_id])
-        assigned.update(members)
         chains.append(members)
 
     for shot_id in order:

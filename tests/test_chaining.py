@@ -51,6 +51,13 @@ def test_normalize_chains_drops_duplicate_assignment_across_raw_chains():
     assert chains == [["a", "b"]]
 
 
+def test_normalize_chains_drops_duplicate_within_a_single_raw_chain():
+    shots = [_shot("a"), _shot("b")]
+    order = ["a", "b"]
+    chains = normalize_chains(shots, order, [["a", "a", "b"]])
+    assert chains == [["a", "b"]]
+
+
 def test_normalize_chains_splits_oversized_chains():
     shot_ids = [f"s{i}" for i in range(VEO_MAX_CHAIN_SEGMENTS + 5)]
     shots = [_shot(shot_id) for shot_id in shot_ids]
