@@ -117,8 +117,13 @@ class ContinuityAgent(Agent):
 class EditorAgent(Agent):
     role = "editor"
     system_prompt = (
-        "You are the Editor. Given every shot id, return the final render order.\n"
-        'Respond with JSON only: {"order": [str, ...]}.'
+        "You are the Editor. Given every shot id, return the final render order, "
+        "plus how shots chain into continuous takes for Veo's extend-from-final-frame "
+        "feature. Group ADJACENT shots that form one continuous take into a chain "
+        "(shot ids in extend order); a hard cut starts a new chain; a standalone shot "
+        "is a one-element chain. Every shot id must appear exactly once across all "
+        "chains, consistent with order.\n"
+        'Respond with JSON only: {"order": [str, ...], "chains": [[str, ...], ...]}.'
     )
 
     def build_user(self, *, shot_ids: list[str]) -> str:

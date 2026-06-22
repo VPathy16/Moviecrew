@@ -104,6 +104,7 @@ def test_editor_contract(client: MockLLMClient):
     editor = client.complete_json(task="editor", system="", user="")
     render_plan = RenderPlan(**editor)
     assert render_plan.order
+    assert render_plan.chains
     assert render_plan.est_duration_s
 
 

@@ -23,6 +23,11 @@ VEO_MIN_DURATION_S: int = min(VEO_LEGAL_DURATIONS_S)
 VEO_MAX_REFERENCE_IMAGES: int = 3
 VEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16")
 
+# Veo extends a clip by continuing it from its final frame, up to 20 times,
+# so one continuous take ("chain") is at most 1 base clip + 20 extensions.
+VEO_MAX_EXTENSIONS: int = 20
+VEO_MAX_CHAIN_SEGMENTS: int = VEO_MAX_EXTENSIONS + 1
+
 
 def clamp_duration(seconds: float) -> int:
     """Snap an arbitrary duration to the nearest legal Veo clip length."""
@@ -126,6 +131,7 @@ class RenderPlan:
     prompts: list[VeoPrompt] = field(default_factory=list)
     flags: list[ContinuityFlag] = field(default_factory=list)
     order: list[str] = field(default_factory=list)
+    chains: list[list[str]] = field(default_factory=list)
     est_duration_s: int = 0
 
 
