@@ -6,6 +6,7 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
+from .assembly import assemble_film
 from .crew import MovieCrew
 from .llm import LLMClient
 from .mock import MockLLMClient
@@ -70,6 +71,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "and the google-genai extra)"
         ),
     )
+    parser.add_argument(
+        "--assemble",
+        metavar="OUT.mp4",
+        help=(
+            "After --render, concatenate each chain's final clip into this file via "
+            "ffmpeg (requires ffmpeg on PATH)"
+        ),
+    )
     args = parser.parse_args(argv)
 
     llm = _build_llm(args.backend)
@@ -82,6 +91,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         video_backend: VideoBackend = StubVideoBackend() if args.video_backend == "stub" else VeoBackend()
         results = crew.render(project, video_backend)
         _print_render_results(results)
+
+        if args.assemble:
+            assembled = assemble_film(project, results, args.assemble)
+            if assembled:
+                print(f"  assembled -> {assembled}")
+            else:
+                print("  assembled -> skipped (no usable clips)")
 
     if args.out:
         with open(args.out, "w") as f:
