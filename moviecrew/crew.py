@@ -163,13 +163,20 @@ class MovieCrew:
         Chain-aware: a shot that continues a Veo extend-chain is rendered
         with extend_from set to its predecessor's shot id within that chain;
         a chain's first shot (or a standalone shot) gets extend_from=None.
+        Every shot in a chain of 2+ (its head or one of its extensions) is
+        passed in_multishot_chain=True so the backend can keep it at a
+        resolution Veo allows to extend.
         """
         render_plan = project.render_plan
         if render_plan is None:
             return []
 
         extend_from_by_shot_id: dict[str, Optional[str]] = {}
+        in_multishot_chain_by_shot_id: dict[str, bool] = {}
         for chain in render_plan.chains:
+            in_chain = len(chain) >= 2
+            for shot_id in chain:
+                in_multishot_chain_by_shot_id[shot_id] = in_chain
             for predecessor, shot_id in zip(chain, chain[1:]):
                 extend_from_by_shot_id[shot_id] = predecessor
 
@@ -180,6 +187,10 @@ class MovieCrew:
             if prompt is None:
                 continue
             results.append(
-                backend.render(prompt, extend_from=extend_from_by_shot_id.get(shot_id))
+                backend.render(
+                    prompt,
+                    extend_from=extend_from_by_shot_id.get(shot_id),
+                    in_multishot_chain=in_multishot_chain_by_shot_id.get(shot_id, False),
+                )
             )
         return results

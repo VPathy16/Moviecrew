@@ -169,12 +169,51 @@ def test_render_failure_does_not_raise():
     assert "Veo API exploded" in result.raw["error"]
 
 
-def test_extend_from_is_ignored_but_noted_in_raw(tmp_path):
+def test_chain_head_renders_at_720p_and_caches_video(tmp_path):
+    client = FakeClient(done_after=1)
+    backend = VeoBackend(client=client, out_dir=str(tmp_path), poll_interval_s=0, resolution="1080p")
+
+    result = backend.render(_prompt(duration_s=4), in_multishot_chain=True)
+
+    assert result.status == "succeeded"
+    call = client.models.calls[0]
+    assert call["config"]["resolution"] == "720p"
+    assert any("forced from 1080p to 720p" in warning for warning in result.raw["warnings"])
+    assert "sc1-sh1" in backend.produced_video_by_shot_id
+
+
+def test_extension_calls_generate_videos_with_predecessor_video(tmp_path):
     client = FakeClient(done_after=1)
     backend = VeoBackend(client=client, out_dir=str(tmp_path), poll_interval_s=0)
 
-    result = backend.render(_prompt(), extend_from="sc1-sh0")
+    head_result = backend.render(_prompt(shot_id="sc1-sh1"), in_multishot_chain=True)
+    assert head_result.status == "succeeded"
+    cached_head_video = backend.produced_video_by_shot_id["sc1-sh1"]
 
-    assert result.status == "succeeded"
-    assert result.raw["extend_from"] == "sc1-sh0"
-    assert any("extend_from" in warning for warning in result.raw["warnings"])
+    ext_prompt = _prompt(shot_id="sc1-sh2")
+    ext_result = backend.render(
+        ext_prompt, extend_from="sc1-sh1", in_multishot_chain=True
+    )
+
+    assert ext_result.status == "succeeded"
+    assert ext_result.raw["extension"] is True
+    assert ext_result.raw["extend_from"] == "sc1-sh1"
+
+    ext_call = client.models.calls[-1]
+    assert ext_call["video"] is cached_head_video
+    assert "image" not in ext_call
+    assert ext_call["config"] == {"number_of_videos": 1, "resolution": "720p"}
+
+    assert "sc1-sh2" in backend.produced_video_by_shot_id
+
+
+def test_extension_with_uncached_predecessor_fails_without_raising(tmp_path):
+    client = FakeClient(done_after=1)
+    backend = VeoBackend(client=client, out_dir=str(tmp_path), poll_interval_s=0)
+
+    result = backend.render(_prompt(shot_id="sc1-sh2"), extend_from="sc1-sh1", in_multishot_chain=True)
+
+    assert result.status == "failed"
+    assert result.uri is None
+    assert "sc1-sh1" in result.raw["error"]
+    assert not client.models.calls

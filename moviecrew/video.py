@@ -44,11 +44,13 @@ def build_request(
     *,
     model: str = DEFAULT_VEO_MODEL,
     extend_from: Optional[str] = None,
+    in_multishot_chain: bool = False,
 ) -> dict[str, Any]:
     """The backend-agnostic request payload every VideoBackend builds from a
     VeoPrompt. `extend_from` is the shot id of the clip this one continues
     from (Veo's extend-final-frame feature); None for a chain's first shot
-    or a standalone shot.
+    or a standalone shot. `in_multishot_chain` flags a shot that belongs to
+    a chain of 2+ shots (its head or one of its extensions).
     """
     return {
         "model": model,
@@ -58,6 +60,7 @@ def build_request(
         "aspect_ratio": prompt.aspect_ratio,
         "reference_images": list(prompt.reference_images),
         "extend_from": extend_from,
+        "in_multishot_chain": in_multishot_chain,
     }
 
 
@@ -67,7 +70,13 @@ class VideoBackend(ABC):
     name: str = ""
 
     @abstractmethod
-    def render(self, prompt: VeoPrompt, *, extend_from: Optional[str] = None) -> RenderResult:
+    def render(
+        self,
+        prompt: VeoPrompt,
+        *,
+        extend_from: Optional[str] = None,
+        in_multishot_chain: bool = False,
+    ) -> RenderResult:
         raise NotImplementedError
 
 
@@ -82,8 +91,16 @@ class StubVideoBackend(VideoBackend):
     def __init__(self, model: str = DEFAULT_VEO_MODEL) -> None:
         self.model = model
 
-    def render(self, prompt: VeoPrompt, *, extend_from: Optional[str] = None) -> RenderResult:
-        request = build_request(prompt, model=self.model, extend_from=extend_from)
+    def render(
+        self,
+        prompt: VeoPrompt,
+        *,
+        extend_from: Optional[str] = None,
+        in_multishot_chain: bool = False,
+    ) -> RenderResult:
+        request = build_request(
+            prompt, model=self.model, extend_from=extend_from, in_multishot_chain=in_multishot_chain
+        )
         return RenderResult(
             shot_id=prompt.shot_id,
             status="stubbed",
@@ -123,9 +140,18 @@ class VeoBackend(VideoBackend):
     path — keeping the request-building logic identical for both real and
     injected-client use.
 
-    Extending a clip from a previous shot's final frame (`extend_from`) is
-    not wired up yet — see PR6 — so every shot renders as a standalone
-    clip; `extend_from` is recorded in `raw` as a no-op note.
+    Extending a clip (`extend_from` set) continues a previous shot's Veo
+    generation via `generate_videos(model=, prompt=, video=<predecessor's
+    Video>, config={"number_of_videos": 1, "resolution": "720p"})` — no
+    `image`, `duration_seconds`, or `reference_images` on that call, and
+    only 720p is supported for extension (confirmed against the installed
+    google-genai SDK and https://ai.google.dev/gemini-api/docs/video).
+    Extension output is cumulative (predecessor + ~7s), so the last shot
+    of a chain is the whole continuous take. One VeoBackend instance is
+    meant to render one film: `produced_video_by_shot_id` caches the SDK's
+    own Video object from every successful render (standalone or
+    extension) so the next extension in a chain can pass it straight back
+    in, with no SDK import required to do so.
     """
 
     name = "veo"
@@ -146,6 +172,7 @@ class VeoBackend(VideoBackend):
         self.poll_interval_s = poll_interval_s
         self.timeout_s = timeout_s
         self.resolution = resolution
+        self.produced_video_by_shot_id: dict[str, Any] = {}
 
         if client is not None:
             self._client = client
@@ -190,20 +217,58 @@ class VeoBackend(VideoBackend):
             )
         return loaded, dropped
 
-    def render(self, prompt: VeoPrompt, *, extend_from: Optional[str] = None) -> RenderResult:
-        warnings: list[str] = []
+    def render(
+        self,
+        prompt: VeoPrompt,
+        *,
+        extend_from: Optional[str] = None,
+        in_multishot_chain: bool = False,
+    ) -> RenderResult:
         if extend_from is not None:
-            warnings.append(
-                "extend_from is not wired up yet (see PR6); rendering this shot as a "
-                "standalone clip."
+            return self._render_extension(
+                prompt, extend_from=extend_from, in_multishot_chain=in_multishot_chain
             )
+        return self._render_standalone(prompt, in_multishot_chain=in_multishot_chain)
+
+    def _poll_and_download(self, operation: Any, *, shot_id: str) -> Any:
+        """Poll `operation` until done, download its first generated video, and
+        return the SDK's Video object (not yet saved to disk).
+        """
+        deadline = time.monotonic() + self.timeout_s
+        while not operation.done:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Veo render for shot {shot_id} did not finish within {self.timeout_s}s")
+            time.sleep(self.poll_interval_s)
+            operation = self._client.operations.get(operation)
+
+        generated_video = operation.response.generated_videos[0]
+        self._client.files.download(file=generated_video.video)
+        return generated_video.video
+
+    def _resolve_resolution(self, *, in_multishot_chain: bool, warnings: list[str]) -> str:
+        """A chain's head must render at 720p so it (and its extensions) stay
+        extendable; flag it if that overrides a higher configured default.
+        """
+        if in_multishot_chain and self.resolution != DEFAULT_VEO_RESOLUTION:
+            warnings.append(
+                f"resolution forced from {self.resolution} to {DEFAULT_VEO_RESOLUTION}: shots in "
+                "a multi-shot extend-chain must render at 720p to stay extendable."
+            )
+            return DEFAULT_VEO_RESOLUTION
+        if in_multishot_chain:
+            return DEFAULT_VEO_RESOLUTION
+        return self.resolution
+
+    def _render_standalone(self, prompt: VeoPrompt, *, in_multishot_chain: bool) -> RenderResult:
+        warnings: list[str] = []
+        resolution = self._resolve_resolution(in_multishot_chain=in_multishot_chain, warnings=warnings)
 
         reference_images, dropped_refs = self._load_reference_images(prompt.reference_images)
         for ref in dropped_refs:
             warnings.append(f"reference image not loadable as a local file, skipped: {ref}")
 
         duration_s = prompt.duration_s
-        if reference_images or self.resolution in _VEO_HIGH_RESOLUTIONS:
+        if reference_images or resolution in _VEO_HIGH_RESOLUTIONS:
             if duration_s != VEO_MAX_DURATION_S:
                 warnings.append(
                     f"duration coerced from {duration_s}s to {VEO_MAX_DURATION_S}s: Veo "
@@ -214,7 +279,7 @@ class VeoBackend(VideoBackend):
 
         config: dict[str, Any] = {
             "aspect_ratio": prompt.aspect_ratio,
-            "resolution": self.resolution,
+            "resolution": resolution,
             "duration_seconds": duration_s,
         }
         if reference_images:
@@ -229,10 +294,12 @@ class VeoBackend(VideoBackend):
             "prompt": prompt.prompt,
             "negative_prompt": prompt.negative_prompt or None,
             "aspect_ratio": prompt.aspect_ratio,
-            "resolution": self.resolution,
+            "resolution": resolution,
             "duration_s": duration_s,
             "reference_image_count": len(reference_images),
-            "extend_from": extend_from,
+            "extend_from": None,
+            "in_multishot_chain": in_multishot_chain,
+            "extension": False,
             "warnings": warnings,
         }
 
@@ -245,22 +312,72 @@ class VeoBackend(VideoBackend):
             )
             raw["operation_name"] = getattr(operation, "name", None)
 
-            deadline = time.monotonic() + self.timeout_s
-            while not operation.done:
-                if time.monotonic() > deadline:
-                    raise TimeoutError(
-                        f"Veo render for shot {prompt.shot_id} did not finish within "
-                        f"{self.timeout_s}s"
-                    )
-                time.sleep(self.poll_interval_s)
-                operation = self._client.operations.get(operation)
-
-            generated_video = operation.response.generated_videos[0]
-            self._client.files.download(file=generated_video.video)
+            video = self._poll_and_download(operation, shot_id=prompt.shot_id)
+            self.produced_video_by_shot_id[prompt.shot_id] = video
 
             os.makedirs(self.out_dir, exist_ok=True)
             out_path = os.path.join(self.out_dir, f"{prompt.shot_id}.mp4")
-            generated_video.video.save(out_path)
+            video.save(out_path)
+
+            return RenderResult(
+                shot_id=prompt.shot_id,
+                status="succeeded",
+                backend=self.name,
+                uri=out_path,
+                raw=raw,
+            )
+        except Exception as exc:
+            raw["error"] = str(exc)
+            return RenderResult(
+                shot_id=prompt.shot_id,
+                status="failed",
+                backend=self.name,
+                uri=None,
+                raw=raw,
+            )
+
+    def _render_extension(
+        self, prompt: VeoPrompt, *, extend_from: str, in_multishot_chain: bool
+    ) -> RenderResult:
+        raw: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt.prompt,
+            "extend_from": extend_from,
+            "in_multishot_chain": in_multishot_chain,
+            "extension": True,
+            "resolution": DEFAULT_VEO_RESOLUTION,
+        }
+
+        predecessor_video = self.produced_video_by_shot_id.get(extend_from)
+        if predecessor_video is None:
+            raw["error"] = (
+                f"no cached Veo video for predecessor shot {extend_from!r} (it may have "
+                "failed to render); cannot extend."
+            )
+            return RenderResult(
+                shot_id=prompt.shot_id,
+                status="failed",
+                backend=self.name,
+                uri=None,
+                raw=raw,
+            )
+
+        config = {"number_of_videos": 1, "resolution": DEFAULT_VEO_RESOLUTION}
+        try:
+            operation = self._client.models.generate_videos(
+                model=self.model,
+                prompt=prompt.prompt,
+                video=predecessor_video,
+                config=config,
+            )
+            raw["operation_name"] = getattr(operation, "name", None)
+
+            video = self._poll_and_download(operation, shot_id=prompt.shot_id)
+            self.produced_video_by_shot_id[prompt.shot_id] = video
+
+            os.makedirs(self.out_dir, exist_ok=True)
+            out_path = os.path.join(self.out_dir, f"{prompt.shot_id}.mp4")
+            video.save(out_path)
 
             return RenderResult(
                 shot_id=prompt.shot_id,
