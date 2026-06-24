@@ -37,20 +37,24 @@ def build_concat_command(
     scaled to a common height/fps first, since chained vs. standalone clips
     can come back from Veo at different source dimensions and -c copy concat
     requires identical codecs/dimensions across inputs.
+
+    Carries audio through (Veo clips always have a native audio track); this
+    assumes every input clip has an audio stream — a missing-audio fallback
+    (e.g. anullsrc) can come later if that stops holding.
     """
     height = _RESOLUTION_HEIGHTS[target_resolution]
 
     filter_parts = []
-    scaled_labels = []
+    concat_inputs = []
     for i in range(len(clips)):
         filter_parts.append(f"[{i}:v]scale=-2:{height},fps={fps}[v{i}]")
-        scaled_labels.append(f"[v{i}]")
-    filter_parts.append(f"{''.join(scaled_labels)}concat=n={len(clips)}:v=1:a=0[outv]")
+        concat_inputs.append(f"[v{i}][{i}:a]")
+    filter_parts.append(f"{''.join(concat_inputs)}concat=n={len(clips)}:v=1:a=1[outv][outa]")
 
     cmd = [ffmpeg, "-y"]
     for clip in clips:
         cmd += ["-i", clip]
-    cmd += ["-filter_complex", ";".join(filter_parts), "-map", "[outv]", out_path]
+    cmd += ["-filter_complex", ";".join(filter_parts), "-map", "[outv]", "-map", "[outa]", out_path]
     return cmd
 
 

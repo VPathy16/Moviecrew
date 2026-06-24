@@ -38,8 +38,9 @@ def test_build_concat_command_shape():
     assert "-i" in cmd and "a.mp4" in cmd and "b.mp4" in cmd
     filter_complex = cmd[cmd.index("-filter_complex") + 1]
     assert "scale=-2:720,fps=24" in filter_complex
-    assert "concat=n=2:v=1:a=0[outv]" in filter_complex
-    assert cmd[cmd.index("-map") + 1] == "[outv]"
+    assert "[v0][0:a][v1][1:a]concat=n=2:v=1:a=1[outv][outa]" in filter_complex
+    map_indices = [i for i, arg in enumerate(cmd) if arg == "-map"]
+    assert [cmd[i + 1] for i in map_indices] == ["[outv]", "[outa]"]
 
 
 def test_assemble_film_uses_chain_final_clip_in_chain_order():
