@@ -77,6 +77,7 @@ class Shot:
     reference_image_ids: list[str] = field(default_factory=list)
     first_frame_ref: Optional[str] = None
     last_frame_ref: Optional[str] = None
+    consistency_anchor: bool = False
 
     def __post_init__(self) -> None:
         self.duration_s = clamp_duration(self.duration_s)

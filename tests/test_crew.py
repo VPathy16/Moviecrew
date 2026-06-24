@@ -2,14 +2,13 @@
 
 Runs the whole pipeline against MockLLMClient and checks the resulting
 Project against the schema's hard constraints: legal shot durations, full
-prompt coverage, a complete render order, and the deterministic continuity
-check (scene has characters but a shot ended up with no reference images).
+prompt coverage, and a complete render order. With the default null
+reference provider, nothing has a real reference still, so no shot anchors
+(see tests/test_anchors.py for anchoring behavior).
 """
 
-import copy
-
 from moviecrew.crew import MovieCrew
-from moviecrew.mock import MockLLMClient, _RESPONSES
+from moviecrew.mock import MockLLMClient
 from moviecrew.schema import VEO_LEGAL_DURATIONS_S
 
 
@@ -40,41 +39,15 @@ def test_make_returns_a_consistent_project():
     )
 
 
-class _NoReferenceImagesLLMClient(MockLLMClient):
-    """Same canned responses as MockLLMClient, but the Bible's characters
-    and locations carry no reference images — forces the deterministic
-    "scene has characters but shot has no reference images" check to fire.
-    """
+def test_default_null_provider_anchors_nothing():
+    project = MovieCrew(MockLLMClient()).make("A keeper and a sea spirit outlast a storm.")
 
-    def complete_json(self, *, task, system, user):
-        result = copy.deepcopy(_RESPONSES[task])
-        if task == "designer":
-            for character in result["characters"]:
-                character["reference_images"] = []
-            for location in result["locations"]:
-                location["reference_images"] = []
-        return result
-
-
-def test_deterministic_continuity_flag_fires_when_references_are_missing():
-    project = MovieCrew(_NoReferenceImagesLLMClient()).make(
-        "A keeper and a sea spirit outlast a storm."
-    )
-
-    scenes_with_characters = [s for s in project.scenes if s.character_ids]
-    assert scenes_with_characters
-    for scene in scenes_with_characters:
+    for scene in project.scenes:
         for shot in scene.shots:
+            assert shot.consistency_anchor is False
             assert shot.reference_image_ids == []
 
-    missing_ref_flags = [
-        f
+    assert not any(
+        f.kind == "warning" and "consistency anchor" in f.message
         for f in project.render_plan.flags
-        if f.kind == "warning" and "no reference images" in f.message
-    ]
-    assert missing_ref_flags
-    flagged_shot_ids = {f.target for f in missing_ref_flags}
-    expected_shot_ids = {
-        shot.id for scene in scenes_with_characters for shot in scene.shots
-    }
-    assert flagged_shot_ids == expected_shot_ids
+    )
