@@ -8,6 +8,7 @@ a model remembering to mention them.
 
 from __future__ import annotations
 
+import os
 import re
 
 from .schema import (
@@ -27,34 +28,63 @@ _CROWD_RE = re.compile(
 )
 
 
-def assign_reference_images(shot: Shot, scene: Scene, bible: Bible) -> None:
-    """Set shot.reference_image_ids from the Bible — the consistency lever.
+def select_anchors(
+    scenes: list[Scene],
+    chains: list[list[str]],
+    bible: Bible,
+    *,
+    is_real=os.path.isfile,
+) -> None:
+    """Mark each chain's head shot as a consistency anchor when its scene has
+    a character with a real reference still, and attach those stills.
 
-    Pulls reference images from every character in `scene.character_ids`
-    and the scene's location, in that order, deduplicated and capped at
-    VEO_MAX_REFERENCE_IMAGES. Overwrites whatever the cinematographer agent
-    guessed: the Bible is the single source of truth for what a
-    character/location looks like.
+    Consistency within a take comes from Veo extension (see moviecrew.video);
+    a hard cut (a chain's first shot) is where a character can drift, so
+    that's where reference images get attached. Veo requires 8s clips when
+    reference images are present, so an anchored shot's duration is forced
+    to 8. Every other shot is explicitly unanchored with no reference ids,
+    overwriting whatever the cinematographer agent guessed.
     """
-    images: list[str] = []
-
+    shots_by_id: dict[str, Shot] = {
+        shot.id: shot for scene in scenes for shot in scene.shots
+    }
+    scene_by_shot_id: dict[str, Scene] = {
+        shot.id: scene for scene in scenes for shot in scene.shots
+    }
     characters_by_id = {character.id: character for character in bible.characters}
-    for character_id in scene.character_ids:
-        character = characters_by_id.get(character_id)
-        if character is None:
+
+    anchor_shot_ids: set[str] = set()
+    for chain in chains:
+        if not chain:
             continue
-        for image in character.reference_images:
-            if image not in images:
-                images.append(image)
+        head_id = chain[0]
+        head = shots_by_id.get(head_id)
+        scene = scene_by_shot_id.get(head_id)
+        if head is None or scene is None:
+            continue
 
-    locations_by_id = {location.id: location for location in bible.locations}
-    location = locations_by_id.get(scene.location_id) if scene.location_id else None
-    if location is not None:
-        for image in location.reference_images:
-            if image not in images:
-                images.append(image)
+        refs: list[str] = []
+        for character_id in scene.character_ids:
+            character = characters_by_id.get(character_id)
+            if character is None:
+                continue
+            for image in character.reference_images:
+                if is_real(image) and image not in refs:
+                    refs.append(image)
 
-    shot.reference_image_ids = images[:VEO_MAX_REFERENCE_IMAGES]
+        if not refs:
+            continue
+
+        head.consistency_anchor = True
+        head.reference_image_ids = refs[:VEO_MAX_REFERENCE_IMAGES]
+        head.duration_s = 8
+        anchor_shot_ids.add(head_id)
+
+    for shot in shots_by_id.values():
+        if shot.id in anchor_shot_ids:
+            continue
+        shot.consistency_anchor = False
+        shot.reference_image_ids = []
 
 
 def veo_constraint_flags(prompt_text: str, shot: Shot) -> list[ContinuityFlag]:

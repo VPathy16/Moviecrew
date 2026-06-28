@@ -1,10 +1,14 @@
 """The MovieCrew orchestrator: concept in, Project out.
 
 Runs the seven role agents in a fixed pipeline (director -> writer ->
-designer -> cinematographer -> prompter -> continuity -> editor),
+designer -> cinematographer -> editor -> prompter -> continuity),
 accumulating their output into the schema's dataclasses. Deterministic
-guardrails from moviecrew.rules run between the agent calls so the Bible
-stays the source of truth for reference images, and so durations/order are
+guardrails run between the agent calls: moviecrew.rules.normalize_chains
+computes render order/chains from the editor's output before anything
+depends on them, moviecrew.rules.select_anchors then attaches reference
+stills (from moviecrew.reference) to each chain's head shot for cross-cut
+character consistency, and prompts are built from the now-final shot
+fields — so order, chains, durations, and reference images are all
 computed rather than trusted from the LLM.
 """
 
@@ -23,7 +27,8 @@ from .agents import (
     WriterAgent,
 )
 from .llm import LLMClient
-from .rules import assign_reference_images, normalize_chains, veo_constraint_flags
+from .reference import NullReferenceImageProvider, ReferenceImageProvider, populate_reference_stills
+from .rules import normalize_chains, select_anchors, veo_constraint_flags
 from .schema import (
     Bible,
     Character,
@@ -41,11 +46,20 @@ from .video import RenderResult, VideoBackend
 class MovieCrew:
     """Coordinates the seven role agents into a finished Project."""
 
-    def __init__(self, llm: LLMClient, models: Optional[dict[str, str]] = None) -> None:
+    def __init__(
+        self,
+        llm: LLMClient,
+        models: Optional[dict[str, str]] = None,
+        *,
+        reference_provider: Optional[ReferenceImageProvider] = None,
+        reference_out_dir: str = "reference_stills",
+    ) -> None:
         self.llm = llm
         # Reserved for a future per-task model override (e.g. a custom
         # AnthropicLLMClient routing table); unused by the offline pipeline.
         self.models = models or {}
+        self.reference_provider = reference_provider or NullReferenceImageProvider()
+        self.reference_out_dir = reference_out_dir
 
         self.director = DirectorAgent(llm)
         self.writer = WriterAgent(llm)
@@ -73,6 +87,8 @@ class MovieCrew:
             locations=[Location(**l) for l in designer_out["locations"]],
         )
 
+        populate_reference_stills(bible, self.reference_provider, out_dir=self.reference_out_dir)
+
         scenes: list[Scene] = []
         all_shots: list[Shot] = []
         for raw_scene in raw_scenes:
@@ -80,12 +96,16 @@ class MovieCrew:
 
             cine_out = self.cinematographer.run(scene=raw_scene)
             shots = [Shot(**s) for s in cine_out["shots"] if s["scene_id"] == scene.id]
-            for shot in shots:
-                assign_reference_images(shot, scene, bible)
 
             scene.shots = shots
             scenes.append(scene)
             all_shots.extend(shots)
+
+        editor_out = self.editor.run(shot_ids=[shot.id for shot in all_shots])
+        order = editor_out["order"]
+        chains = normalize_chains(all_shots, order, editor_out.get("chains", []))
+
+        select_anchors(scenes, chains, bible)
 
         prompts: list[VeoPrompt] = []
         flags: list[ContinuityFlag] = []
@@ -112,30 +132,23 @@ class MovieCrew:
         )
         flags.extend(ContinuityFlag(**f) for f in continuity_out["flags"])
 
-        for scene in scenes:
-            if not scene.character_ids:
-                continue
-            for shot in scene.shots:
-                if not shot.reference_image_ids:
-                    flags.append(
-                        ContinuityFlag(
-                            target=shot.id,
-                            kind="warning",
-                            message=(
-                                f"Shot {shot.id} has characters in its scene but no "
-                                "reference images were assigned."
-                            ),
-                        )
+        for shot in all_shots:
+            if shot.consistency_anchor and not shot.reference_image_ids:
+                flags.append(
+                    ContinuityFlag(
+                        target=shot.id,
+                        kind="warning",
+                        message=(
+                            f"Shot {shot.id} is a consistency anchor but has no "
+                            "reference images attached."
+                        ),
                     )
+                )
 
         deduped_flags: dict[tuple[str, str, str], ContinuityFlag] = {}
         for flag in flags:
             deduped_flags.setdefault((flag.kind, flag.target, flag.message), flag)
         flags = list(deduped_flags.values())
-
-        editor_out = self.editor.run(shot_ids=[shot.id for shot in all_shots])
-        order = editor_out["order"]
-        chains = normalize_chains(all_shots, order, editor_out.get("chains", []))
 
         est_duration_s = sum(shot.duration_s for shot in all_shots)
 
