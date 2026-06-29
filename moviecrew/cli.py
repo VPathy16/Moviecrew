@@ -10,6 +10,7 @@ from .assembly import assemble_film
 from .crew import MovieCrew
 from .llm import LLMClient
 from .mock import MockLLMClient
+from .reference import FileReferenceImageProvider, ReferenceImageProvider
 from .video import RenderResult, StubVideoBackend, VeoBackend, VideoBackend
 
 
@@ -79,10 +80,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "ffmpeg (requires ffmpeg on PATH)"
         ),
     )
+    parser.add_argument(
+        "--reference-dir",
+        metavar="DIR",
+        help=(
+            "Directory of hand-made character stills (DIR/<character_id>.png); enables "
+            "consistency anchoring on chain-head shots for characters with a real still "
+            "there. Default: no reference provider, so nothing anchors."
+        ),
+    )
     args = parser.parse_args(argv)
 
     llm = _build_llm(args.backend)
-    crew = MovieCrew(llm)
+    reference_provider: Optional[ReferenceImageProvider] = (
+        FileReferenceImageProvider(args.reference_dir) if args.reference_dir else None
+    )
+    crew = MovieCrew(llm, reference_provider=reference_provider)
     project = crew.make(args.concept)
 
     _print_summary(project)
