@@ -6,6 +6,7 @@ import argparse
 import sys
 from typing import Optional, Sequence
 
+from .agents import DETAIL_LEVELS
 from .assembly import assemble_film
 from .crew import MovieCrew
 from .llm import LLMClient
@@ -89,13 +90,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "there. Default: no reference provider, so nothing anchors."
         ),
     )
+    parser.add_argument(
+        "--detail",
+        choices=sorted(DETAIL_LEVELS),
+        default="cinematic",
+        help="Veo prompt density: lean (short), cinematic (default), or maximal (dense)",
+    )
     args = parser.parse_args(argv)
 
     llm = _build_llm(args.backend)
     reference_provider: Optional[ReferenceImageProvider] = (
         FileReferenceImageProvider(args.reference_dir) if args.reference_dir else None
     )
-    crew = MovieCrew(llm, reference_provider=reference_provider)
+    crew = MovieCrew(llm, reference_provider=reference_provider, prompt_detail=args.detail)
     project = crew.make(args.concept)
 
     _print_summary(project)

@@ -87,15 +87,79 @@ class CinematographerAgent(Agent):
         return json.dumps({"scene": scene}, indent=2)
 
 
-class PrompterAgent(Agent):
-    role = "prompter"
-    system_prompt = (
-        "You are the Prompter. Given one shot, write a single Veo prompt describing only "
-        "that shot's action, framing, and camera movement, plus a matching negative "
-        "prompt. Never request on-screen text, captions, or subtitles.\n"
+DETAIL_LEVELS: dict[str, dict[str, Any]] = {
+    "lean": {"words": "30-45", "layered": False},
+    "cinematic": {"words": "65-85", "layered": True},
+    "maximal": {"words": "100-130", "layered": True},
+}
+
+_PROMPTER_LEAD_RULE = (
+    "Veo animates verbs, not adjectives. OPEN every prompt with one continuous physical "
+    "action that has a beginning and end — concrete micro-movements for the subject AND "
+    "the environment. Never a static state like 'stands looking concerned'; write what "
+    "the body does. A 4s shot is one beat; an 8s shot is a short arc of 2-3 linked "
+    "movements. Put camera move, lens, lighting and style AFTER the action, never before "
+    "it. Never request readable on-screen text — convey it through imagery."
+)
+
+_PROMPTER_LAYERS = (
+    "1 ACTION (granular, subject + environment)",
+    "2 SUBJECT specifics (wardrobe, materials, build, what hands/face do)",
+    "3 CAMERA as motion (speed + path, not just the move name)",
+    "4 LIGHT (source, direction, colour, hardness, effect on surfaces)",
+    "5 LENS & DEPTH (focal length + depth behaviour)",
+    "6 ATMOSPHERE & TEXTURE (haze, grain, grime)",
+    "7 SOUND (Veo audio — name it)",
+)
+
+
+def _build_prompter_system_prompt(detail: str) -> str:
+    level = DETAIL_LEVELS[detail]
+    lines = [
+        "You are the Prompter. Given one shot, write a single dense Veo prompt plus a "
+        "matching negative prompt.",
+        "",
+        _PROMPTER_LEAD_RULE,
+        "",
+    ]
+    if level["layered"]:
+        lines.append("Weave in all seven layers, roughly in this flow:")
+        lines.extend(_PROMPTER_LAYERS)
+    else:
+        lines.append("Keep it tight: action, then camera, then light — nothing else.")
+    lines.append("")
+    lines.append(
+        f"Target {level['words']} words. If the shot is a consistency anchor "
+        "(consistency_anchor is true), keep weaving the character's physical descriptor "
+        "(build, wardrobe, distinguishing features) into the subject so the prompt "
+        "matches its reference image, as today."
+    )
+    lines.append(
         'Respond with JSON only: {"prompts": [{"shot_id": str, "prompt": str, '
         '"negative_prompt": str}]}.'
     )
+    return "\n".join(lines)
+
+
+class PrompterAgent(Agent):
+    """Writes the Veo prompt for one shot, at an injectable detail level.
+
+    `detail` picks a word-count target and whether the system prompt demands
+    the full seven-layer flow (action/subject/camera/light/lens/atmosphere/
+    sound) or stays to a lean action+camera+light sketch — see DETAIL_LEVELS.
+    """
+
+    role = "prompter"
+
+    def __init__(self, llm: LLMClient, detail: str = "cinematic") -> None:
+        super().__init__(llm)
+        if detail not in DETAIL_LEVELS:
+            raise ValueError(
+                f"unknown prompt detail level: {detail!r} (must be one of "
+                f"{sorted(DETAIL_LEVELS)})"
+            )
+        self.detail = detail
+        self.system_prompt = _build_prompter_system_prompt(detail)
 
     def build_user(self, *, shot: dict[str, Any]) -> str:
         return json.dumps({"shot": shot}, indent=2)

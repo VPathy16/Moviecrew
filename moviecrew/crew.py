@@ -53,6 +53,7 @@ class MovieCrew:
         *,
         reference_provider: Optional[ReferenceImageProvider] = None,
         reference_out_dir: str = "reference_stills",
+        prompt_detail: str = "cinematic",
     ) -> None:
         self.llm = llm
         # Reserved for a future per-task model override (e.g. a custom
@@ -65,7 +66,7 @@ class MovieCrew:
         self.writer = WriterAgent(llm)
         self.designer = DesignerAgent(llm)
         self.cinematographer = CinematographerAgent(llm)
-        self.prompter = PrompterAgent(llm)
+        self.prompter = PrompterAgent(llm, detail=prompt_detail)
         self.continuity = ContinuityAgent(llm)
         self.editor = EditorAgent(llm)
 

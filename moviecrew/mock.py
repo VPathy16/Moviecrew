@@ -83,10 +83,16 @@ _RESPONSES: dict[str, dict[str, Any]] = {
             {
                 "shot_id": "sc1-sh1",
                 "prompt": (
-                    "Wide shot of a weathered lighthouse keeper climbing a black-rock "
-                    "cliff path toward a white stone lighthouse, storm waves crashing "
-                    "below, muted watercolor realism, slate blue and storm grey palette, "
-                    "slow dolly-in from a low angle."
+                    "Mara grips a rope rail and hauls herself up the black-rock cliff "
+                    "path, boots skidding on wet stone as spray bursts over the ledge "
+                    "below; her oilskin coat snaps and twists in the gale. Camera tracks "
+                    "low and close, drifting upward with her stride in a slow dolly-in. "
+                    "Cold blue-grey storm light rakes in sideways from the horizon, "
+                    "flaring white where it catches wet rock and the white stone "
+                    "lighthouse tower above. Shot on a 24mm lens, wide and low, deep "
+                    "focus holding both her straining hand and the churning sea below in "
+                    "sharp relief. Salt mist hangs in the air, fine grain in the shadows. "
+                    "Wind roars, waves crash, rope creaks under her grip."
                 ),
                 "negative_prompt": "blurry, distorted anatomy, modern clothing",
                 "duration_s": 8,
@@ -96,9 +102,14 @@ _RESPONSES: dict[str, dict[str, Any]] = {
             {
                 "shot_id": "sc1-sh2",
                 "prompt": (
-                    "Close-up of a weathered hand pushing open a lighthouse door, "
-                    "rain streaking down weathered wood, lantern amber light spilling "
-                    "out, static composition."
+                    "Mara's hand presses flat against the lighthouse door and shoves it "
+                    "inward, rain sheeting off her sleeve and streaking down the "
+                    "weathered wood grain as the door swings open. Lantern amber light "
+                    "spills out from inside, warm and hard-edged against the cold blue "
+                    "rain. Shot on an 85mm lens, shallow depth of field, rack focus "
+                    "settling on her knuckles and the brass latch. Fine rain grain hazes "
+                    "the frame, droplets catching the light. Door hinges groan, rain "
+                    "patters, wind gusts low in the background."
                 ),
                 "negative_prompt": "blurry, distorted anatomy, modern clothing",
                 "duration_s": 4,
