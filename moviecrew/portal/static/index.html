@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>MovieCrew Portal</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: #131722;
+    --panel-2: #1a1f2e;
+    --border: #262c3d;
+    --text: #e4e7ee;
+    --muted: #8a91a6;
+    --accent: #5eb8ff;
+    --warn: #e8b339;
+    --err: #ef5b5b;
+    --info: #6fd6a0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 {
+    margin: 0;
+    font-size: 1.1rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  header p {
+    margin: 0.25rem 0 0;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+  main {
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 1.5rem;
+    display: grid;
+    gap: 1.25rem;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+  }
+  label {
+    display: block;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+  }
+  textarea, select, input[type=text] {
+    width: 100%;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.55rem 0.7rem;
+    font-size: 0.95rem;
+    font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 4.5rem; }
+  .controls-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 0.9rem;
+    margin-top: 0.9rem;
+  }
+  button {
+    margin-top: 1rem;
+    background: var(--accent);
+    color: #04121f;
+    border: none;
+    border-radius: 6px;
+    padding: 0.6rem 1.1rem;
+    font-weight: 600;
+    font-size: 0.95rem;
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  #error-panel {
+    display: none;
+    border-color: var(--err);
+    color: var(--err);
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+  }
+  .chain {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 1rem;
+    overflow: hidden;
+  }
+  .chain-head {
+    background: var(--panel-2);
+    padding: 0.5rem 0.9rem;
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .shot {
+    padding: 0.9rem 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .shot-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+  }
+  .shot-id {
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .badge {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-radius: 999px;
+    padding: 0.1rem 0.55rem;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .badge.anchor {
+    color: var(--warn);
+    border-color: var(--warn);
+  }
+  .prompt-box {
+    position: relative;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.6rem 0.7rem;
+    font-size: 0.88rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+  }
+  .copy-btn {
+    margin: 0.4rem 0 0;
+    background: var(--panel);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 0.3rem 0.7rem;
+    font-size: 0.78rem;
+  }
+  .flags {
+    display: grid;
+    gap: 0.4rem;
+  }
+  .flag {
+    font-size: 0.85rem;
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+  }
+  .flag.info { color: var(--info); }
+  .flag.warning { color: var(--warn); }
+  .flag.error { color: var(--err); }
+  #results { display: none; }
+  #summary {
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin-bottom: 0.9rem;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>MovieCrew Portal</h1>
+  <p>Concept in, shot-by-shot Veo prompts out — plan path only.</p>
+</header>
+<main>
+  <section class="panel">
+    <label for="concept">Concept</label>
+    <textarea id="concept" placeholder="A keeper and a sea spirit strike a quiet bargain to outlast a storm."></textarea>
+
+    <div class="controls-row">
+      <div>
+        <label for="backend">Backend</label>
+        <select id="backend"></select>
+      </div>
+      <div>
+        <label for="detail">Prompt detail</label>
+        <select id="detail"></select>
+      </div>
+      <div>
+        <label for="reference-dir">Reference dir (optional)</label>
+        <input type="text" id="reference-dir" placeholder="path/to/stills" />
+      </div>
+    </div>
+
+    <button id="generate">Generate</button>
+  </section>
+
+  <section class="panel" id="error-panel"></section>
+
+  <section id="results">
+    <div id="summary"></div>
+    <div id="chains"></div>
+    <div class="panel">
+      <label>Continuity &amp; constraint flags</label>
+      <div class="flags" id="flags"></div>
+    </div>
+  </section>
+</main>
+
+<script>
+const backendSelect = document.getElementById("backend");
+const detailSelect = document.getElementById("detail");
+const errorPanel = document.getElementById("error-panel");
+const results = document.getElementById("results");
+const generateBtn = document.getElementById("generate");
+
+function showError(message) {
+  errorPanel.textContent = message;
+  errorPanel.style.display = "block";
+  results.style.display = "none";
+}
+
+function clearError() {
+  errorPanel.style.display = "none";
+  errorPanel.textContent = "";
+}
+
+async function loadHealth() {
+  try {
+    const res = await fetch("/api/health");
+    const data = await res.json();
+    backendSelect.innerHTML = data.backends
+      .map((b) => `<option value="${b}">${b}</option>`)
+      .join("");
+    detailSelect.innerHTML = data.detail_levels
+      .map((d) => `<option value="${d}" ${d === "cinematic" ? "selected" : ""}>${d}</option>`)
+      .join("");
+  } catch (err) {
+    showError("Could not reach /api/health: " + err);
+  }
+}
+
+function shotChainLabel(chain) {
+  return chain.length >= 2 ? "Continuous take (chain)" : "Hard cut / standalone shot";
+}
+
+function renderResults(project) {
+  clearError();
+  results.style.display = "block";
+
+  const shotCount = project.scenes.reduce((n, s) => n + s.shots.length, 0);
+  const plan = project.render_plan || {};
+  document.getElementById("summary").textContent =
+    `${project.title} — ${project.scenes.length} scene(s), ${shotCount} shot(s), ` +
+    `est. duration ${plan.est_duration_s || 0}s`;
+
+  const shotsById = {};
+  for (const scene of project.scenes) {
+    for (const shot of scene.shots) shotsById[shot.id] = shot;
+  }
+  const promptsByShotId = {};
+  for (const prompt of plan.prompts || []) promptsByShotId[prompt.shot_id] = prompt;
+
+  const chainsEl = document.getElementById("chains");
+  chainsEl.innerHTML = "";
+  for (const chain of plan.chains || []) {
+    const chainDiv = document.createElement("div");
+    chainDiv.className = "chain";
+
+    const head = document.createElement("div");
+    head.className = "chain-head";
+    head.textContent = `${shotChainLabel(chain)} — ${chain.join(" -> ")}`;
+    chainDiv.appendChild(head);
+
+    for (const shotId of chain) {
+      const shot = shotsById[shotId];
+      const prompt = promptsByShotId[shotId];
+      if (!shot || !prompt) continue;
+
+      const shotDiv = document.createElement("div");
+      shotDiv.className = "shot";
+
+      const shotHead = document.createElement("div");
+      shotHead.className = "shot-head";
+      shotHead.innerHTML =
+        `<span class="shot-id">${shot.id}</span>` +
+        `<span class="badge">${shot.duration_s}s</span>` +
+        `<span class="badge">${shot.camera_move}</span>` +
+        (shot.consistency_anchor ? `<span class="badge anchor">anchor</span>` : "");
+      shotDiv.appendChild(shotHead);
+
+      const promptBox = document.createElement("div");
+      promptBox.className = "prompt-box";
+      promptBox.textContent = prompt.prompt;
+      shotDiv.appendChild(promptBox);
+
+      const copyBtn = document.createElement("button");
+      copyBtn.className = "copy-btn";
+      copyBtn.textContent = "Copy prompt";
+      copyBtn.onclick = () => navigator.clipboard.writeText(prompt.prompt);
+      shotDiv.appendChild(copyBtn);
+
+      chainDiv.appendChild(shotDiv);
+    }
+    chainsEl.appendChild(chainDiv);
+  }
+
+  const flagsEl = document.getElementById("flags");
+  flagsEl.innerHTML = "";
+  const flags = plan.flags || [];
+  if (!flags.length) {
+    flagsEl.innerHTML = '<div class="flag info">No flags.</div>';
+  }
+  for (const flag of flags) {
+    const div = document.createElement("div");
+    div.className = `flag ${flag.kind}`;
+    div.textContent = `[${flag.kind}] ${flag.target}: ${flag.message}`;
+    flagsEl.appendChild(div);
+  }
+}
+
+async function generate() {
+  clearError();
+  results.style.display = "none";
+  generateBtn.disabled = true;
+  generateBtn.textContent = "Generating...";
+
+  const body = {
+    concept: document.getElementById("concept").value,
+    backend: backendSelect.value,
+    detail: detailSelect.value,
+  };
+  const referenceDir = document.getElementById("reference-dir").value.trim();
+  if (referenceDir) body.reference_dir = referenceDir;
+
+  try {
+    const res = await fetch("/api/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || `request failed (${res.status})`);
+    } else {
+      renderResults(data);
+    }
+  } catch (err) {
+    showError("Request failed: " + err);
+  } finally {
+    generateBtn.disabled = false;
+    generateBtn.textContent = "Generate";
+  }
+}
+
+generateBtn.addEventListener("click", generate);
+loadHealth();
+</script>
+</body>
+</html>
