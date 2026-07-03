@@ -16,6 +16,12 @@ from moviecrew.mock import MockLLMClient
 from moviecrew.studio import Stage, StudioSession
 
 
+class PromotingMockImageProvider(MockImageProvider):
+    """MockImageProvider that advertises promotes_references=True for tests."""
+
+    promotes_references = True
+
+
 # ---------------------------------------------------------------------- #
 # Shared fixtures                                                         #
 # ---------------------------------------------------------------------- #
@@ -91,6 +97,7 @@ def test_produce_transitions_stage_to_storyboard(session):
 
 
 def test_approve_promotes_anchored_frames_and_advances_to_output(session):
+    session.image_provider = PromotingMockImageProvider()
     session.produce()
 
     anchored = session.project.scenes[0].shots[0]
@@ -102,15 +109,17 @@ def test_approve_promotes_anchored_frames_and_advances_to_output(session):
     session.approve()
 
     assert session.stage == Stage.OUTPUT
-    assert anchored.reference_image_ids == [ok_frame.image_path]
+    assert anchored.reference_image_ids[0] == ok_frame.image_path
 
 
 def test_approve_does_not_promote_failed_frames(session):
-    class AlwaysFail(ImageProvider):
+    class PromotingAlwaysFail(ImageProvider):
+        promotes_references = True
+
         def generate(self, prompt: str, shot_id: str) -> bytes:
             raise RuntimeError("fail")
 
-    session.image_provider = AlwaysFail()
+    session.image_provider = PromotingAlwaysFail()
     session.produce()
 
     anchored = session.project.scenes[0].shots[0]
@@ -136,6 +145,7 @@ def test_approve_leaves_non_anchor_shots_unchanged(session):
 
 
 def test_revise_single_frame_clears_promoted_reference(session):
+    session.image_provider = PromotingMockImageProvider()
     session.produce()
 
     anchored = session.project.scenes[0].shots[0]
@@ -147,11 +157,12 @@ def test_revise_single_frame_clears_promoted_reference(session):
 
     session.revise(shot_id=anchored.id)
 
-    assert anchored.reference_image_ids == []
+    assert anchored.reference_image_ids == []  # stash restored (was [] before approve)
     assert session.stage == Stage.STORYBOARD
 
 
 def test_revise_single_frame_does_not_clear_other_shots(session):
+    session.image_provider = PromotingMockImageProvider()
     session.produce()
 
     shots = [s for scene in session.project.scenes for s in scene.shots]
@@ -165,8 +176,8 @@ def test_revise_single_frame_does_not_clear_other_shots(session):
     promoted_second = list(shots[1].reference_image_ids)
     session.revise(shot_id=shots[0].id)
 
-    assert shots[0].reference_image_ids == []
-    assert shots[1].reference_image_ids == promoted_second
+    assert shots[0].reference_image_ids == []  # stash restored
+    assert shots[1].reference_image_ids == promoted_second  # untouched
 
 
 def test_revise_whole_board_regenerates_all_frames(session):
@@ -180,6 +191,7 @@ def test_revise_whole_board_regenerates_all_frames(session):
 
 
 def test_revise_whole_board_clears_all_promoted_refs(session):
+    session.image_provider = PromotingMockImageProvider()
     session.produce()
     shots = [s for scene in session.project.scenes for s in scene.shots]
     for shot in shots:
@@ -189,7 +201,67 @@ def test_revise_whole_board_clears_all_promoted_refs(session):
     session.revise()  # regenerate everything
 
     for shot in shots:
-        assert shot.reference_image_ids == []
+        assert shot.reference_image_ids == []  # stash (was []) restored
+
+
+def test_approve_with_mock_provider_leaves_original_refs_untouched(session):
+    """MockImageProvider (promotes_references=False): library stills survive approve."""
+    session.produce()
+    shot = session.project.scenes[0].shots[0]
+    shot.consistency_anchor = True
+    shot.reference_image_ids = ["library_still.png"]
+
+    session.approve()
+
+    assert shot.reference_image_ids == ["library_still.png"]
+
+
+def test_promoting_provider_prepends_and_caps_at_max(tmp_path, project):
+    """Promoting provider prepends the board image and caps at VEO_MAX_REFERENCE_IMAGES."""
+    from moviecrew.schema import VEO_MAX_REFERENCE_IMAGES
+
+    promo_session = StudioSession(
+        session_id="promo-session",
+        stage=Stage.SHOT_DEFS,
+        project=project,
+        session_dir=str(tmp_path),
+        image_provider=PromotingMockImageProvider(),
+    )
+    promo_session.produce()
+    shot = promo_session.project.scenes[0].shots[0]
+    shot.consistency_anchor = True
+    # Pre-load refs that fill the cap; the oldest should be dropped after prepend.
+    shot.reference_image_ids = ["r1.png", "r2.png", "r3.png"]
+
+    promo_session.approve()
+
+    frame = next(f for f in promo_session.board if f.shot_id == shot.id)
+    assert shot.reference_image_ids[0] == frame.image_path, "board image must be first"
+    assert len(shot.reference_image_ids) == VEO_MAX_REFERENCE_IMAGES
+    assert shot.reference_image_ids[1] == "r1.png"
+
+
+def test_revise_restores_stashed_originals(tmp_path, project):
+    """revise() restores the pre-promotion refs rather than clearing to empty."""
+    promo_session = StudioSession(
+        session_id="stash-restore",
+        stage=Stage.SHOT_DEFS,
+        project=project,
+        session_dir=str(tmp_path),
+        image_provider=PromotingMockImageProvider(),
+    )
+    promo_session.produce()
+    shot = promo_session.project.scenes[0].shots[0]
+    shot.consistency_anchor = True
+    original_refs = ["library_still.png"]
+    shot.reference_image_ids = list(original_refs)
+
+    promo_session.approve()
+    assert shot.reference_image_ids != original_refs, "approve must have changed refs"
+
+    promo_session.revise(shot_id=shot.id)
+
+    assert shot.reference_image_ids == original_refs
 
 
 def test_still_prompt_strips_camera_sentences():

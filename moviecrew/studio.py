@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from .image import ImageProvider, NullImageProvider
-from .schema import Project
+from .schema import VEO_MAX_REFERENCE_IMAGES, Project
 
 
 class Stage(str, Enum):
@@ -35,6 +35,8 @@ class StoryboardFrame:
     prompt_used: str
     status: str               # "ok" | "failed"
     image_path: Optional[str] = None
+    # Stashed by approve() when promotes_references is True; restored by revise().
+    prior_reference_image_ids: Optional[list[str]] = None
 
 
 # Sentence-level prefixes that signal camera-motion intent in a Veo prompt.
@@ -125,18 +127,28 @@ class StudioSession:
         self.stage = Stage.STORYBOARD
 
     def approve(self) -> None:
-        """Promote each anchored shot's ok frame to its reference_image_ids.
+        """Promote each anchored shot's ok frame into its reference_image_ids.
 
-        Advances stage to OUTPUT.  Only anchored shots with a successful board
-        image are promoted; failed frames and non-anchor shots are left alone.
+        Advances stage to OUTPUT.  Promotion only happens when the image
+        provider declares promotes_references=True (real generators); with
+        Null/Mock providers the existing reference_image_ids are left
+        untouched so hand-supplied library stills survive.  When promoting,
+        the board image is PREPENDED and the list is capped at
+        VEO_MAX_REFERENCE_IMAGES; the pre-promotion list is stashed on the
+        frame so revise() can restore it.
         """
         frames_by_shot_id = {f.shot_id: f for f in self.board}
 
         for scene in self.project.scenes:
             for shot in scene.shots:
                 frame = frames_by_shot_id.get(shot.id)
-                if shot.consistency_anchor and frame and frame.status == "ok":
-                    shot.reference_image_ids = [frame.image_path]
+                if not (shot.consistency_anchor and frame and frame.status == "ok"):
+                    continue
+                if not self.image_provider.promotes_references:
+                    continue
+                frame.prior_reference_image_ids = list(shot.reference_image_ids)
+                new_refs = [frame.image_path] + shot.reference_image_ids
+                shot.reference_image_ids = new_refs[:VEO_MAX_REFERENCE_IMAGES]
 
         self.stage = Stage.OUTPUT
 
@@ -159,15 +171,16 @@ class StudioSession:
         if shot_id:
             self._revise_one(shot_id, feedback, board_dir, prompts_by_shot_id)
         else:
-            # Regenerate the whole board in place.
+            old_frames_by_shot_id = {f.shot_id: f for f in self.board}
             new_board = []
             for scene in self.project.scenes:
                 for shot in scene.shots:
+                    old_frame = old_frames_by_shot_id.get(shot.id)
+                    if old_frame and old_frame.prior_reference_image_ids is not None:
+                        shot.reference_image_ids = old_frame.prior_reference_image_ids
                     veo_prompt = prompts_by_shot_id.get(shot.id, shot.description)
                     still_prompt = _build_still_with_feedback(veo_prompt, feedback)
                     new_board.append(self._generate_frame(shot.id, still_prompt, board_dir))
-                    # Clear any previously-promoted reference for this shot.
-                    shot.reference_image_ids = []
             self.board = new_board
 
         self.stage = Stage.STORYBOARD
@@ -204,11 +217,14 @@ class StudioSession:
         board_dir: Path,
         prompts_by_shot_id: dict[str, str],
     ) -> None:
-        # Find the shot object to clear its promoted reference.
+        old_frame = next((f for f in self.board if f.shot_id == shot_id), None)
+
         for scene in self.project.scenes:
             for shot in scene.shots:
                 if shot.id == shot_id:
-                    shot.reference_image_ids = []
+                    if old_frame and old_frame.prior_reference_image_ids is not None:
+                        # Restore the stash set by approve() rather than clearing to [].
+                        shot.reference_image_ids = old_frame.prior_reference_image_ids
                     break
 
         veo_prompt = prompts_by_shot_id.get(shot_id, shot_id)

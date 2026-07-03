@@ -14,6 +14,12 @@ from abc import ABC, abstractmethod
 class ImageProvider(ABC):
     """Return raw image bytes for a given prompt and shot id."""
 
+    # Set to True on real generators: approve() will prepend the board image
+    # to shot.reference_image_ids so subsequent Veo renders can anchor
+    # character consistency off the approved frame.  False on Null/Mock to
+    # avoid overwriting hand-supplied library stills during offline tests.
+    promotes_references: bool = False
+
     @abstractmethod
     def generate(self, prompt: str, shot_id: str) -> bytes: ...
 
