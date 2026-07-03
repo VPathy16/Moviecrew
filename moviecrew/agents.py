@@ -53,24 +53,101 @@ class WriterAgent(Agent):
         '"summary": str, "location_id": str, "character_ids": [str, ...]}]}.'
     )
 
-    def build_user(self, *, title: str, logline: str, outline: list[str]) -> str:
-        return json.dumps({"title": title, "logline": logline, "outline": outline}, indent=2)
+    _ASSETS_FIRST_ADDENDUM = (
+        "Write the story FOR this cast and world. Use these characters/props/locations "
+        "by id; do not invent replacements for existing roles."
+    )
+
+    def build_user(
+        self,
+        *,
+        title: str,
+        logline: str,
+        outline: list[str],
+        provided_bible: Any = None,
+    ) -> str:
+        data: dict[str, Any] = {"title": title, "logline": logline, "outline": outline}
+        if provided_bible is not None:
+            data["provided_bible"] = (
+                provided_bible.to_dict()
+                if hasattr(provided_bible, "to_dict")
+                else provided_bible
+            )
+        return json.dumps(data, indent=2)
+
+    def run(  # type: ignore[override]
+        self,
+        *,
+        title: str,
+        logline: str,
+        outline: list[str],
+        provided_bible: Any = None,
+    ) -> dict[str, Any]:
+        user = self.build_user(
+            title=title, logline=logline, outline=outline, provided_bible=provided_bible
+        )
+        system = self.system_prompt
+        if provided_bible is not None:
+            system = f"{self.system_prompt}\n\n{self._ASSETS_FIRST_ADDENDUM}"
+        return self.llm.complete_json(task=self.role, system=system, user=user)
 
 
 class DesignerAgent(Agent):
     role = "designer"
     system_prompt = (
         "You are the Production Designer. Given the title, logline, and scenes, define the "
-        "visual Bible: overall style, color palette, mood, and every character and location "
-        "referenced by the scenes.\n"
+        "visual Bible: overall style, color palette, mood, and every character, prop and "
+        "location referenced by the scenes.\n"
         'Respond with JSON only: {"style": str, "palette": str, "mood": str, '
         '"characters": [{"id": str, "name": str, "description": str, '
         '"reference_images": [str, ...]}], "locations": [{"id": str, "name": str, '
-        '"description": str, "reference_images": [str, ...]}]}.'
+        '"description": str, "reference_images": [str, ...]}], '
+        '"props": [{"id": str, "name": str, "description": str, '
+        '"reference_images": [str, ...]}]}.'
     )
 
-    def build_user(self, *, title: str, logline: str, scenes: list[dict[str, Any]]) -> str:
-        return json.dumps({"title": title, "logline": logline, "scenes": scenes}, indent=2)
+    _GAP_FILL_SYSTEM_PROMPT = (
+        "You are the Production Designer. A visual Bible has already been provided. "
+        "You may only FILL GAPS the story requires (e.g. a location the library lacks), "
+        "appending new assets. Return all provided characters, props and locations "
+        "byte-identical — their ids, descriptions and reference_images must be unchanged. "
+        "Do not invent replacements for existing roles.\n"
+        'Respond with JSON only: {"style": str, "palette": str, "mood": str, '
+        '"characters": [...], "locations": [...], '
+        '"props": [{"id": str, "name": str, "description": str, '
+        '"reference_images": [str, ...]}]}.'
+    )
+
+    def build_user(
+        self,
+        *,
+        title: str,
+        logline: str,
+        scenes: list[dict[str, Any]],
+        provided_bible: Any = None,
+    ) -> str:
+        data: dict[str, Any] = {"title": title, "logline": logline, "scenes": scenes}
+        if provided_bible is not None:
+            data["provided_bible"] = (
+                provided_bible.to_dict()
+                if hasattr(provided_bible, "to_dict")
+                else provided_bible
+            )
+        return json.dumps(data, indent=2)
+
+    def run(  # type: ignore[override]
+        self,
+        *,
+        title: str,
+        logline: str,
+        scenes: list[dict[str, Any]],
+        provided_bible: Any = None,
+    ) -> dict[str, Any]:
+        user = self.build_user(
+            title=title, logline=logline, scenes=scenes, provided_bible=provided_bible
+        )
+        system = self._GAP_FILL_SYSTEM_PROMPT if provided_bible is not None else self.system_prompt
+        return self.llm.complete_json(task=self.role, system=system, user=user)
 
 
 class CinematographerAgent(Agent):

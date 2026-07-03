@@ -54,12 +54,35 @@ class Location:
 
 
 @dataclass
+class Prop:
+    id: str
+    name: str
+    description: str
+    reference_images: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Bible:
     style: str
     palette: str
     mood: str
     characters: list[Character] = field(default_factory=list)
     locations: list[Location] = field(default_factory=list)
+    props: list[Prop] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Bible":
+        return cls(
+            style=data["style"],
+            palette=data["palette"],
+            mood=data["mood"],
+            characters=[Character(**c) for c in data.get("characters", [])],
+            locations=[Location(**l) for l in data.get("locations", [])],
+            props=[Prop(**p) for p in data.get("props", [])],
+        )
 
 
 # --- Scenes / Shots ----------------------------------------------------------

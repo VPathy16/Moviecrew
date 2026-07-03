@@ -53,6 +53,14 @@ _RESPONSES: dict[str, dict[str, Any]] = {
                 "reference_images": ["ref-loc1-a"],
             }
         ],
+        "props": [
+            {
+                "id": "prop1",
+                "name": "Lighthouse Lantern",
+                "description": "heavy brass whale-oil lantern, soot-blackened, amber glass panels",
+                "reference_images": [],
+            }
+        ],
     },
     "cinematographer": {
         "shots": [

@@ -61,6 +61,10 @@ def populate_reference_stills(
     """
     populated: list[str] = []
     for character in bible.characters:
+        # Library stills win: skip any character whose reference_images already
+        # point at files that exist on disk (assets-first mode).
+        if any(os.path.isfile(img) for img in character.reference_images):
+            continue
         still = provider.generate(character)
         if still is None:
             continue

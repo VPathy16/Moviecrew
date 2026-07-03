@@ -96,6 +96,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default="cinematic",
         help="Veo prompt density: lean (short), cinematic (default), or maximal (dense)",
     )
+    parser.add_argument(
+        "--bible",
+        metavar="DIR",
+        help=(
+            "Load a visual Bible library from DIR (assets-first mode): the writer "
+            "crafts scenes for the provided cast and world, and the designer only "
+            "fills any gaps. Stills in DIR/stills/ are used as reference images."
+        ),
+    )
+    parser.add_argument(
+        "--save-bible",
+        metavar="DIR",
+        help=(
+            "After the run, persist the generated (or merged) Bible as a reusable "
+            "library in DIR for future --bible use (the bridge between story-first "
+            "and assets-first modes)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     llm = _build_llm(args.backend)
@@ -103,7 +121,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         FileReferenceImageProvider(args.reference_dir) if args.reference_dir else None
     )
     crew = MovieCrew(llm, reference_provider=reference_provider, prompt_detail=args.detail)
-    project = crew.make(args.concept)
+
+    input_bible = None
+    if args.bible:
+        from .library import load_bible
+
+        input_bible = load_bible(args.bible)
+
+    project = crew.make(args.concept, bible=input_bible)
 
     _print_summary(project)
 
@@ -118,6 +143,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 print(f"  assembled -> {assembled}")
             else:
                 print("  assembled -> skipped (no usable clips)")
+
+    if args.save_bible:
+        from .library import save_bible
+
+        save_bible(project.bible, args.save_bible)
+        print(f"  saved Bible -> {args.save_bible}/bible.json")
 
     if args.out:
         with open(args.out, "w") as f:
