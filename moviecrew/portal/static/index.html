@@ -16,6 +16,7 @@
     --warn: #e8b339;
     --err: #ef5b5b;
     --info: #6fd6a0;
+    --ok: #6fd6a0;
   }
   * { box-sizing: border-box; }
   body {
@@ -35,13 +36,9 @@
     text-transform: uppercase;
     color: var(--accent);
   }
-  header p {
-    margin: 0.25rem 0 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-  }
+  header p { margin: 0.25rem 0 0; color: var(--muted); font-size: 0.85rem; }
   main {
-    max-width: 980px;
+    max-width: 1100px;
     margin: 0 auto;
     padding: 1.5rem;
     display: grid;
@@ -79,19 +76,31 @@
     margin-top: 0.9rem;
   }
   button {
-    margin-top: 1rem;
     background: var(--accent);
     color: #04121f;
     border: none;
     border-radius: 6px;
     padding: 0.6rem 1.1rem;
     font-weight: 600;
-    font-size: 0.95rem;
+    font-size: 0.9rem;
     cursor: pointer;
+    margin-top: 1rem;
   }
-  button:disabled {
-    opacity: 0.5;
-    cursor: default;
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.secondary {
+    background: var(--panel-2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    font-weight: 500;
+  }
+  button.approve {
+    background: var(--ok);
+    color: #04121f;
+  }
+  button.danger {
+    background: transparent;
+    color: var(--err);
+    border: 1px solid var(--err);
   }
   #error-panel {
     display: none;
@@ -100,84 +109,68 @@
     font-size: 0.9rem;
     white-space: pre-wrap;
   }
-  .chain {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    margin-bottom: 1rem;
-    overflow: hidden;
-  }
-  .chain-head {
-    background: var(--panel-2);
-    padding: 0.5rem 0.9rem;
-    font-size: 0.8rem;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .shot {
-    padding: 0.9rem 1rem;
-    border-top: 1px solid var(--border);
-  }
-  .shot-head {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    margin-bottom: 0.4rem;
-  }
-  .shot-id {
-    font-weight: 600;
-    color: var(--accent);
-  }
-  .badge {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    border-radius: 999px;
-    padding: 0.1rem 0.55rem;
-    border: 1px solid var(--border);
-    color: var(--muted);
-  }
-  .badge.anchor {
-    color: var(--warn);
-    border-color: var(--warn);
-  }
-  .prompt-box {
-    position: relative;
-    background: var(--panel-2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 0.6rem 0.7rem;
-    font-size: 0.88rem;
-    line-height: 1.4;
-    white-space: pre-wrap;
-  }
-  .copy-btn {
-    margin: 0.4rem 0 0;
-    background: var(--panel);
-    color: var(--muted);
-    border: 1px solid var(--border);
-    padding: 0.3rem 0.7rem;
-    font-size: 0.78rem;
-  }
-  .flags {
-    display: grid;
-    gap: 0.4rem;
-  }
-  .flag {
-    font-size: 0.85rem;
-    padding: 0.4rem 0.6rem;
-    border-radius: 6px;
-    border: 1px solid var(--border);
-  }
+  /* ---- Shot list (plan results) ---- */
+  .chain { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 1rem; overflow: hidden; }
+  .chain-head { background: var(--panel-2); padding: 0.5rem 0.9rem; font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .shot { padding: 0.9rem 1rem; border-top: 1px solid var(--border); }
+  .shot-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; }
+  .shot-id { font-weight: 600; color: var(--accent); }
+  .badge { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; border-radius: 999px; padding: 0.1rem 0.55rem; border: 1px solid var(--border); color: var(--muted); }
+  .badge.anchor { color: var(--warn); border-color: var(--warn); }
+  .prompt-box { position: relative; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem 0.7rem; font-size: 0.88rem; line-height: 1.4; white-space: pre-wrap; }
+  .copy-btn { margin: 0.4rem 0 0; background: var(--panel); color: var(--muted); border: 1px solid var(--border); padding: 0.3rem 0.7rem; font-size: 0.78rem; }
+  .flags { display: grid; gap: 0.4rem; }
+  .flag { font-size: 0.85rem; padding: 0.4rem 0.6rem; border-radius: 6px; border: 1px solid var(--border); }
   .flag.info { color: var(--info); }
   .flag.warning { color: var(--warn); }
   .flag.error { color: var(--err); }
   #results { display: none; }
-  #summary {
+  #summary { color: var(--muted); font-size: 0.9rem; margin-bottom: 0.9rem; }
+  /* ---- Storyboard ---- */
+  #storyboard-section { display: none; }
+  .storyboard-note {
+    font-size: 0.8rem;
     color: var(--muted);
-    font-size: 0.9rem;
-    margin-bottom: 0.9rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.75rem;
+    margin-bottom: 0.75rem;
+    font-style: italic;
   }
+  .sb-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+  }
+  .sb-frame {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .sb-frame.failed { border-color: var(--err); }
+  .sb-img {
+    width: 100%;
+    aspect-ratio: 16/9;
+    object-fit: cover;
+    background: #222;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+  .sb-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .sb-img.no-img { padding: 2rem 1rem; text-align: center; }
+  .sb-meta { padding: 0.6rem 0.75rem; }
+  .sb-meta .sb-id { font-weight: 600; color: var(--accent); font-size: 0.85rem; }
+  .sb-meta .sb-badges { display: flex; gap: 0.35rem; flex-wrap: wrap; margin: 0.25rem 0; }
+  .sb-prompt { font-size: 0.75rem; color: var(--muted); margin: 0.35rem 0 0.5rem; line-height: 1.4; max-height: 4.5rem; overflow: hidden; }
+  .sb-redo { margin-top: 0; font-size: 0.78rem; padding: 0.3rem 0.65rem; }
+  .sb-approve-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  .sb-approve-row button { margin-top: 0; }
+  .sb-status { font-size: 0.82rem; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -186,36 +179,44 @@
   <p>Concept in, shot-by-shot Veo prompts out — plan path only.</p>
 </header>
 <main>
+  <!-- Input panel -->
   <section class="panel">
     <label for="concept">Concept</label>
     <textarea id="concept" placeholder="A keeper and a sea spirit strike a quiet bargain to outlast a storm."></textarea>
-
     <div class="controls-row">
-      <div>
-        <label for="backend">Backend</label>
-        <select id="backend"></select>
-      </div>
-      <div>
-        <label for="detail">Prompt detail</label>
-        <select id="detail"></select>
-      </div>
-      <div>
-        <label for="reference-dir">Reference dir (optional)</label>
-        <input type="text" id="reference-dir" placeholder="path/to/stills" />
-      </div>
+      <div><label for="backend">Backend</label><select id="backend"></select></div>
+      <div><label for="detail">Prompt detail</label><select id="detail"></select></div>
+      <div><label for="reference-dir">Reference dir (optional)</label><input type="text" id="reference-dir" placeholder="path/to/stills" /></div>
     </div>
-
     <button id="generate">Generate</button>
   </section>
 
+  <!-- Error panel -->
   <section class="panel" id="error-panel"></section>
 
+  <!-- Plan results -->
   <section id="results">
     <div id="summary"></div>
     <div id="chains"></div>
     <div class="panel">
       <label>Continuity &amp; constraint flags</label>
       <div class="flags" id="flags"></div>
+    </div>
+    <div style="margin-top:0.25rem">
+      <button id="sb-generate-btn" class="secondary">Generate Storyboard</button>
+    </div>
+  </section>
+
+  <!-- Storyboard section -->
+  <section id="storyboard-section" class="panel">
+    <label>Storyboard</label>
+    <div class="storyboard-note">
+      These images preview composition and look only — NOT the final video. Approve to promote anchored frames as reference stills.
+    </div>
+    <div class="sb-grid" id="sb-grid"></div>
+    <div class="sb-approve-row">
+      <button id="sb-approve-btn" class="approve">Approve Board</button>
+      <span class="sb-status" id="sb-status"></span>
     </div>
   </section>
 </main>
@@ -226,13 +227,19 @@ const detailSelect = document.getElementById("detail");
 const errorPanel = document.getElementById("error-panel");
 const results = document.getElementById("results");
 const generateBtn = document.getElementById("generate");
+const sbSection = document.getElementById("storyboard-section");
+const sbGrid = document.getElementById("sb-grid");
+const sbApproveBtn = document.getElementById("sb-approve-btn");
+const sbStatus = document.getElementById("sb-status");
+const sbGenerateBtn = document.getElementById("sb-generate-btn");
+
+let _sessionId = null;
+let _project = null;
 
 function showError(message) {
   errorPanel.textContent = message;
   errorPanel.style.display = "block";
-  results.style.display = "none";
 }
-
 function clearError() {
   errorPanel.style.display = "none";
   errorPanel.textContent = "";
@@ -242,35 +249,32 @@ async function loadHealth() {
   try {
     const res = await fetch("/api/health");
     const data = await res.json();
-    backendSelect.innerHTML = data.backends
-      .map((b) => `<option value="${b}">${b}</option>`)
-      .join("");
-    detailSelect.innerHTML = data.detail_levels
-      .map((d) => `<option value="${d}" ${d === "cinematic" ? "selected" : ""}>${d}</option>`)
-      .join("");
-  } catch (err) {
-    showError("Could not reach /api/health: " + err);
-  }
+    backendSelect.innerHTML = data.backends.map(b => `<option value="${b}">${b}</option>`).join("");
+    detailSelect.innerHTML = data.detail_levels.map(d =>
+      `<option value="${d}"${d === "cinematic" ? " selected" : ""}>${d}</option>`
+    ).join("");
+  } catch (err) { showError("Could not reach /api/health: " + err); }
 }
 
 function shotChainLabel(chain) {
   return chain.length >= 2 ? "Continuous take (chain)" : "Hard cut / standalone shot";
 }
 
-function renderResults(project) {
+function renderPlanResults(project) {
+  _project = project;
   clearError();
   results.style.display = "block";
+  sbSection.style.display = "none";
+  sbGrid.innerHTML = "";
+  sbStatus.textContent = "";
 
   const shotCount = project.scenes.reduce((n, s) => n + s.shots.length, 0);
   const plan = project.render_plan || {};
   document.getElementById("summary").textContent =
-    `${project.title} — ${project.scenes.length} scene(s), ${shotCount} shot(s), ` +
-    `est. duration ${plan.est_duration_s || 0}s`;
+    `${project.title} — ${project.scenes.length} scene(s), ${shotCount} shot(s), est. duration ${plan.est_duration_s || 0}s`;
 
   const shotsById = {};
-  for (const scene of project.scenes) {
-    for (const shot of scene.shots) shotsById[shot.id] = shot;
-  }
+  for (const scene of project.scenes) for (const shot of scene.shots) shotsById[shot.id] = shot;
   const promptsByShotId = {};
   for (const prompt of plan.prompts || []) promptsByShotId[prompt.shot_id] = prompt;
 
@@ -279,20 +283,16 @@ function renderResults(project) {
   for (const chain of plan.chains || []) {
     const chainDiv = document.createElement("div");
     chainDiv.className = "chain";
-
     const head = document.createElement("div");
     head.className = "chain-head";
     head.textContent = `${shotChainLabel(chain)} — ${chain.join(" -> ")}`;
     chainDiv.appendChild(head);
-
     for (const shotId of chain) {
       const shot = shotsById[shotId];
       const prompt = promptsByShotId[shotId];
       if (!shot || !prompt) continue;
-
       const shotDiv = document.createElement("div");
       shotDiv.className = "shot";
-
       const shotHead = document.createElement("div");
       shotHead.className = "shot-head";
       shotHead.innerHTML =
@@ -301,18 +301,15 @@ function renderResults(project) {
         `<span class="badge">${shot.camera_move}</span>` +
         (shot.consistency_anchor ? `<span class="badge anchor">anchor</span>` : "");
       shotDiv.appendChild(shotHead);
-
       const promptBox = document.createElement("div");
       promptBox.className = "prompt-box";
       promptBox.textContent = prompt.prompt;
       shotDiv.appendChild(promptBox);
-
       const copyBtn = document.createElement("button");
       copyBtn.className = "copy-btn";
       copyBtn.textContent = "Copy prompt";
       copyBtn.onclick = () => navigator.clipboard.writeText(prompt.prompt);
       shotDiv.appendChild(copyBtn);
-
       chainDiv.appendChild(shotDiv);
     }
     chainsEl.appendChild(chainDiv);
@@ -321,9 +318,7 @@ function renderResults(project) {
   const flagsEl = document.getElementById("flags");
   flagsEl.innerHTML = "";
   const flags = plan.flags || [];
-  if (!flags.length) {
-    flagsEl.innerHTML = '<div class="flag info">No flags.</div>';
-  }
+  if (!flags.length) flagsEl.innerHTML = '<div class="flag info">No flags.</div>';
   for (const flag of flags) {
     const div = document.createElement("div");
     div.className = `flag ${flag.kind}`;
@@ -332,11 +327,66 @@ function renderResults(project) {
   }
 }
 
+function renderStoryboard(frames) {
+  sbSection.style.display = "block";
+  sbGrid.innerHTML = "";
+  for (const frame of frames) {
+    const card = document.createElement("div");
+    card.className = `sb-frame${frame.status === "failed" ? " failed" : ""}`;
+    card.dataset.shotId = frame.shot_id;
+
+    const imgBox = document.createElement("div");
+    imgBox.className = "sb-img";
+    if (frame.image_url) {
+      const img = document.createElement("img");
+      img.src = frame.image_url;
+      img.alt = frame.shot_id;
+      imgBox.appendChild(img);
+    } else {
+      imgBox.classList.add("no-img");
+      imgBox.textContent = "Image generation failed";
+    }
+
+    const meta = document.createElement("div");
+    meta.className = "sb-meta";
+
+    // Find shot info from _project
+    let shot = null;
+    if (_project) {
+      for (const scene of _project.scenes) {
+        const found = scene.shots.find(s => s.id === frame.shot_id);
+        if (found) { shot = found; break; }
+      }
+    }
+
+    meta.innerHTML =
+      `<div class="sb-id">${frame.shot_id}</div>` +
+      `<div class="sb-badges">` +
+        (shot ? `<span class="badge">${shot.duration_s}s</span><span class="badge">${shot.camera_move}</span>` : "") +
+        (shot && shot.consistency_anchor ? `<span class="badge anchor">anchor</span>` : "") +
+        `<span class="badge${frame.status === "failed" ? ' danger' : ''}">${frame.status}</span>` +
+      `</div>` +
+      `<div class="sb-prompt">${frame.prompt_used}</div>`;
+
+    const redoBtn = document.createElement("button");
+    redoBtn.className = "secondary sb-redo";
+    redoBtn.textContent = "Redo";
+    redoBtn.onclick = () => redoFrame(frame.shot_id, card);
+
+    card.appendChild(imgBox);
+    meta.appendChild(redoBtn);
+    card.appendChild(meta);
+    sbGrid.appendChild(card);
+  }
+}
+
 async function generate() {
   clearError();
   results.style.display = "none";
+  sbSection.style.display = "none";
   generateBtn.disabled = true;
   generateBtn.textContent = "Generating...";
+  _sessionId = null;
 
   const body = {
     concept: document.getElementById("concept").value,
@@ -349,14 +399,15 @@ async function generate() {
   try {
     const res = await fetch("/api/plan", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {"Content-Type": "application/json"},
       body: JSON.stringify(body),
     });
     const data = await res.json();
     if (!res.ok) {
       showError(data.error || `request failed (${res.status})`);
     } else {
-      renderResults(data);
+      _sessionId = data.session_id || null;
+      renderPlanResults(data);
     }
   } catch (err) {
     showError("Request failed: " + err);
@@ -366,7 +417,97 @@ async function generate() {
   }
 }
 
+async function generateStoryboard() {
+  if (!_sessionId) { showError("No session — generate a plan first."); return; }
+  sbGenerateBtn.disabled = true;
+  sbGenerateBtn.textContent = "Generating storyboard...";
+  sbStatus.textContent = "";
+  try {
+    const res = await fetch("/api/storyboard", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: _sessionId}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || `storyboard failed (${res.status})`);
+    } else {
+      renderStoryboard(data.frames);
+    }
+  } catch (err) {
+    showError("Storyboard request failed: " + err);
+  } finally {
+    sbGenerateBtn.disabled = false;
+    sbGenerateBtn.textContent = "Generate Storyboard";
+  }
+}
+
+async function approveBoard() {
+  if (!_sessionId) return;
+  sbApproveBtn.disabled = true;
+  sbStatus.textContent = "Approving...";
+  try {
+    const res = await fetch("/api/storyboard/approve", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: _sessionId}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      sbStatus.textContent = data.error || "approve failed";
+    } else {
+      sbStatus.textContent = `Board approved. Anchored frames promoted as reference stills. Stage: ${data.stage}.`;
+      sbApproveBtn.textContent = "Board Approved";
+    }
+  } catch (err) {
+    sbStatus.textContent = "Approve failed: " + err;
+  } finally {
+    sbApproveBtn.disabled = false;
+  }
+}
+
+async function redoFrame(shotId, card) {
+  if (!_sessionId) return;
+  const redoBtn = card.querySelector(".sb-redo");
+  if (redoBtn) { redoBtn.disabled = true; redoBtn.textContent = "Redoing..."; }
+  try {
+    const res = await fetch("/api/storyboard/regenerate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({session_id: _sessionId, shot_id: shotId, feedback: ""}),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || "regeneration failed");
+    } else {
+      // Re-render just this card
+      const frame = data.frame;
+      const imgBox = card.querySelector(".sb-img");
+      if (imgBox) {
+        imgBox.innerHTML = "";
+        if (frame.image_url) {
+          imgBox.classList.remove("no-img");
+          const img = document.createElement("img");
+          img.src = frame.image_url + "?t=" + Date.now();
+          img.alt = shotId;
+          imgBox.appendChild(img);
+        } else {
+          imgBox.classList.add("no-img");
+          imgBox.textContent = "Image generation failed";
+        }
+      }
+      card.className = `sb-frame${frame.status === "failed" ? " failed" : ""}`;
+    }
+  } catch (err) {
+    showError("Redo failed: " + err);
+  } finally {
+    if (redoBtn) { redoBtn.disabled = false; redoBtn.textContent = "Redo"; }
+  }
+}
+
 generateBtn.addEventListener("click", generate);
+sbGenerateBtn.addEventListener("click", generateStoryboard);
+sbApproveBtn.addEventListener("click", approveBoard);
 loadHealth();
 </script>
 </body>
