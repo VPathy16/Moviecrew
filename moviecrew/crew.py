@@ -35,12 +35,47 @@ from .schema import (
     ContinuityFlag,
     Location,
     Project,
+    Prop,
     RenderPlan,
     Scene,
     Shot,
     VeoPrompt,
 )
 from .video import RenderResult, VideoBackend
+
+
+def _merge_bible(provided: Bible, designer_out: dict) -> Bible:
+    """Merge assets-first mode: keep all provided assets byte-identical; append
+    only genuinely new assets (unknown ids) from the designer's gap-fill output.
+    """
+    existing_char_ids = {c.id for c in provided.characters}
+    existing_loc_ids = {l.id for l in provided.locations}
+    existing_prop_ids = {p.id for p in provided.props}
+
+    new_chars = [
+        Character(**c)
+        for c in designer_out.get("characters", [])
+        if c["id"] not in existing_char_ids
+    ]
+    new_locs = [
+        Location(**l)
+        for l in designer_out.get("locations", [])
+        if l["id"] not in existing_loc_ids
+    ]
+    new_props = [
+        Prop(**p)
+        for p in designer_out.get("props", [])
+        if p["id"] not in existing_prop_ids
+    ]
+
+    return Bible(
+        style=designer_out.get("style", provided.style),
+        palette=designer_out.get("palette", provided.palette),
+        mood=designer_out.get("mood", provided.mood),
+        characters=list(provided.characters) + new_chars,
+        locations=list(provided.locations) + new_locs,
+        props=list(provided.props) + new_props,
+    )
 
 
 class MovieCrew:
@@ -70,25 +105,46 @@ class MovieCrew:
         self.continuity = ContinuityAgent(llm)
         self.editor = EditorAgent(llm)
 
-    def make(self, concept: str) -> Project:
+    def make(self, concept: str, *, bible: Optional[Bible] = None) -> Project:
+        """Run the full pipeline.
+
+        With *bible* (assets-first mode): the writer is asked to write FOR the
+        provided cast and world; the designer only fills gaps (new locations or
+        props the story requires that aren't already in the library).  Provided
+        assets are preserved byte-identical.
+
+        Without *bible* (story-first, default): behaviour is unchanged.
+        """
         director_out = self.director.run(concept=concept)
         title = director_out["title"]
         logline = director_out["logline"]
         outline = director_out["outline"]
 
-        writer_out = self.writer.run(title=title, logline=logline, outline=outline)
+        writer_out = self.writer.run(
+            title=title, logline=logline, outline=outline, provided_bible=bible
+        )
         raw_scenes = writer_out["scenes"]
 
-        designer_out = self.designer.run(title=title, logline=logline, scenes=raw_scenes)
-        bible = Bible(
-            style=designer_out["style"],
-            palette=designer_out["palette"],
-            mood=designer_out["mood"],
-            characters=[Character(**c) for c in designer_out["characters"]],
-            locations=[Location(**l) for l in designer_out["locations"]],
+        designer_out = self.designer.run(
+            title=title, logline=logline, scenes=raw_scenes, provided_bible=bible
         )
 
-        populate_reference_stills(bible, self.reference_provider, out_dir=self.reference_out_dir)
+        if bible is not None:
+            effective_bible = _merge_bible(bible, designer_out)
+        else:
+            effective_bible = Bible(
+                style=designer_out["style"],
+                palette=designer_out["palette"],
+                mood=designer_out["mood"],
+                characters=[Character(**c) for c in designer_out["characters"]],
+                locations=[Location(**l) for l in designer_out["locations"]],
+                props=[Prop(**p) for p in designer_out.get("props", [])],
+            )
+        bible = effective_bible
+
+        populate_reference_stills(
+            bible, self.reference_provider, out_dir=self.reference_out_dir
+        )
 
         scenes: list[Scene] = []
         all_shots: list[Shot] = []
