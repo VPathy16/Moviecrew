@@ -184,3 +184,51 @@ def test_polling_an_unknown_job_reports_failure_rather_than_crashing(takes_root)
     body = client.get("/api/render/does-not-exist").json()
     assert body["status"] == "failed"
     assert body["error"]
+
+
+# ---------------------------------------------------------------------- #
+# Storing the render                                                      #
+# ---------------------------------------------------------------------- #
+
+
+def test_finished_render_is_downloaded_into_the_takes_tree(take, takes_root, monkeypatch):
+    """A provider URL expires and the render cost money — the only copy must
+    not be left on someone else's server."""
+    monkeypatch.setenv(_PUBLIC_BASE_URL_ENV, _PUBLIC)
+    job_id = _render().json()["job_id"]
+
+    body = client.get(f"/api/render/{job_id}").json()
+    saved = takes_root / "sc1" / "sc1-sh1" / "renders" / f"{job_id}.mp4"
+
+    assert saved.is_file()
+    assert body["local_path"] == str(saved)
+
+
+def test_render_is_not_downloaded_twice(take, takes_root, monkeypatch):
+    monkeypatch.setenv(_PUBLIC_BASE_URL_ENV, _PUBLIC)
+    job_id = _render().json()["job_id"]
+
+    client.get(f"/api/render/{job_id}")
+    saved = takes_root / "sc1" / "sc1-sh1" / "renders" / f"{job_id}.mp4"
+    saved.write_bytes(b"EDITED")
+    client.get(f"/api/render/{job_id}")
+
+    assert saved.read_bytes() == b"EDITED"
+
+
+def test_a_download_failure_does_not_lose_the_provider_url(take, takes_root, monkeypatch):
+    """Saving is best-effort; the result must stay visible either way."""
+    from moviecrew.portal.app import _render_client
+
+    monkeypatch.setenv(_PUBLIC_BASE_URL_ENV, _PUBLIC)
+    job_id = _render().json()["job_id"]
+
+    backend, _ = _render_client()
+    monkeypatch.setattr(
+        backend, "fetch", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+    )
+    body = client.get(f"/api/render/{job_id}").json()
+
+    assert body["local_path"] is None
+    assert body["status"] == "succeeded"
+    assert body["video_url"]

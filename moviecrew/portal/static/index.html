@@ -851,7 +851,8 @@ async function pollRender(jobId) {
       return;
     }
     const cost = data.cost === null || data.cost === undefined ? "" : ` · $${data.cost}`;
-    setGenNote(`${jobId} succeeded${cost}`);
+    const saved = data.local_path ? ` · saved to ${data.local_path}` : " · not saved locally";
+    setGenNote(`${jobId} succeeded${cost}${saved}`, !data.local_path);
     tkGenOut.innerHTML = "";
     if (data.video_url && /^https?:/.test(data.video_url)) {
       const video = document.createElement("video");
