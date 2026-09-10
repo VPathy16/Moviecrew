@@ -39,7 +39,7 @@ from ..mock import MockLLMClient
 from ..reference import FileReferenceImageProvider, ReferenceImageProvider
 from ..studio import Stage, StudioSession
 from ..render import FakeRenderClient, JobStatus, ShotSpec
-from ..takes import list_takes, resolve_video, save_take
+from ..takes import list_takes, resolve_video, save_take, shot_dir
 
 _BACKENDS = ("mock", "anthropic")
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -113,7 +113,7 @@ def _frame_to_dict(session_id: str, frame) -> dict:
     }
 
 
-def _job_to_dict(job, context: Optional[dict] = None) -> dict:
+def _job_to_dict(job, context: Optional[dict] = None, *, local_path: Optional[str] = None) -> dict:
     return {
         "job_id": job.job_id,
         "shot_id": job.shot_id,
@@ -125,6 +125,7 @@ def _job_to_dict(job, context: Optional[dict] = None) -> dict:
         "error": job.error,
         "is_terminal": job.is_terminal,
         "take_id": (context or {}).get("take_id"),
+        "local_path": local_path,
     }
 
 
@@ -153,6 +154,28 @@ def _take_to_dict(take, root: Path) -> dict:
         "created_at": take.created_at,
         "media_id": take.media_id,
     }
+
+
+def render_path(root, scene_id: str, shot_id: str, job_id: str):
+    """Where a generated render is kept: beside the take that drove it."""
+    return shot_dir(root, scene_id, shot_id) / "renders" / f"{job_id}.mp4"
+
+
+def _store_render(client, job, take):
+    """Download a finished render into the takes tree, once.
+
+    Returns the local path, or None if it could not be saved. A download
+    failure is not fatal — the provider URL is still returned so the result
+    is not lost from view.
+    """
+    destination = render_path(_takes_root(), take.scene_id, take.shot_id, job.job_id)
+    if destination.is_file():
+        return str(destination)
+    try:
+        saved = client.fetch(job, str(destination))
+    except Exception:
+        return None
+    return saved
 
 
 def _video_path_or_error(scene_id: str, shot_id: str, take_number: int):
@@ -421,19 +444,23 @@ def render_status(job_id: str):
     except Exception as exc:
         return _error(502, f"could not poll render: {exc}")
 
-    # Record the finished render against its take, so previz-to-final lineage
-    # survives this process.
+    # Download the finished render and record it against its take. A provider
+    # URL is temporary, and this render cost real money — leaving it to expire
+    # on someone else's server would lose the only copy.
     context = _render_jobs.get(job_id)
+    local_path = None
     if context and job.status is JobStatus.SUCCEEDED:
         take = _find_take(context["scene_id"], context["shot_id"], context["take_number"])
-        if take is not None and job_id not in take.renders:
-            take.renders.append(job_id)
-            try:
-                save_take(take, _takes_root())
-            except OSError:
-                pass  # the render still succeeded; lineage is best-effort
+        if take is not None:
+            local_path = _store_render(client, job, take)
+            if job_id not in take.renders:
+                take.renders.append(job_id)
+                try:
+                    save_take(take, _takes_root())
+                except OSError:
+                    pass  # the render succeeded; lineage is best-effort
 
-    return _job_to_dict(job, context)
+    return _job_to_dict(job, context, local_path=local_path)
 
 
 @app.get("/api/takes/{scene_id}/{shot_id}/{take_number}/video")
