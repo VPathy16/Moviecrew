@@ -212,6 +212,15 @@
   .tk-gen-note.warn { color: var(--warn); }
   .tk-gen-out { margin-top: 0.8rem; font-size: 0.85rem; }
   .tk-gen-out video { width: 100%; max-width: 480px; border-radius: 8px; margin-top: 0.5rem; display: block; }
+  .rn-render { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--panel-2); }
+  .rn-render video { width: 100%; aspect-ratio: 16/9; background: #111; display: block; }
+  .rn-actions { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-top: 0.4rem; }
+  .rn-actions a {
+    font-size: 0.75rem; color: var(--accent); text-decoration: none;
+    border: 1px solid var(--border); border-radius: 5px; padding: 0.2rem 0.5rem;
+  }
+  .rn-actions a:hover { border-color: var(--accent); }
+  .rn-orphan { color: var(--warn); }
 </style>
 </head>
 <body>
@@ -282,6 +291,19 @@
       <div class="tk-gen-out" id="tk-gen-out"></div>
     </div>
   </section>
+
+  <!-- Generated renders -->
+  <section id="renders-section" class="panel">
+    <label>Renders</label>
+    <div class="storyboard-note">
+      What came back from the model, kept beside the take that drove it. Newest first.
+    </div>
+    <div class="tk-bar">
+      <button id="rn-refresh-btn" class="secondary">Refresh Renders</button>
+      <span class="sb-status" id="rn-status"></span>
+    </div>
+    <div id="rn-list"></div>
+  </section>
 </main>
 
 <script>
@@ -300,6 +322,10 @@ const takesSection = document.getElementById("takes-section");
 const tkList = document.getElementById("tk-list");
 const tkStatus = document.getElementById("tk-status");
 const tkRefreshBtn = document.getElementById("tk-refresh-btn");
+
+const rnList = document.getElementById("rn-list");
+const rnStatus = document.getElementById("rn-status");
+const rnRefreshBtn = document.getElementById("rn-refresh-btn");
 
 let _sessionId = null;
 let _project = null;
@@ -433,6 +459,120 @@ async function loadTakes() {
   } catch (err) {
     showError(`Could not load takes: ${err}`);
     tkStatus.textContent = "";
+  }
+}
+
+function humanBytes(n) {
+  if (!n) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i += 1; }
+  return `${n < 10 && i ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+}
+
+function renderCard(entry) {
+  const card = document.createElement("div");
+  card.className = "rn-render";
+
+  const video = document.createElement("video");
+  // The portal's own copy, never the provider URL: that one needs an API key
+  // as a bearer header, which a <video> tag cannot send, and it expires.
+  video.src = entry.video_url;
+  video.controls = true;
+  video.preload = "metadata";
+  video.playsInline = true;
+  card.appendChild(video);
+
+  const meta = document.createElement("div");
+  meta.className = "tk-meta";
+
+  const row = document.createElement("div");
+  row.className = "tk-row";
+  const num = document.createElement("span");
+  num.className = "tk-num";
+  num.textContent = `Take ${String(entry.take_number).padStart(3, "0")}`;
+  const mark = document.createElement("span");
+  mark.className = "tk-mark";
+  mark.textContent = humanBytes(entry.size_bytes);
+  row.append(num, mark);
+  meta.appendChild(row);
+
+  const sub = document.createElement("div");
+  sub.className = "tk-sub";
+  sub.textContent = `${entry.job_id}${entry.created_at ? ` · ${entry.created_at.slice(0, 19).replace("T", " ")}` : ""}`;
+  meta.appendChild(sub);
+
+  if (!entry.linked) {
+    const orphan = document.createElement("div");
+    orphan.className = "tk-sub rn-orphan";
+    orphan.textContent = "Not recorded against the take — lineage unknown";
+    meta.appendChild(orphan);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "rn-actions";
+  const download = document.createElement("a");
+  download.href = `${entry.video_url}?download=true`;
+  download.textContent = "Download";
+  const source = document.createElement("a");
+  source.href = entry.take_video_url;
+  source.textContent = "Driving take";
+  actions.append(download, source);
+  meta.appendChild(actions);
+
+  card.appendChild(meta);
+  return card;
+}
+
+function renderRenders(data) {
+  rnList.innerHTML = "";
+  const shots = data.shots || {};
+  const shotIds = Object.keys(shots).sort();
+
+  if (!shotIds.length) {
+    const empty = document.createElement("div");
+    empty.className = "tk-empty";
+    empty.textContent = "Nothing generated yet. Pick a take above and hit Generate.";
+    rnList.appendChild(empty);
+    rnStatus.textContent = "";
+    return;
+  }
+
+  for (const shotId of shotIds) {
+    const entries = shots[shotId];
+    const wrap = document.createElement("div");
+    wrap.className = "tk-shot";
+
+    const heading = document.createElement("div");
+    heading.className = "tk-shot-id";
+    heading.textContent = `${shotId} — ${entries.length} render${entries.length === 1 ? "" : "s"}`;
+    wrap.appendChild(heading);
+
+    const grid = document.createElement("div");
+    grid.className = "tk-grid";
+    for (const entry of entries) grid.appendChild(renderCard(entry));
+    wrap.appendChild(grid);
+    rnList.appendChild(wrap);
+  }
+
+  const total = data.render_count;
+  rnStatus.textContent = `${total} render${total === 1 ? "" : "s"} in ${data.takes_root}`;
+}
+
+async function loadRenders() {
+  rnStatus.textContent = "Loading…";
+  try {
+    const res = await fetch("/api/renders");
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || "Could not load renders.");
+      rnStatus.textContent = "";
+      return;
+    }
+    renderRenders(data);
+  } catch (err) {
+    showError(`Could not load renders: ${err}`);
+    rnStatus.textContent = "";
   }
 }
 
@@ -854,21 +994,37 @@ async function pollRender(jobId) {
     const saved = data.local_path ? ` · saved to ${data.local_path}` : " · not saved locally";
     setGenNote(`${jobId} succeeded${cost}${saved}`, !data.local_path);
     tkGenOut.innerHTML = "";
-    if (data.video_url && /^https?:/.test(data.video_url)) {
+    if (data.render_url) {
+      // Play the portal's own copy. The provider URL needs an API key as a
+      // bearer header — a <video> tag cannot send one, so it would 401 — and
+      // it expires, which would leave a dead player behind on reload.
       const video = document.createElement("video");
-      video.src = data.video_url;
+      video.src = data.render_url;
       video.controls = true;
+      video.playsInline = true;
       tkGenOut.appendChild(video);
+
+      const actions = document.createElement("div");
+      actions.className = "rn-actions";
+      const download = document.createElement("a");
+      download.href = `${data.render_url}?download=true`;
+      download.textContent = "Download";
+      actions.appendChild(download);
+      tkGenOut.appendChild(actions);
     } else {
-      tkGenOut.textContent = `Output: ${data.video_url || "(none)"}`;
+      tkGenOut.textContent =
+        "The render finished but could not be saved locally. " +
+        `Provider URL: ${data.video_url || "(none)"}`;
     }
     loadTakes();
+    loadRenders();
   } catch (err) {
     showError(`Could not poll render: ${err}`);
   }
 }
 
 tkRefreshBtn.addEventListener("click", loadTakes);
+rnRefreshBtn.addEventListener("click", loadRenders);
 tkEstimateBtn.addEventListener("click", () => submitRender(true));
 tkGenerateBtn.addEventListener("click", () => submitRender(false));
 tkModel.addEventListener("change", refreshGenState);
@@ -877,6 +1033,7 @@ sbGenerateBtn.addEventListener("click", generateStoryboard);
 sbApproveBtn.addEventListener("click", approveBoard);
 loadHealth();
 loadTakes();
+loadRenders();
 loadRenderModels();
 </script>
 </body>

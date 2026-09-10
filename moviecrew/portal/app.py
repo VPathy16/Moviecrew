@@ -11,6 +11,14 @@ TAKES path (GET /api/takes, GET /api/takes/.../video): lists the previz
 clips Blender rendered per shot and serves them for review, so every take of
 a shot can be compared side by side before one is chosen.
 
+RENDER path (POST /api/render, GET /api/render/{job}): submits a chosen take
+to a generative backend and polls it, downloading the finished clip into the
+takes tree so the only copy does not live on a URL that expires.
+
+RENDERS path (GET /api/renders, GET /api/renders/.../video): the other half
+of the gallery — what came back from the model, grouped by shot beside the
+takes that drove it, served locally and downloadable.
+
 API keys (GEMINI_API_KEY / ANTHROPIC_API_KEY) are read server-side from the
 process environment only — no request or response here ever carries one. The
 takes root is likewise server-side config ($MOVIECREW_TAKES_ROOT): a browser
@@ -20,9 +28,11 @@ cannot point this process at an arbitrary directory.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -58,6 +68,10 @@ _LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1")
 
 _OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 _DEFAULT_RENDER_MODEL = "bytedance/seedance-2.5"
+
+# A provider's job id becomes a filename, so it is held to an id shape before
+# it is ever joined to a path.
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 # Submitted renders, keyed by job id, so a browser can poll one.
 _render_jobs: dict[str, dict] = {}
@@ -113,7 +127,21 @@ def _frame_to_dict(session_id: str, frame) -> dict:
     }
 
 
+def _render_url(scene_id: str, shot_id: str, job_id: str) -> str:
+    return f"/api/renders/{scene_id}/{shot_id}/{job_id}/video"
+
+
 def _job_to_dict(job, context: Optional[dict] = None, *, local_path: Optional[str] = None) -> dict:
+    context = context or {}
+    # `video_url` points at the provider and is useless to a browser: an
+    # OpenRouter result URL needs the API key as a bearer header, which a
+    # <video> tag cannot send, and it expires besides. Once the render is on
+    # disk the portal serves it itself, and that is what the player uses.
+    render_url = (
+        _render_url(context["scene_id"], context["shot_id"], job.job_id)
+        if local_path and context.get("scene_id") and context.get("shot_id")
+        else None
+    )
     return {
         "job_id": job.job_id,
         "shot_id": job.shot_id,
@@ -121,10 +149,11 @@ def _job_to_dict(job, context: Optional[dict] = None, *, local_path: Optional[st
         "backend": job.backend,
         "model": job.model,
         "video_url": job.video_url,
+        "render_url": render_url,
         "cost": job.cost,
         "error": job.error,
         "is_terminal": job.is_terminal,
-        "take_id": (context or {}).get("take_id"),
+        "take_id": context.get("take_id"),
         "local_path": local_path,
     }
 
@@ -176,6 +205,77 @@ def _store_render(client, job, take):
     except Exception:
         return None
     return saved
+
+
+def _render_to_dict(path: Path, take) -> dict:
+    job_id = path.stem
+    try:
+        stat = path.stat()
+        size, mtime = stat.st_size, stat.st_mtime
+    except OSError:
+        size, mtime = 0, 0.0
+    return {
+        "job_id": job_id,
+        "scene_id": take.scene_id,
+        "shot_id": take.shot_id,
+        "take_number": take.take_number,
+        "take_id": take.take_id,
+        "take_video_url": (
+            f"/api/takes/{take.scene_id}/{take.shot_id}/{take.take_number}/video"
+        ),
+        "video_url": _render_url(take.scene_id, take.shot_id, job_id),
+        "size_bytes": size,
+        "created_at": (
+            datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else ""
+        ),
+        "linked": job_id in take.renders,
+    }
+
+
+def _list_renders(root: Path, scene_id=None, shot_id=None) -> list[dict]:
+    """Every generated render on disk, newest first, tied to its take.
+
+    Driven by the files rather than by `take.renders`, for the same reason
+    `next_take_number` scans files: a render that finished while the portal
+    was restarting has no lineage recorded, and dropping it from the gallery
+    would hide something that cost real money. The record still supplies the
+    link, so an unlinked render is shown and flagged rather than lost.
+    """
+    out: list[dict] = []
+    for take in list_takes(root, scene_id=scene_id, shot_id=shot_id):
+        directory = shot_dir(root, take.scene_id, take.shot_id) / "renders"
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.mp4")):
+            out.append(_render_to_dict(path, take))
+    out.sort(key=lambda r: r["created_at"], reverse=True)
+    return out
+
+
+def _render_path_or_error(scene_id: str, shot_id: str, job_id: str):
+    """Locate a stored render, refusing anything outside the takes root.
+
+    `job_id` arrives from the URL, so it is checked against the id shape
+    before it ever becomes a path segment, and the resolved file must still
+    land inside the root. Both, not either: the pattern stops traversal and
+    the containment check stops a symlink out.
+    """
+    if not _JOB_ID_RE.match(job_id):
+        return None, _error(400, f"malformed job id: {job_id!r}")
+
+    root = _takes_root()
+    path = render_path(root, scene_id, shot_id, job_id)
+    try:
+        resolved = path.resolve()
+        root_resolved = root.resolve()
+    except OSError as exc:
+        return None, _error(500, f"could not resolve render: {exc}")
+
+    if not resolved.is_relative_to(root_resolved):
+        return None, _error(403, "render resolves outside the takes root")
+    if not resolved.is_file():
+        return None, _error(404, f"no render {job_id} for {shot_id}")
+    return resolved, None
 
 
 def _video_path_or_error(scene_id: str, shot_id: str, take_number: int):
@@ -354,6 +454,44 @@ def takes(scene_id: Optional[str] = None, shot_id: Optional[str] = None):
         "take_count": len(found),
         "shots": shots,
     }
+
+
+@app.get("/api/renders")
+def renders(scene_id: Optional[str] = None, shot_id: Optional[str] = None):
+    """Every generated render on disk, grouped by shot.
+
+    The other half of the takes gallery: takes are what you shot in Blender,
+    renders are what came back from the model, and both are per-shot so a
+    reviewer can put them side by side.
+    """
+    root = _takes_root()
+    try:
+        found = _list_renders(root, scene_id=scene_id, shot_id=shot_id)
+    except OSError as exc:
+        return _error(502, f"could not read takes root: {exc}")
+
+    shots: dict[str, list[dict]] = {}
+    for entry in found:
+        shots.setdefault(entry["shot_id"], []).append(entry)
+
+    return {
+        "takes_root": str(root),
+        "render_count": len(found),
+        "shots": shots,
+    }
+
+
+@app.get("/api/renders/{scene_id}/{shot_id}/{job_id}/video")
+def render_video(scene_id: str, shot_id: str, job_id: str, download: bool = False):
+    path, err = _render_path_or_error(scene_id, shot_id, job_id)
+    if err:
+        return err
+    headers = (
+        {"Content-Disposition": f'attachment; filename="{shot_id}_{job_id}.mp4"'}
+        if download
+        else None
+    )
+    return FileResponse(path, media_type="video/mp4", headers=headers)
 
 
 @app.get("/api/render/models")
