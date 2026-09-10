@@ -86,7 +86,17 @@ def _status_of(payload: dict[str, Any]) -> JobStatus:
 
 
 def _video_url_of(payload: dict[str, Any]) -> Optional[str]:
-    """Dig the output URL out of the shapes OpenRouter returns."""
+    """Dig the output URL out of the shapes OpenRouter returns.
+
+    A completed job returns its result under `unsigned_urls` — a list, and
+    "unsigned" meaning the URL carries no credentials of its own, so fetching
+    it needs the API key (see `fetch`). Confirmed against a live render;
+    the other shapes are kept as fallbacks.
+    """
+    unsigned = payload.get("unsigned_urls")
+    if isinstance(unsigned, list) and unsigned and isinstance(unsigned[0], str):
+        return unsigned[0]
+
     for key in ("video_url", "url", "output_url"):
         if isinstance(payload.get(key), str):
             return payload[key]
@@ -307,8 +317,15 @@ class OpenRouterRenderClient(RenderClient):
         if job.status is not JobStatus.SUCCEEDED or not job.video_url:
             return None
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+        # An OpenRouter result URL is unsigned: it sits behind the same API
+        # auth as everything else, so a bare GET gets a 401. Sending the key
+        # is harmless for a URL that does not need it.
+        request = urllib.request.Request(job.video_url)
+        if job.video_url.startswith(self.api_root) or "openrouter.ai" in job.video_url:
+            request.add_header("Authorization", f"Bearer {self._api_key}")
         try:
-            with urllib.request.urlopen(job.video_url, timeout=300) as response:
+            with urllib.request.urlopen(request, timeout=300) as response:
                 data = response.read()
         except (urllib.error.URLError, OSError):
             return None

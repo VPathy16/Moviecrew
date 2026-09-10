@@ -353,3 +353,107 @@ def test_fetch_refuses_a_job_with_no_url(tmp_path):
 
 def test_cost_model_default_is_usd():
     assert CostModel(unit="usd").currency == "USD"
+
+
+# ---------------------------------------------------------------------- #
+# Real response shapes                                                    #
+# ---------------------------------------------------------------------- #
+
+# Captured verbatim from a live OpenRouter render (job jc8xxNw…, $1.86).
+_LIVE_COMPLETED = {
+    "id": "jc8xxNw1vUoguOdkCpji",
+    "generation_id": "gen-vid-1789042420-k34vRNf1PG6KDFayz8d4",
+    "polling_url": "https://openrouter.ai/api/v1/videos/jc8xxNw1vUoguOdkCpji",
+    "status": "completed",
+    "unsigned_urls": [
+        "https://openrouter.ai/api/v1/videos/jc8xxNw1vUoguOdkCpji/content?index=0"
+    ],
+    "usage": {"cost": 1.85859, "is_byok": False},
+}
+
+
+def test_live_completed_response_yields_url_and_cost():
+    """Regression: the output arrives in `unsigned_urls`, a list under a key
+    the first parser never checked — so a finished render read as having no
+    video at all."""
+    transport = _transport([_LIVE_COMPLETED])
+    job = OpenRouterRenderClient(api_key="k", transport=transport).poll("jc8xxNw1vUoguOdkCpji")
+
+    assert job.status is JobStatus.SUCCEEDED
+    assert job.video_url == _LIVE_COMPLETED["unsigned_urls"][0]
+    assert job.cost == 1.85859
+
+
+def test_unsigned_urls_wins_over_the_fallback_shapes():
+    transport = _transport(
+        [{"status": "completed", "unsigned_urls": ["https://a/1.mp4"], "url": "https://b/2.mp4"}]
+    )
+    assert OpenRouterRenderClient(api_key="k", transport=transport).poll("v").video_url == (
+        "https://a/1.mp4"
+    )
+
+
+def test_empty_unsigned_urls_falls_through(tmp_path):
+    transport = _transport([{"status": "completed", "unsigned_urls": [], "url": "https://b/2.mp4"}])
+    assert OpenRouterRenderClient(api_key="k", transport=transport).poll("v").video_url == (
+        "https://b/2.mp4"
+    )
+
+
+def test_fetch_sends_the_api_key_for_an_openrouter_url(tmp_path, monkeypatch):
+    """Result URLs are unsigned — a bare GET gets a 401."""
+    seen = {}
+
+    class _Response:
+        def read(self):
+            return b"MP4BYTES"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["auth"] = request.get_header("Authorization")
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenRouterRenderClient(api_key="sk-live", transport=_transport([]))
+    job = RenderJob(
+        job_id="v",
+        shot_id="s",
+        status=JobStatus.SUCCEEDED,
+        video_url="https://openrouter.ai/api/v1/videos/v/content?index=0",
+    )
+    out = client.fetch(job, str(tmp_path / "o.mp4"))
+
+    assert out and (tmp_path / "o.mp4").read_bytes() == b"MP4BYTES"
+    assert seen["auth"] == "Bearer sk-live"
+
+
+def test_fetch_does_not_leak_the_key_to_a_third_party_host(tmp_path, monkeypatch):
+    seen = {}
+
+    class _Response:
+        def read(self):
+            return b"MP4"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["auth"] = request.get_header("Authorization")
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenRouterRenderClient(api_key="sk-live", transport=_transport([]))
+    job = RenderJob(
+        job_id="v", shot_id="s", status=JobStatus.SUCCEEDED, video_url="https://cdn.example.com/a.mp4"
+    )
+    client.fetch(job, str(tmp_path / "o.mp4"))
+
+    assert seen["auth"] is None
