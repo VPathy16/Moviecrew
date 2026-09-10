@@ -34,8 +34,22 @@ Then open http://127.0.0.1:8000.
 | variable | what it does |
 | --- | --- |
 | `MOVIECREW_TAKES_ROOT` | where Blender writes takes and renders are stored. Server-side only — a browser cannot redirect it. |
-| `OPENROUTER_API_KEY` | opts into real generation. Without it the portal uses `FakeRenderClient` and spends nothing. |
+| `OPENROUTER_API_KEY` | opts every stage into live models — agents, storyboard stills, and renders. Without it the portal runs `MockLLMClient`, `MockImageProvider` and `FakeRenderClient`, and spends nothing. |
 | `MOVIECREW_PUBLIC_BASE_URL` | an address a provider can fetch takes from. Required for models that drive motion from a video, because a provider cannot reach your loopback address. |
+| `ANTHROPIC_API_KEY` | only for the direct-to-Anthropic LLM backend (`--backend anthropic`), which bypasses OpenRouter. |
+
+## Models
+
+One key covers all three stages:
+
+| stage | default model | why |
+| --- | --- | --- |
+| agents (concept → plan → prompts) | `anthropic/claude-sonnet-5` | one model across all seven agents keeps a project's voice consistent and the price predictable |
+| storyboard stills | `google/gemini-2.5-flash-image` | returns images through the same chat-completions endpoint |
+| renders | `bytedance/seedance-2.5` | accepts a previz take as a driving video reference |
+
+The direct-to-Anthropic backend (`--backend anthropic`) routes per task
+instead — Opus for the director and continuity passes, Haiku for the editor.
 
 Renders land in `<takes root>/<scene>/<shot>/renders/<job id>.mp4`. They are
 downloaded rather than linked: a provider URL expires, and the render cost

@@ -589,7 +589,12 @@ async function loadHealth() {
   try {
     const res = await fetch("/api/health");
     const data = await res.json();
-    backendSelect.innerHTML = data.backends.map(b => `<option value="${b}">${b}</option>`).join("");
+    // Preselect whatever the server can actually run: openrouter once a key
+    // is set, mock otherwise. Offering a backend with no credentials as the
+    // default just produces a 502 on the first click.
+    backendSelect.innerHTML = data.backends
+      .map(b => `<option value="${b}"${b === data.default_backend ? " selected" : ""}>${b}</option>`)
+      .join("");
     detailSelect.innerHTML = data.detail_levels.map(d =>
       `<option value="${d}"${d === "cinematic" ? " selected" : ""}>${d}</option>`
     ).join("");

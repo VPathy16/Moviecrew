@@ -19,10 +19,16 @@ RENDERS path (GET /api/renders, GET /api/renders/.../video): the other half
 of the gallery — what came back from the model, grouped by shot beside the
 takes that drove it, served locally and downloadable.
 
-API keys (GEMINI_API_KEY / ANTHROPIC_API_KEY) are read server-side from the
-process environment only — no request or response here ever carries one. The
-takes root is likewise server-side config ($MOVIECREW_TAKES_ROOT): a browser
-cannot point this process at an arbitrary directory.
+One key runs all three stages: $OPENROUTER_API_KEY covers the agents, the
+storyboard stills, and the generative renders. Setting it switches the
+defaults from mock to live; without it every stage stays offline and free.
+$ANTHROPIC_API_KEY still drives the direct-to-Anthropic backend for anyone
+who prefers it.
+
+Keys are read server-side from the process environment only — no request or
+response here ever carries one. The takes root is likewise server-side
+config ($MOVIECREW_TAKES_ROOT): a browser cannot point this process at an
+arbitrary directory.
 """
 
 from __future__ import annotations
@@ -51,7 +57,7 @@ from ..studio import Stage, StudioSession
 from ..render import FakeRenderClient, JobStatus, ShotSpec
 from ..takes import list_takes, resolve_video, save_take, shot_dir
 
-_BACKENDS = ("mock", "anthropic")
+_BACKENDS = ("mock", "openrouter", "anthropic")
 _STATIC_DIR = Path(__file__).parent / "static"
 
 # Where Blender writes takes. Server-side only, deliberately: a request-supplied
@@ -80,9 +86,7 @@ _render_jobs: dict[str, dict] = {}
 # kept per key rather than rebuilt per request.
 _render_clients: dict[str, object] = {}
 
-# Module-level image provider: MockImageProvider for offline demos.
-# Swap for a real provider (Imagen, SD, …) when one lands.
-_image_provider: ImageProvider = MockImageProvider()
+_DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 
 # In-memory session store keyed by session_id.
 _sessions: dict[str, StudioSession] = {}
@@ -96,11 +100,42 @@ _sessions: dict[str, StudioSession] = {}
 def _build_llm(backend: str) -> LLMClient:
     if backend == "mock":
         return MockLLMClient()
+    if backend == "openrouter":
+        from ..llm_openrouter import OpenRouterLLMClient
+
+        return OpenRouterLLMClient()
     if backend == "anthropic":
         from ..llm import AnthropicLLMClient
 
         return AnthropicLLMClient()
     raise ValueError(f"unknown backend: {backend!r} (must be one of {_BACKENDS})")
+
+
+def _default_backend() -> str:
+    """`openrouter` once a key is present, so the portal opens ready to run.
+
+    Without one it stays on `mock`, which needs no key and no network — the
+    portal must be useful before anyone has paid for anything.
+    """
+    return "openrouter" if os.environ.get(_OPENROUTER_KEY_ENV) else "mock"
+
+
+def _build_image_provider() -> ImageProvider:
+    """A real still generator when there's a key, the mock otherwise.
+
+    Resolved per session rather than held at import, so setting the key and
+    restarting is all it takes — and so the tests can swap it per test.
+    """
+    if not os.environ.get(_OPENROUTER_KEY_ENV):
+        return MockImageProvider()
+    try:
+        from ..image_openrouter import OpenRouterImageProvider
+
+        return OpenRouterImageProvider(model=_DEFAULT_IMAGE_MODEL)
+    except Exception:
+        # A storyboard that falls back to stubs is worth far more than a
+        # plan endpoint that 502s: the shots and prompts are the payload.
+        return MockImageProvider()
 
 
 def _error(status_code: int, message: str) -> JSONResponse:
@@ -381,7 +416,7 @@ def _find_take(scene_id: str, shot_id: str, take_number: int):
 
 class PlanRequest(BaseModel):
     concept: str
-    backend: str = "mock"
+    backend: str = ""
     detail: str = "cinematic"
     reference_dir: Optional[str] = None
 
@@ -425,6 +460,7 @@ def health() -> dict:
     return {
         "ok": True,
         "backends": list(_BACKENDS),
+        "default_backend": _default_backend(),
         "detail_levels": sorted(DETAIL_LEVELS),
         "takes_root": str(root),
         "takes_root_exists": root.is_dir(),
@@ -613,17 +649,18 @@ def take_video(scene_id: str, shot_id: str, take_number: int):
 
 @app.post("/api/plan")
 def plan(req: PlanRequest):
-    if req.backend not in _BACKENDS:
-        return _error(400, f"unknown backend: {req.backend!r} (must be one of {_BACKENDS})")
+    backend = req.backend or _default_backend()
+    if backend not in _BACKENDS:
+        return _error(400, f"unknown backend: {backend!r} (must be one of {_BACKENDS})")
     if req.detail not in DETAIL_LEVELS:
         return _error(
             400, f"unknown detail level: {req.detail!r} (must be one of {sorted(DETAIL_LEVELS)})"
         )
 
     try:
-        llm = _build_llm(req.backend)
+        llm = _build_llm(backend)
     except Exception as exc:
-        return _error(502, f"could not start the {req.backend} backend: {exc}")
+        return _error(502, f"could not start the {backend} backend: {exc}")
 
     reference_provider: Optional[ReferenceImageProvider] = (
         FileReferenceImageProvider(req.reference_dir) if req.reference_dir else None
@@ -644,7 +681,7 @@ def plan(req: PlanRequest):
         stage=Stage.SHOT_DEFS,
         project=project,
         session_dir=session_dir,
-        image_provider=_image_provider,
+        image_provider=_build_image_provider(),
     )
     _sessions[session_id] = session
 
