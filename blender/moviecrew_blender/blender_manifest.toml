@@ -1,0 +1,23 @@
+schema_version = "1.0.0"
+
+id = "moviecrew"
+version = "0.1.0"
+name = "MovieCrew"
+tagline = "Block and render previz takes for MovieCrew shots"
+maintainer = "MovieCrew"
+type = "add-on"
+
+website = "https://github.com/VPathy16/Moviecrew"
+
+tags = ["Render", "Animation", "Camera"]
+
+blender_version_min = "4.2.0"
+
+# MIT is GPL-compatible, so the extension keeps the repository's own licence
+# rather than introducing a second one.
+license = ["SPDX:MIT"]
+
+# No `wheels` entry, deliberately. MovieCrew's core is stdlib-only, so nothing
+# has to be installed into Blender's bundled Python — the add-on reaches the
+# package through a path preference instead. Keep it that way: adding a
+# dependency here means shipping per-platform wheels.
