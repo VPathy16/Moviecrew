@@ -264,3 +264,92 @@ def test_every_icon_goes_through_the_guard():
     assert not offenders, "icon literals must be wrapped in _icon():\n" + "\n".join(
         offenders
     )
+
+
+# ---------------------------------------------------------------------- #
+# configure_video_render — Blender 4.x vs 5.x                             #
+# ---------------------------------------------------------------------- #
+
+
+class _FakeImageSettings:
+    """Mimics ImageFormatSettings, including Blender 5's ordering rule.
+
+    In Blender 5.0 `file_format` lists still-image formats only; FFMPEG is
+    reachable just once `media_type` is VIDEO. Assigning it too early raises
+    TypeError, exactly as Blender does.
+    """
+
+    def __init__(self, *, has_media_type: bool):
+        object.__setattr__(self, "has_media_type", has_media_type)
+        object.__setattr__(self, "log", [])
+        if has_media_type:
+            object.__setattr__(self, "media_type", "IMAGE")
+        object.__setattr__(self, "file_format", "PNG")
+
+    def __setattr__(self, name, value):
+        if (
+            name == "file_format"
+            and value == "FFMPEG"
+            and self.has_media_type
+            and getattr(self, "media_type", None) != "VIDEO"
+        ):
+            raise TypeError(
+                'bpy_struct: item.attr = val: enum "FFMPEG" not found in '
+                "('AVIF', 'JPEG', 'PNG', ...)"
+            )
+        self.log.append(name)
+        object.__setattr__(self, name, value)
+
+
+class _FakeScene:
+    def __init__(self, *, has_media_type: bool):
+        self.frame_start = 0
+        self.frame_end = 0
+        self.render = type(
+            "R",
+            (),
+            {
+                "image_settings": _FakeImageSettings(has_media_type=has_media_type),
+                "ffmpeg": type("F", (), {})(),
+                "fps": 0,
+                "filepath": "",
+            },
+        )()
+
+
+def _blocking(bridge, tmp_path):
+    from moviecrew.blocking import block_shot
+
+    return block_shot(bridge._ShotView({"id": "s1", "duration_s": 8}), fps=24)
+
+
+def test_configure_video_render_sets_media_type_before_format_on_blender_5(
+    bridge, tmp_path
+):
+    """Regression: Blender 5.0 rejects FFMPEG until media_type is VIDEO."""
+    scene = _FakeScene(has_media_type=True)
+    bridge.configure_video_render(scene, str(tmp_path / "take_001"), _blocking(bridge, tmp_path))
+
+    settings = scene.render.image_settings
+    assert settings.media_type == "VIDEO"
+    assert settings.file_format == "FFMPEG"
+    assert settings.log.index("media_type") < settings.log.index("file_format")
+
+
+def test_configure_video_render_still_works_on_blender_4(bridge, tmp_path):
+    """Older Blender has no media_type and takes FFMPEG directly."""
+    scene = _FakeScene(has_media_type=False)
+    bridge.configure_video_render(scene, str(tmp_path / "take_001"), _blocking(bridge, tmp_path))
+
+    settings = scene.render.image_settings
+    assert settings.file_format == "FFMPEG"
+    assert not hasattr(settings, "media_type")
+
+
+def test_configure_video_render_carries_the_frame_range(bridge, tmp_path):
+    scene = _FakeScene(has_media_type=True)
+    blocking = _blocking(bridge, tmp_path)
+    bridge.configure_video_render(scene, str(tmp_path / "take_001"), blocking)
+
+    assert (scene.frame_start, scene.frame_end) == (1, 192)
+    assert scene.render.fps == 24

@@ -151,9 +151,19 @@ def apply_blocking(camera: Any, blocking: Any, scene: Any) -> None:
 
 
 def configure_video_render(scene: Any, output_prefix: str, blocking: Any) -> None:
-    """Point the scene at an H.264 MP4 covering the shot's frame range."""
+    """Point the scene at an H.264 MP4 covering the shot's frame range.
+
+    Blender 5.0 split media type out of the format enum: `file_format` now
+    lists still-image formats only, and FFMPEG is reachable only after
+    `media_type` is set to VIDEO. Older Blender has no `media_type` at all
+    and takes FFMPEG directly, so the attribute is set when present rather
+    than branching on a version number.
+    """
     render = scene.render
-    render.image_settings.file_format = "FFMPEG"
+    settings = render.image_settings
+    if hasattr(settings, "media_type"):
+        settings.media_type = "VIDEO"
+    settings.file_format = "FFMPEG"
     render.ffmpeg.format = "MPEG4"
     render.ffmpeg.codec = "H264"
     render.ffmpeg.constant_rate_factor = "MEDIUM"
