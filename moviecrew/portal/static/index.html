@@ -171,6 +171,39 @@
   .sb-approve-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
   .sb-approve-row button { margin-top: 0; }
   .sb-status { font-size: 0.82rem; color: var(--muted); }
+  /* ---- Takes gallery ---- */
+  .tk-shot { margin-bottom: 1.4rem; }
+  .tk-shot-id { font-weight: 600; color: var(--accent); font-size: 0.9rem; margin-bottom: 0.5rem; }
+  .tk-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 1rem;
+  }
+  .tk-take {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: border-color 0.12s;
+  }
+  .tk-take:hover { border-color: var(--muted); }
+  .tk-take.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .tk-take.no-video { opacity: 0.55; cursor: default; }
+  .tk-take video { width: 100%; aspect-ratio: 16/9; background: #111; display: block; }
+  .tk-missing {
+    aspect-ratio: 16/9; display: flex; align-items: center; justify-content: center;
+    background: #1a1a1a; color: var(--muted); font-size: 0.8rem; text-align: center; padding: 1rem;
+  }
+  .tk-meta { padding: 0.55rem 0.7rem; }
+  .tk-row { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+  .tk-num { font-weight: 600; font-size: 0.85rem; }
+  .tk-mark { font-size: 0.78rem; color: var(--accent); }
+  .tk-sub { font-size: 0.75rem; color: var(--muted); margin-top: 0.2rem; line-height: 1.45; }
+  .tk-empty { font-size: 0.85rem; color: var(--muted); }
+  .tk-empty code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; }
+  .tk-bar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
+  .tk-bar button { margin-top: 0; }
 </style>
 </head>
 <body>
@@ -219,6 +252,19 @@
       <span class="sb-status" id="sb-status"></span>
     </div>
   </section>
+
+  <!-- Takes gallery -->
+  <section id="takes-section" class="panel">
+    <label>Takes</label>
+    <div class="storyboard-note">
+      Previz clips rendered from Blender, newest take last. Pick the one to send to a model.
+    </div>
+    <div class="tk-bar">
+      <button id="tk-refresh-btn" class="secondary">Refresh Takes</button>
+      <span class="sb-status" id="tk-status"></span>
+    </div>
+    <div id="tk-list"></div>
+  </section>
 </main>
 
 <script>
@@ -233,8 +279,141 @@ const sbApproveBtn = document.getElementById("sb-approve-btn");
 const sbStatus = document.getElementById("sb-status");
 const sbGenerateBtn = document.getElementById("sb-generate-btn");
 
+const takesSection = document.getElementById("takes-section");
+const tkList = document.getElementById("tk-list");
+const tkStatus = document.getElementById("tk-status");
+const tkRefreshBtn = document.getElementById("tk-refresh-btn");
+
 let _sessionId = null;
 let _project = null;
+// Selection is deliberately client-side: it means nothing until a take is
+// sent to a model, and that call carries the take id explicitly.
+let _selectedTakeId = null;
+
+function selectedTakeId() {
+  return _selectedTakeId;
+}
+
+function renderTakes(data) {
+  tkList.innerHTML = "";
+  const shots = data.shots || {};
+  const shotIds = Object.keys(shots).sort();
+
+  if (!shotIds.length) {
+    const empty = document.createElement("div");
+    empty.className = "tk-empty";
+    empty.innerHTML = data.takes_root_exists
+      ? `No takes yet in <code>${data.takes_root}</code>. Render one from the Blender add-on.`
+      : `Takes folder <code>${data.takes_root}</code> does not exist. Set <code>MOVIECREW_TAKES_ROOT</code> or render a take from Blender.`;
+    tkList.appendChild(empty);
+    tkStatus.textContent = "";
+    return;
+  }
+
+  for (const shotId of shotIds) {
+    const takes = shots[shotId];
+    const wrap = document.createElement("div");
+    wrap.className = "tk-shot";
+
+    const heading = document.createElement("div");
+    heading.className = "tk-shot-id";
+    heading.textContent = `${shotId} — ${takes.length} take${takes.length === 1 ? "" : "s"}`;
+    wrap.appendChild(heading);
+
+    const grid = document.createElement("div");
+    grid.className = "tk-grid";
+    for (const take of takes) grid.appendChild(takeCard(take));
+    wrap.appendChild(grid);
+    tkList.appendChild(wrap);
+  }
+
+  const total = data.take_count;
+  tkStatus.textContent = `${total} take${total === 1 ? "" : "s"} in ${data.takes_root}`;
+}
+
+function takeCard(take) {
+  const card = document.createElement("div");
+  card.className = "tk-take" + (take.has_video ? "" : " no-video");
+  card.dataset.takeId = take.take_id;
+
+  if (take.has_video) {
+    const video = document.createElement("video");
+    video.src = take.video_url;
+    video.controls = true;
+    video.preload = "metadata";
+    video.playsInline = true;
+    card.appendChild(video);
+  } else {
+    const missing = document.createElement("div");
+    missing.className = "tk-missing";
+    missing.textContent = "No video file — the render may have failed";
+    card.appendChild(missing);
+  }
+
+  const meta = document.createElement("div");
+  meta.className = "tk-meta";
+
+  const row = document.createElement("div");
+  row.className = "tk-row";
+  const num = document.createElement("span");
+  num.className = "tk-num";
+  num.textContent = `Take ${String(take.take_number).padStart(3, "0")}`;
+  const mark = document.createElement("span");
+  mark.className = "tk-mark";
+  mark.textContent = take.take_id === _selectedTakeId ? "✓ selected" : "";
+  row.append(num, mark);
+  meta.appendChild(row);
+
+  const sub = document.createElement("div");
+  sub.className = "tk-sub";
+  const bits = [take.camera_move, take.lens, take.framing].filter(Boolean);
+  sub.textContent =
+    bits.join(" · ") +
+    `\n${take.duration_s}s · ${take.fps}fps · ${take.resolution || "?"} · ${take.blocked_by}`;
+  sub.style.whiteSpace = "pre-line";
+  meta.appendChild(sub);
+
+  card.appendChild(meta);
+
+  if (take.has_video) {
+    card.addEventListener("click", (event) => {
+      // Let the player's own controls work without hijacking the click.
+      if (event.target.tagName === "VIDEO") return;
+      selectTake(take.take_id);
+    });
+  }
+  if (take.take_id === _selectedTakeId) card.classList.add("selected");
+  return card;
+}
+
+function selectTake(takeId) {
+  _selectedTakeId = _selectedTakeId === takeId ? null : takeId;
+  for (const card of tkList.querySelectorAll(".tk-take")) {
+    const isSelected = card.dataset.takeId === _selectedTakeId;
+    card.classList.toggle("selected", isSelected);
+    const mark = card.querySelector(".tk-mark");
+    if (mark) mark.textContent = isSelected ? "✓ selected" : "";
+  }
+}
+
+async function loadTakes() {
+  clearError();
+  tkStatus.textContent = "Loading…";
+  try {
+    const res = await fetch("/api/takes");
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || "Could not load takes.");
+      tkStatus.textContent = "";
+      return;
+    }
+    takesSection.style.display = "block";
+    renderTakes(data);
+  } catch (err) {
+    showError(`Could not load takes: ${err}`);
+    tkStatus.textContent = "";
+  }
+}
 
 function showError(message) {
   errorPanel.textContent = message;
@@ -505,10 +684,12 @@ async function redoFrame(shotId, card) {
   }
 }
 
+tkRefreshBtn.addEventListener("click", loadTakes);
 generateBtn.addEventListener("click", generate);
 sbGenerateBtn.addEventListener("click", generateStoryboard);
 sbApproveBtn.addEventListener("click", approveBoard);
 loadHealth();
+loadTakes();
 </script>
 </body>
 </html>

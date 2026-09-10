@@ -7,12 +7,19 @@ STORYBOARD path (POST /api/storyboard / /approve / /regenerate): generates
 one still image per shot for human review, then on approval promotes each
 anchored shot's board image to its reference_image_ids.
 
+TAKES path (GET /api/takes, GET /api/takes/.../video): lists the previz
+clips Blender rendered per shot and serves them for review, so every take of
+a shot can be compared side by side before one is chosen.
+
 API keys (GEMINI_API_KEY / ANTHROPIC_API_KEY) are read server-side from the
-process environment only — no request or response here ever carries one.
+process environment only — no request or response here ever carries one. The
+takes root is likewise server-side config ($MOVIECREW_TAKES_ROOT): a browser
+cannot point this process at an arbitrary directory.
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
 import uuid
 from dataclasses import asdict
@@ -31,9 +38,15 @@ from ..llm import LLMClient
 from ..mock import MockLLMClient
 from ..reference import FileReferenceImageProvider, ReferenceImageProvider
 from ..studio import Stage, StudioSession
+from ..takes import list_takes, resolve_video
 
 _BACKENDS = ("mock", "anthropic")
 _STATIC_DIR = Path(__file__).parent / "static"
+
+# Where Blender writes takes. Server-side only, deliberately: a request-supplied
+# path would let any page this portal serves read arbitrary directories.
+_TAKES_ROOT_ENV = "MOVIECREW_TAKES_ROOT"
+_DEFAULT_TAKES_ROOT = "takes"
 
 # Module-level image provider: MockImageProvider for offline demos.
 # Swap for a real provider (Imagen, SD, …) when one lands.
@@ -82,6 +95,66 @@ def _frame_to_dict(session_id: str, frame) -> dict:
     }
 
 
+def _takes_root() -> Path:
+    return Path(os.environ.get(_TAKES_ROOT_ENV, _DEFAULT_TAKES_ROOT)).expanduser()
+
+
+def _take_to_dict(take, root: Path) -> dict:
+    video = resolve_video(take, root)
+    return {
+        "take_id": take.take_id,
+        "scene_id": take.scene_id,
+        "shot_id": take.shot_id,
+        "take_number": take.take_number,
+        "video_url": (
+            f"/api/takes/{take.scene_id}/{take.shot_id}/{take.take_number}/video"
+        ),
+        "has_video": video.is_file(),
+        "duration_s": take.duration_s,
+        "camera_move": take.camera_move,
+        "lens": take.lens,
+        "framing": take.framing,
+        "resolution": take.resolution,
+        "fps": take.fps,
+        "blocked_by": take.blocked_by,
+        "created_at": take.created_at,
+        "media_id": take.media_id,
+    }
+
+
+def _video_path_or_error(scene_id: str, shot_id: str, take_number: int):
+    """Locate a take's clip, refusing anything outside the takes root.
+
+    The path is never assembled from the URL. The take is found among the
+    records actually on disk, and the video it points at must still resolve
+    inside the root — so neither a traversal in the URL nor a doctored
+    `video_path` in a record can reach an unrelated file.
+    """
+    root = _takes_root()
+    take = next(
+        (
+            t
+            for t in list_takes(root, scene_id=scene_id, shot_id=shot_id)
+            if t.take_number == take_number
+        ),
+        None,
+    )
+    if take is None:
+        return None, _error(404, f"take {shot_id}#{take_number} not found")
+
+    try:
+        resolved = resolve_video(take, root).resolve()
+        root_resolved = root.resolve()
+    except OSError as exc:
+        return None, _error(500, f"could not resolve take video: {exc}")
+
+    if not resolved.is_relative_to(root_resolved):
+        return None, _error(403, "take video resolves outside the takes root")
+    if not resolved.is_file():
+        return None, _error(404, f"take {take.take_id} has no video file yet")
+    return resolved, None
+
+
 # ---------------------------------------------------------------------- #
 # Request models                                                          #
 # ---------------------------------------------------------------------- #
@@ -119,7 +192,49 @@ app.add_middleware(
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "backends": list(_BACKENDS), "detail_levels": sorted(DETAIL_LEVELS)}
+    root = _takes_root()
+    return {
+        "ok": True,
+        "backends": list(_BACKENDS),
+        "detail_levels": sorted(DETAIL_LEVELS),
+        "takes_root": str(root),
+        "takes_root_exists": root.is_dir(),
+    }
+
+
+@app.get("/api/takes")
+def takes(scene_id: Optional[str] = None, shot_id: Optional[str] = None):
+    """Every take under the takes root, grouped by shot.
+
+    Grouped rather than flat because the gallery's unit is a shot: its takes
+    are what a reviewer compares against each other.
+    """
+    root = _takes_root()
+    try:
+        found = list_takes(root, scene_id=scene_id, shot_id=shot_id)
+    except OSError as exc:
+        return _error(502, f"could not read takes root: {exc}")
+
+    shots: dict[str, list[dict]] = {}
+    for take in found:
+        shots.setdefault(take.shot_id, []).append(_take_to_dict(take, root))
+
+    return {
+        "takes_root": str(root),
+        "takes_root_exists": root.is_dir(),
+        "take_count": len(found),
+        "shots": shots,
+    }
+
+
+@app.get("/api/takes/{scene_id}/{shot_id}/{take_number}/video")
+def take_video(scene_id: str, shot_id: str, take_number: int):
+    path, err = _video_path_or_error(scene_id, shot_id, take_number)
+    if err:
+        return err
+    # FileResponse honours Range requests, so the player can seek without
+    # pulling the whole clip.
+    return FileResponse(path, media_type="video/mp4")
 
 
 @app.post("/api/plan")
