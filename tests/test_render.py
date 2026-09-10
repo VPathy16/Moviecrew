@@ -209,6 +209,75 @@ def test_capabilities_are_conservative_for_an_unknown_model():
     assert caps.supports_video_reference is False
 
 
+# The field names OpenRouter's /videos/models actually returns, captured
+# verbatim from a live call. The fixture above uses plausible-looking names
+# that the service does not use — which is exactly how the capability reader
+# came to miss every field while its tests stayed green.
+_MODELS_LIVE = {
+    "data": [
+        {
+            "id": "bytedance/seedance-2.5",
+            "supported_frame_images": ["first_frame", "last_frame"],
+            "pricing_skus": {
+                "video_tokens": "0.0000107",
+                "video_tokens_with_video_input": "0.0000064",
+            },
+            "allowed_passthrough_parameters": ["watermark", "req_key", "output_format"],
+        }
+    ]
+}
+
+
+def test_frame_image_support_read_from_the_real_field_name():
+    """`supported_frame_images`, not `supports_frame_images`."""
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS_LIVE]))
+    caps = client.capabilities("bytedance/seedance-2.5")
+    assert caps.supports_first_last_frame is True
+
+
+def test_video_reference_inferred_from_the_billing_sku():
+    """Nothing in the catalogue flags video input; the SKU that prices it does.
+
+    A model billing `video_tokens_with_video_input` accepts a driving video,
+    and this is the only signal the catalogue gives.
+    """
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS_LIVE]))
+    caps = client.capabilities("bytedance/seedance-2.5")
+    assert caps.supports_video_reference is True
+    assert caps.max_video_references == 1
+
+
+def test_no_video_input_sku_means_no_video_reference():
+    catalogue = {
+        "data": [{"id": "someone/stills-only", "pricing_skus": {"video_tokens": "0.00001"}}]
+    }
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([catalogue]))
+    caps = client.capabilities("someone/stills-only")
+    assert caps.supports_video_reference is False
+
+
+def test_cost_comes_from_pricing_skus_with_a_per_token_unit():
+    """A SKU is per video token; reporting it as per clip would be wrong by
+    four orders of magnitude."""
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS_LIVE]))
+    caps = client.capabilities("bytedance/seedance-2.5")
+    assert caps.cost_model.amount == pytest.approx(0.0000107)
+    assert caps.cost_model.unit == "usd_per_video_token"
+
+
+def test_legacy_pricing_keeps_its_own_unit():
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS]))
+    caps = client.capabilities("bytedance/seedance-2.5")
+    assert caps.cost_model.amount == 0.5
+    assert caps.cost_model.unit == "usd"
+
+
+def test_empty_frame_image_list_is_not_support():
+    catalogue = {"data": [{"id": "m", "supported_frame_images": []}]}
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([catalogue]))
+    assert client.capabilities("m").supports_first_last_frame is False
+
+
 def test_model_catalogue_is_fetched_once():
     transport = _transport([_MODELS, _MODELS])
     client = OpenRouterRenderClient(api_key="k", transport=transport)

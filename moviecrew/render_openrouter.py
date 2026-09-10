@@ -40,6 +40,15 @@ API_ROOT = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "bytedance/seedance-2.5"
 API_KEY_ENV = "OPENROUTER_API_KEY"
 
+# Keys inside a catalogue entry's `pricing_skus`. The second one is how a
+# model declares it accepts a driving video: there is no separate flag, but a
+# model that prices video input takes video input.
+VIDEO_SKU = "video_tokens"
+VIDEO_INPUT_SKU = "video_tokens_with_video_input"
+
+COST_UNIT_VIDEO_TOKEN = "usd_per_video_token"
+COST_UNIT_CLIP = "usd"
+
 # OpenRouter reports many status spellings; anything unrecognised is treated
 # as still running rather than as success, so a caller never downloads a
 # half-finished render.
@@ -189,6 +198,15 @@ class OpenRouterRenderClient(RenderClient):
     def capabilities(self, model: Optional[str] = None) -> RenderCapabilities:
         """Read a model's real limits from the catalogue.
 
+        The field names here are the ones `/videos/models` actually returns —
+        `supported_frame_images`, `pricing_skus` — not the plausible-looking
+        names this once guessed at. Guessing was not a harmless slip: every
+        lookup missed, so `supports_first_last_frame` was False for every
+        model on the service, the cost model was always zero, and callers
+        branching on capabilities could never reach the paths those models
+        do support. The older names are still accepted so a differently
+        shaped catalogue does not regress.
+
         Falls back to conservative values when the catalogue is unreachable
         or silent about a field — under-promising costs a shorter clip,
         over-promising costs a rejected request after the user has waited.
@@ -207,27 +225,46 @@ class OpenRouterRenderClient(RenderClient):
             for r in (entry.get("supported_aspect_ratios") or entry.get("aspect_ratios") or ())
         )
 
+        skus = entry.get("pricing_skus") or {}
+
+        # Nothing in the catalogue says "this model takes a video". The
+        # billing SKUs do: a model priced for video input accepts video
+        # input, and one that never bills for it does not.
         max_videos = int(entry.get("max_video_references") or 0)
-        # The catalogue does not always spell this out; a model advertising
-        # video references at all is assumed to take at least one.
-        if not max_videos and entry.get("supports_video_reference"):
+        if not max_videos and (
+            VIDEO_INPUT_SKU in skus or entry.get("supports_video_reference")
+        ):
             max_videos = 1
 
+        # `supported_frame_images` is a list of the positions a model accepts
+        # (["first_frame", "last_frame"]), so its emptiness is the flag.
+        frame_images = entry.get("supported_frame_images")
+        if frame_images is None:
+            frame_images = entry.get("supports_frame_images", entry.get("frame_images"))
+
+        # The unit follows the source, because these are not the same thing:
+        # a pricing SKU is per video token, the legacy field was per clip or
+        # per second. Reporting one as the other would make an estimate wrong
+        # by four orders of magnitude.
         pricing = entry.get("pricing") or {}
-        amount = pricing.get("video") or pricing.get("per_second") or 0
+        legacy = pricing.get("video") or pricing.get("per_second")
+        if skus.get(VIDEO_SKU):
+            amount, unit = float(skus[VIDEO_SKU]), COST_UNIT_VIDEO_TOKEN
+        elif legacy:
+            amount, unit = float(legacy), COST_UNIT_CLIP
+        else:
+            amount, unit = 0.0, COST_UNIT_CLIP
 
         return RenderCapabilities(
             max_duration_s=max_duration,
             supported_resolutions=resolutions,
             supported_aspect_ratios=ratios,
-            supports_first_last_frame=bool(
-                entry.get("supports_frame_images", entry.get("frame_images", False))
-            ),
+            supports_first_last_frame=bool(frame_images),
             supports_video_reference=max_videos > 0,
             max_video_references=max_videos,
             max_image_references=int(entry.get("max_image_references") or 0),
             supports_audio=bool(entry.get("supports_audio", False)),
-            cost_model=CostModel(unit="usd", amount=float(amount or 0)),
+            cost_model=CostModel(unit=unit, amount=amount),
         )
 
     # ------------------------------------------------------------------ #
