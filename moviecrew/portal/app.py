@@ -11,18 +11,34 @@ TAKES path (GET /api/takes, GET /api/takes/.../video): lists the previz
 clips Blender rendered per shot and serves them for review, so every take of
 a shot can be compared side by side before one is chosen.
 
-API keys (GEMINI_API_KEY / ANTHROPIC_API_KEY) are read server-side from the
-process environment only — no request or response here ever carries one. The
-takes root is likewise server-side config ($MOVIECREW_TAKES_ROOT): a browser
-cannot point this process at an arbitrary directory.
+RENDER path (POST /api/render, GET /api/render/{job}): submits a chosen take
+to a generative backend and polls it, downloading the finished clip into the
+takes tree so the only copy does not live on a URL that expires.
+
+RENDERS path (GET /api/renders, GET /api/renders/.../video): the other half
+of the gallery — what came back from the model, grouped by shot beside the
+takes that drove it, served locally and downloadable.
+
+One key runs all three stages: $OPENROUTER_API_KEY covers the agents, the
+storyboard stills, and the generative renders. Setting it switches the
+defaults from mock to live; without it every stage stays offline and free.
+$ANTHROPIC_API_KEY still drives the direct-to-Anthropic backend for anyone
+who prefers it.
+
+Keys are read server-side from the process environment only — no request or
+response here ever carries one. The takes root is likewise server-side
+config ($MOVIECREW_TAKES_ROOT): a browser cannot point this process at an
+arbitrary directory.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 import uuid
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -39,9 +55,9 @@ from ..mock import MockLLMClient
 from ..reference import FileReferenceImageProvider, ReferenceImageProvider
 from ..studio import Stage, StudioSession
 from ..render import FakeRenderClient, JobStatus, ShotSpec
-from ..takes import list_takes, resolve_video, save_take
+from ..takes import list_takes, resolve_video, save_take, shot_dir
 
-_BACKENDS = ("mock", "anthropic")
+_BACKENDS = ("mock", "openrouter", "anthropic")
 _STATIC_DIR = Path(__file__).parent / "static"
 
 # Where Blender writes takes. Server-side only, deliberately: a request-supplied
@@ -59,6 +75,10 @@ _LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1")
 _OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 _DEFAULT_RENDER_MODEL = "bytedance/seedance-2.5"
 
+# A provider's job id becomes a filename, so it is held to an id shape before
+# it is ever joined to a path.
+_JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+
 # Submitted renders, keyed by job id, so a browser can poll one.
 _render_jobs: dict[str, dict] = {}
 
@@ -66,9 +86,7 @@ _render_jobs: dict[str, dict] = {}
 # kept per key rather than rebuilt per request.
 _render_clients: dict[str, object] = {}
 
-# Module-level image provider: MockImageProvider for offline demos.
-# Swap for a real provider (Imagen, SD, …) when one lands.
-_image_provider: ImageProvider = MockImageProvider()
+_DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 
 # In-memory session store keyed by session_id.
 _sessions: dict[str, StudioSession] = {}
@@ -82,11 +100,42 @@ _sessions: dict[str, StudioSession] = {}
 def _build_llm(backend: str) -> LLMClient:
     if backend == "mock":
         return MockLLMClient()
+    if backend == "openrouter":
+        from ..llm_openrouter import OpenRouterLLMClient
+
+        return OpenRouterLLMClient()
     if backend == "anthropic":
         from ..llm import AnthropicLLMClient
 
         return AnthropicLLMClient()
     raise ValueError(f"unknown backend: {backend!r} (must be one of {_BACKENDS})")
+
+
+def _default_backend() -> str:
+    """`openrouter` once a key is present, so the portal opens ready to run.
+
+    Without one it stays on `mock`, which needs no key and no network — the
+    portal must be useful before anyone has paid for anything.
+    """
+    return "openrouter" if os.environ.get(_OPENROUTER_KEY_ENV) else "mock"
+
+
+def _build_image_provider() -> ImageProvider:
+    """A real still generator when there's a key, the mock otherwise.
+
+    Resolved per session rather than held at import, so setting the key and
+    restarting is all it takes — and so the tests can swap it per test.
+    """
+    if not os.environ.get(_OPENROUTER_KEY_ENV):
+        return MockImageProvider()
+    try:
+        from ..image_openrouter import OpenRouterImageProvider
+
+        return OpenRouterImageProvider(model=_DEFAULT_IMAGE_MODEL)
+    except Exception:
+        # A storyboard that falls back to stubs is worth far more than a
+        # plan endpoint that 502s: the shots and prompts are the payload.
+        return MockImageProvider()
 
 
 def _error(status_code: int, message: str) -> JSONResponse:
@@ -113,7 +162,21 @@ def _frame_to_dict(session_id: str, frame) -> dict:
     }
 
 
-def _job_to_dict(job, context: Optional[dict] = None) -> dict:
+def _render_url(scene_id: str, shot_id: str, job_id: str) -> str:
+    return f"/api/renders/{scene_id}/{shot_id}/{job_id}/video"
+
+
+def _job_to_dict(job, context: Optional[dict] = None, *, local_path: Optional[str] = None) -> dict:
+    context = context or {}
+    # `video_url` points at the provider and is useless to a browser: an
+    # OpenRouter result URL needs the API key as a bearer header, which a
+    # <video> tag cannot send, and it expires besides. Once the render is on
+    # disk the portal serves it itself, and that is what the player uses.
+    render_url = (
+        _render_url(context["scene_id"], context["shot_id"], job.job_id)
+        if local_path and context.get("scene_id") and context.get("shot_id")
+        else None
+    )
     return {
         "job_id": job.job_id,
         "shot_id": job.shot_id,
@@ -121,10 +184,12 @@ def _job_to_dict(job, context: Optional[dict] = None) -> dict:
         "backend": job.backend,
         "model": job.model,
         "video_url": job.video_url,
+        "render_url": render_url,
         "cost": job.cost,
         "error": job.error,
         "is_terminal": job.is_terminal,
-        "take_id": (context or {}).get("take_id"),
+        "take_id": context.get("take_id"),
+        "local_path": local_path,
     }
 
 
@@ -153,6 +218,99 @@ def _take_to_dict(take, root: Path) -> dict:
         "created_at": take.created_at,
         "media_id": take.media_id,
     }
+
+
+def render_path(root, scene_id: str, shot_id: str, job_id: str):
+    """Where a generated render is kept: beside the take that drove it."""
+    return shot_dir(root, scene_id, shot_id) / "renders" / f"{job_id}.mp4"
+
+
+def _store_render(client, job, take):
+    """Download a finished render into the takes tree, once.
+
+    Returns the local path, or None if it could not be saved. A download
+    failure is not fatal — the provider URL is still returned so the result
+    is not lost from view.
+    """
+    destination = render_path(_takes_root(), take.scene_id, take.shot_id, job.job_id)
+    if destination.is_file():
+        return str(destination)
+    try:
+        saved = client.fetch(job, str(destination))
+    except Exception:
+        return None
+    return saved
+
+
+def _render_to_dict(path: Path, take) -> dict:
+    job_id = path.stem
+    try:
+        stat = path.stat()
+        size, mtime = stat.st_size, stat.st_mtime
+    except OSError:
+        size, mtime = 0, 0.0
+    return {
+        "job_id": job_id,
+        "scene_id": take.scene_id,
+        "shot_id": take.shot_id,
+        "take_number": take.take_number,
+        "take_id": take.take_id,
+        "take_video_url": (
+            f"/api/takes/{take.scene_id}/{take.shot_id}/{take.take_number}/video"
+        ),
+        "video_url": _render_url(take.scene_id, take.shot_id, job_id),
+        "size_bytes": size,
+        "created_at": (
+            datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat() if mtime else ""
+        ),
+        "linked": job_id in take.renders,
+    }
+
+
+def _list_renders(root: Path, scene_id=None, shot_id=None) -> list[dict]:
+    """Every generated render on disk, newest first, tied to its take.
+
+    Driven by the files rather than by `take.renders`, for the same reason
+    `next_take_number` scans files: a render that finished while the portal
+    was restarting has no lineage recorded, and dropping it from the gallery
+    would hide something that cost real money. The record still supplies the
+    link, so an unlinked render is shown and flagged rather than lost.
+    """
+    out: list[dict] = []
+    for take in list_takes(root, scene_id=scene_id, shot_id=shot_id):
+        directory = shot_dir(root, take.scene_id, take.shot_id) / "renders"
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.glob("*.mp4")):
+            out.append(_render_to_dict(path, take))
+    out.sort(key=lambda r: r["created_at"], reverse=True)
+    return out
+
+
+def _render_path_or_error(scene_id: str, shot_id: str, job_id: str):
+    """Locate a stored render, refusing anything outside the takes root.
+
+    `job_id` arrives from the URL, so it is checked against the id shape
+    before it ever becomes a path segment, and the resolved file must still
+    land inside the root. Both, not either: the pattern stops traversal and
+    the containment check stops a symlink out.
+    """
+    if not _JOB_ID_RE.match(job_id):
+        return None, _error(400, f"malformed job id: {job_id!r}")
+
+    root = _takes_root()
+    path = render_path(root, scene_id, shot_id, job_id)
+    try:
+        resolved = path.resolve()
+        root_resolved = root.resolve()
+    except OSError as exc:
+        return None, _error(500, f"could not resolve render: {exc}")
+
+    if not resolved.is_relative_to(root_resolved):
+        return None, _error(403, "render resolves outside the takes root")
+    if not resolved.is_file():
+        return None, _error(404, f"no render {job_id} for {shot_id}")
+    return resolved, None
 
 
 def _video_path_or_error(scene_id: str, shot_id: str, take_number: int):
@@ -258,7 +416,7 @@ def _find_take(scene_id: str, shot_id: str, take_number: int):
 
 class PlanRequest(BaseModel):
     concept: str
-    backend: str = "mock"
+    backend: str = ""
     detail: str = "cinematic"
     reference_dir: Optional[str] = None
 
@@ -302,6 +460,7 @@ def health() -> dict:
     return {
         "ok": True,
         "backends": list(_BACKENDS),
+        "default_backend": _default_backend(),
         "detail_levels": sorted(DETAIL_LEVELS),
         "takes_root": str(root),
         "takes_root_exists": root.is_dir(),
@@ -331,6 +490,44 @@ def takes(scene_id: Optional[str] = None, shot_id: Optional[str] = None):
         "take_count": len(found),
         "shots": shots,
     }
+
+
+@app.get("/api/renders")
+def renders(scene_id: Optional[str] = None, shot_id: Optional[str] = None):
+    """Every generated render on disk, grouped by shot.
+
+    The other half of the takes gallery: takes are what you shot in Blender,
+    renders are what came back from the model, and both are per-shot so a
+    reviewer can put them side by side.
+    """
+    root = _takes_root()
+    try:
+        found = _list_renders(root, scene_id=scene_id, shot_id=shot_id)
+    except OSError as exc:
+        return _error(502, f"could not read takes root: {exc}")
+
+    shots: dict[str, list[dict]] = {}
+    for entry in found:
+        shots.setdefault(entry["shot_id"], []).append(entry)
+
+    return {
+        "takes_root": str(root),
+        "render_count": len(found),
+        "shots": shots,
+    }
+
+
+@app.get("/api/renders/{scene_id}/{shot_id}/{job_id}/video")
+def render_video(scene_id: str, shot_id: str, job_id: str, download: bool = False):
+    path, err = _render_path_or_error(scene_id, shot_id, job_id)
+    if err:
+        return err
+    headers = (
+        {"Content-Disposition": f'attachment; filename="{shot_id}_{job_id}.mp4"'}
+        if download
+        else None
+    )
+    return FileResponse(path, media_type="video/mp4", headers=headers)
 
 
 @app.get("/api/render/models")
@@ -421,19 +618,23 @@ def render_status(job_id: str):
     except Exception as exc:
         return _error(502, f"could not poll render: {exc}")
 
-    # Record the finished render against its take, so previz-to-final lineage
-    # survives this process.
+    # Download the finished render and record it against its take. A provider
+    # URL is temporary, and this render cost real money — leaving it to expire
+    # on someone else's server would lose the only copy.
     context = _render_jobs.get(job_id)
+    local_path = None
     if context and job.status is JobStatus.SUCCEEDED:
         take = _find_take(context["scene_id"], context["shot_id"], context["take_number"])
-        if take is not None and job_id not in take.renders:
-            take.renders.append(job_id)
-            try:
-                save_take(take, _takes_root())
-            except OSError:
-                pass  # the render still succeeded; lineage is best-effort
+        if take is not None:
+            local_path = _store_render(client, job, take)
+            if job_id not in take.renders:
+                take.renders.append(job_id)
+                try:
+                    save_take(take, _takes_root())
+                except OSError:
+                    pass  # the render succeeded; lineage is best-effort
 
-    return _job_to_dict(job, context)
+    return _job_to_dict(job, context, local_path=local_path)
 
 
 @app.get("/api/takes/{scene_id}/{shot_id}/{take_number}/video")
@@ -448,17 +649,18 @@ def take_video(scene_id: str, shot_id: str, take_number: int):
 
 @app.post("/api/plan")
 def plan(req: PlanRequest):
-    if req.backend not in _BACKENDS:
-        return _error(400, f"unknown backend: {req.backend!r} (must be one of {_BACKENDS})")
+    backend = req.backend or _default_backend()
+    if backend not in _BACKENDS:
+        return _error(400, f"unknown backend: {backend!r} (must be one of {_BACKENDS})")
     if req.detail not in DETAIL_LEVELS:
         return _error(
             400, f"unknown detail level: {req.detail!r} (must be one of {sorted(DETAIL_LEVELS)})"
         )
 
     try:
-        llm = _build_llm(req.backend)
+        llm = _build_llm(backend)
     except Exception as exc:
-        return _error(502, f"could not start the {req.backend} backend: {exc}")
+        return _error(502, f"could not start the {backend} backend: {exc}")
 
     reference_provider: Optional[ReferenceImageProvider] = (
         FileReferenceImageProvider(req.reference_dir) if req.reference_dir else None
@@ -479,7 +681,7 @@ def plan(req: PlanRequest):
         stage=Stage.SHOT_DEFS,
         project=project,
         session_dir=session_dir,
-        image_provider=_image_provider,
+        image_provider=_build_image_provider(),
     )
     _sessions[session_id] = session
 

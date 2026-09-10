@@ -209,6 +209,75 @@ def test_capabilities_are_conservative_for_an_unknown_model():
     assert caps.supports_video_reference is False
 
 
+# The field names OpenRouter's /videos/models actually returns, captured
+# verbatim from a live call. The fixture above uses plausible-looking names
+# that the service does not use — which is exactly how the capability reader
+# came to miss every field while its tests stayed green.
+_MODELS_LIVE = {
+    "data": [
+        {
+            "id": "bytedance/seedance-2.5",
+            "supported_frame_images": ["first_frame", "last_frame"],
+            "pricing_skus": {
+                "video_tokens": "0.0000107",
+                "video_tokens_with_video_input": "0.0000064",
+            },
+            "allowed_passthrough_parameters": ["watermark", "req_key", "output_format"],
+        }
+    ]
+}
+
+
+def test_frame_image_support_read_from_the_real_field_name():
+    """`supported_frame_images`, not `supports_frame_images`."""
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS_LIVE]))
+    caps = client.capabilities("bytedance/seedance-2.5")
+    assert caps.supports_first_last_frame is True
+
+
+def test_video_reference_inferred_from_the_billing_sku():
+    """Nothing in the catalogue flags video input; the SKU that prices it does.
+
+    A model billing `video_tokens_with_video_input` accepts a driving video,
+    and this is the only signal the catalogue gives.
+    """
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS_LIVE]))
+    caps = client.capabilities("bytedance/seedance-2.5")
+    assert caps.supports_video_reference is True
+    assert caps.max_video_references == 1
+
+
+def test_no_video_input_sku_means_no_video_reference():
+    catalogue = {
+        "data": [{"id": "someone/stills-only", "pricing_skus": {"video_tokens": "0.00001"}}]
+    }
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([catalogue]))
+    caps = client.capabilities("someone/stills-only")
+    assert caps.supports_video_reference is False
+
+
+def test_cost_comes_from_pricing_skus_with_a_per_token_unit():
+    """A SKU is per video token; reporting it as per clip would be wrong by
+    four orders of magnitude."""
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS_LIVE]))
+    caps = client.capabilities("bytedance/seedance-2.5")
+    assert caps.cost_model.amount == pytest.approx(0.0000107)
+    assert caps.cost_model.unit == "usd_per_video_token"
+
+
+def test_legacy_pricing_keeps_its_own_unit():
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS]))
+    caps = client.capabilities("bytedance/seedance-2.5")
+    assert caps.cost_model.amount == 0.5
+    assert caps.cost_model.unit == "usd"
+
+
+def test_empty_frame_image_list_is_not_support():
+    catalogue = {"data": [{"id": "m", "supported_frame_images": []}]}
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([catalogue]))
+    assert client.capabilities("m").supports_first_last_frame is False
+
+
 def test_model_catalogue_is_fetched_once():
     transport = _transport([_MODELS, _MODELS])
     client = OpenRouterRenderClient(api_key="k", transport=transport)
@@ -353,3 +422,107 @@ def test_fetch_refuses_a_job_with_no_url(tmp_path):
 
 def test_cost_model_default_is_usd():
     assert CostModel(unit="usd").currency == "USD"
+
+
+# ---------------------------------------------------------------------- #
+# Real response shapes                                                    #
+# ---------------------------------------------------------------------- #
+
+# Captured verbatim from a live OpenRouter render (job jc8xxNw…, $1.86).
+_LIVE_COMPLETED = {
+    "id": "jc8xxNw1vUoguOdkCpji",
+    "generation_id": "gen-vid-1789042420-k34vRNf1PG6KDFayz8d4",
+    "polling_url": "https://openrouter.ai/api/v1/videos/jc8xxNw1vUoguOdkCpji",
+    "status": "completed",
+    "unsigned_urls": [
+        "https://openrouter.ai/api/v1/videos/jc8xxNw1vUoguOdkCpji/content?index=0"
+    ],
+    "usage": {"cost": 1.85859, "is_byok": False},
+}
+
+
+def test_live_completed_response_yields_url_and_cost():
+    """Regression: the output arrives in `unsigned_urls`, a list under a key
+    the first parser never checked — so a finished render read as having no
+    video at all."""
+    transport = _transport([_LIVE_COMPLETED])
+    job = OpenRouterRenderClient(api_key="k", transport=transport).poll("jc8xxNw1vUoguOdkCpji")
+
+    assert job.status is JobStatus.SUCCEEDED
+    assert job.video_url == _LIVE_COMPLETED["unsigned_urls"][0]
+    assert job.cost == 1.85859
+
+
+def test_unsigned_urls_wins_over_the_fallback_shapes():
+    transport = _transport(
+        [{"status": "completed", "unsigned_urls": ["https://a/1.mp4"], "url": "https://b/2.mp4"}]
+    )
+    assert OpenRouterRenderClient(api_key="k", transport=transport).poll("v").video_url == (
+        "https://a/1.mp4"
+    )
+
+
+def test_empty_unsigned_urls_falls_through(tmp_path):
+    transport = _transport([{"status": "completed", "unsigned_urls": [], "url": "https://b/2.mp4"}])
+    assert OpenRouterRenderClient(api_key="k", transport=transport).poll("v").video_url == (
+        "https://b/2.mp4"
+    )
+
+
+def test_fetch_sends_the_api_key_for_an_openrouter_url(tmp_path, monkeypatch):
+    """Result URLs are unsigned — a bare GET gets a 401."""
+    seen = {}
+
+    class _Response:
+        def read(self):
+            return b"MP4BYTES"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["auth"] = request.get_header("Authorization")
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenRouterRenderClient(api_key="sk-live", transport=_transport([]))
+    job = RenderJob(
+        job_id="v",
+        shot_id="s",
+        status=JobStatus.SUCCEEDED,
+        video_url="https://openrouter.ai/api/v1/videos/v/content?index=0",
+    )
+    out = client.fetch(job, str(tmp_path / "o.mp4"))
+
+    assert out and (tmp_path / "o.mp4").read_bytes() == b"MP4BYTES"
+    assert seen["auth"] == "Bearer sk-live"
+
+
+def test_fetch_does_not_leak_the_key_to_a_third_party_host(tmp_path, monkeypatch):
+    seen = {}
+
+    class _Response:
+        def read(self):
+            return b"MP4"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(request, timeout=None):
+        seen["auth"] = request.get_header("Authorization")
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client = OpenRouterRenderClient(api_key="sk-live", transport=_transport([]))
+    job = RenderJob(
+        job_id="v", shot_id="s", status=JobStatus.SUCCEEDED, video_url="https://cdn.example.com/a.mp4"
+    )
+    client.fetch(job, str(tmp_path / "o.mp4"))
+
+    assert seen["auth"] is None

@@ -1,4 +1,4 @@
-"""CLI entry point: `python -m moviecrew "<concept>" [--out project.json] [--backend mock|anthropic]`."""
+"""CLI entry point: `python -m moviecrew "<concept>" [--out project.json] [--backend mock|openrouter|anthropic]`."""
 
 from __future__ import annotations
 
@@ -18,6 +18,10 @@ from .video import RenderResult, StubVideoBackend, VeoBackend, VideoBackend
 def _build_llm(backend: str) -> LLMClient:
     if backend == "mock":
         return MockLLMClient()
+    if backend == "openrouter":
+        from .llm_openrouter import OpenRouterLLMClient
+
+        return OpenRouterLLMClient()
     if backend == "anthropic":
         from .llm import AnthropicLLMClient
 
@@ -54,9 +58,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--out", help="Write the resulting Project as JSON to this path")
     parser.add_argument(
         "--backend",
-        choices=["mock", "anthropic"],
+        choices=["mock", "openrouter", "anthropic"],
         default="mock",
-        help="LLM backend to use (default: mock, runs fully offline)",
+        help=(
+            "LLM backend to use (default: mock, runs fully offline). "
+            "openrouter runs the whole crew on Sonnet 5 through one key."
+        ),
     )
     parser.add_argument(
         "--render",
