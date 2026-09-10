@@ -38,7 +38,8 @@ from ..llm import LLMClient
 from ..mock import MockLLMClient
 from ..reference import FileReferenceImageProvider, ReferenceImageProvider
 from ..studio import Stage, StudioSession
-from ..takes import list_takes, resolve_video
+from ..render import FakeRenderClient, JobStatus, ShotSpec
+from ..takes import list_takes, resolve_video, save_take
 
 _BACKENDS = ("mock", "anthropic")
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -47,6 +48,23 @@ _STATIC_DIR = Path(__file__).parent / "static"
 # path would let any page this portal serves read arbitrary directories.
 _TAKES_ROOT_ENV = "MOVIECREW_TAKES_ROOT"
 _DEFAULT_TAKES_ROOT = "takes"
+
+# A generative backend fetches the driving take over the internet, so it needs
+# a URL it can actually reach — never this process's loopback address. Set to
+# wherever this portal is publicly reachable (a tunnel, a LAN host, a deploy).
+_PUBLIC_BASE_URL_ENV = "MOVIECREW_PUBLIC_BASE_URL"
+
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]", "::1")
+
+_OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+_DEFAULT_RENDER_MODEL = "bytedance/seedance-2.5"
+
+# Submitted renders, keyed by job id, so a browser can poll one.
+_render_jobs: dict[str, dict] = {}
+
+# Render clients are stateful and cache their model catalogue, so one is
+# kept per key rather than rebuilt per request.
+_render_clients: dict[str, object] = {}
 
 # Module-level image provider: MockImageProvider for offline demos.
 # Swap for a real provider (Imagen, SD, …) when one lands.
@@ -92,6 +110,21 @@ def _frame_to_dict(session_id: str, frame) -> dict:
         ),
         "prompt_used": frame.prompt_used,
         "status": frame.status,
+    }
+
+
+def _job_to_dict(job, context: Optional[dict] = None) -> dict:
+    return {
+        "job_id": job.job_id,
+        "shot_id": job.shot_id,
+        "status": job.status.value,
+        "backend": job.backend,
+        "model": job.model,
+        "video_url": job.video_url,
+        "cost": job.cost,
+        "error": job.error,
+        "is_terminal": job.is_terminal,
+        "take_id": (context or {}).get("take_id"),
     }
 
 
@@ -155,6 +188,69 @@ def _video_path_or_error(scene_id: str, shot_id: str, take_number: int):
     return resolved, None
 
 
+def _public_base_url() -> str:
+    return os.environ.get(_PUBLIC_BASE_URL_ENV, "").rstrip("/")
+
+
+def _public_take_url(take) -> Optional[str]:
+    """A URL a generative backend can fetch this take from.
+
+    None when no public base is configured, or when the one configured is a
+    loopback address — a provider resolving `127.0.0.1` would reach its own
+    machine, not this one, and the render would fail confusingly late.
+    """
+    base = _public_base_url()
+    if not base:
+        return None
+    lowered = base.lower()
+    if any(host in lowered for host in _LOCAL_HOSTS):
+        return None
+    return (
+        f"{base}/api/takes/{take.scene_id}/{take.shot_id}/{take.take_number}/video"
+    )
+
+
+def _render_client():
+    """The configured render backend, or the offline fake.
+
+    Defaults to the fake so nothing spends money by accident; a real backend
+    is opted into by setting a key.
+
+    Cached per key, because a client is stateful: a fresh instance per
+    request could not poll a job it had submitted, and would re-fetch the
+    model catalogue on every call.
+    """
+    key = os.environ.get(_OPENROUTER_KEY_ENV, "")
+    cached = _render_clients.get(key)
+    if cached is not None:
+        return cached, None
+
+    if not key:
+        client = FakeRenderClient()
+    else:
+        try:
+            from ..render_openrouter import OpenRouterRenderClient
+
+            client = OpenRouterRenderClient()
+        except Exception as exc:
+            return None, f"could not start the render backend: {exc}"
+
+    _render_clients[key] = client
+    return client, None
+
+
+def _find_take(scene_id: str, shot_id: str, take_number: int):
+    root = _takes_root()
+    return next(
+        (
+            t
+            for t in list_takes(root, scene_id=scene_id, shot_id=shot_id)
+            if t.take_number == take_number
+        ),
+        None,
+    )
+
+
 # ---------------------------------------------------------------------- #
 # Request models                                                          #
 # ---------------------------------------------------------------------- #
@@ -169,6 +265,16 @@ class PlanRequest(BaseModel):
 
 class StoryboardRequest(BaseModel):
     session_id: str
+
+
+class RenderRequest(BaseModel):
+    scene_id: str
+    shot_id: str
+    take_number: int
+    prompt: str
+    model: str = ""
+    reference_images: list[str] = []
+    estimate_only: bool = False
 
 
 class RegenerateRequest(BaseModel):
@@ -225,6 +331,109 @@ def takes(scene_id: Optional[str] = None, shot_id: Optional[str] = None):
         "take_count": len(found),
         "shots": shots,
     }
+
+
+@app.get("/api/render/models")
+def render_models():
+    """Models the configured backend offers, and what each supports."""
+    client, err = _render_client()
+    if err:
+        return _error(502, err)
+    try:
+        entries = client.models()
+    except Exception as exc:
+        return _error(502, f"could not list models: {exc}")
+
+    return {
+        "backend": client.name,
+        "live": client.name != "fake",
+        "default_model": _DEFAULT_RENDER_MODEL,
+        "public_base_url": _public_base_url(),
+        "models": entries,
+    }
+
+
+@app.post("/api/render")
+def render_take(req: RenderRequest):
+    """Generate a shot from a chosen take, which drives the camera motion."""
+    take = _find_take(req.scene_id, req.shot_id, req.take_number)
+    if take is None:
+        return _error(404, f"take {req.shot_id}#{req.take_number} not found")
+
+    client, err = _render_client()
+    if err:
+        return _error(502, err)
+
+    model = req.model or _DEFAULT_RENDER_MODEL
+    capabilities = client.capabilities(model)
+
+    reference_video = _public_take_url(take)
+    if capabilities.supports_video_reference and reference_video is None:
+        return _error(
+            400,
+            f"{model} drives motion from the take, but this portal has no publicly "
+            f"reachable address. Set {_PUBLIC_BASE_URL_ENV} to where it can be "
+            "fetched from — a provider cannot reach a loopback address.",
+        )
+
+    spec = ShotSpec(
+        shot_id=take.shot_id,
+        prompt=req.prompt,
+        duration_s=int(take.duration_s or 8),
+        reference_video=reference_video,
+        reference_images=list(req.reference_images),
+    )
+
+    if req.estimate_only:
+        return {
+            "estimate_only": True,
+            "model": model,
+            "cost": client.estimate_cost(spec, model=model),
+            "cost_unit": capabilities.cost_model.unit,
+            "duration_s": capabilities.clamp_duration(spec.duration_s),
+            "drives_motion_from_take": bool(
+                capabilities.supports_video_reference and reference_video
+            ),
+        }
+
+    try:
+        job = client.submit(spec, model=model)
+    except Exception as exc:
+        return _error(502, f"render submission failed: {exc}")
+
+    context = {
+        "take_id": take.take_id,
+        "scene_id": take.scene_id,
+        "shot_id": take.shot_id,
+        "take_number": take.take_number,
+    }
+    _render_jobs[job.job_id] = context
+    return _job_to_dict(job, context)
+
+
+@app.get("/api/render/{job_id}")
+def render_status(job_id: str):
+    client, err = _render_client()
+    if err:
+        return _error(502, err)
+    try:
+        job = client.poll(job_id)
+    except Exception as exc:
+        return _error(502, f"could not poll render: {exc}")
+
+    # Record the finished render against its take, so previz-to-final lineage
+    # survives this process.
+    context = _render_jobs.get(job_id)
+    if context and job.status is JobStatus.SUCCEEDED:
+        take = _find_take(context["scene_id"], context["shot_id"], context["take_number"])
+        if take is not None and job_id not in take.renders:
+            take.renders.append(job_id)
+            try:
+                save_take(take, _takes_root())
+            except OSError:
+                pass  # the render still succeeded; lineage is best-effort
+
+    return _job_to_dict(job, context)
 
 
 @app.get("/api/takes/{scene_id}/{shot_id}/{take_number}/video")

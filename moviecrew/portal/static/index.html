@@ -204,6 +204,14 @@
   .tk-empty code { background: var(--panel-2); padding: 0.1rem 0.35rem; border-radius: 4px; }
   .tk-bar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
   .tk-bar button { margin-top: 0; }
+  .tk-gen { border-top: 1px solid var(--border); margin-top: 1rem; padding-top: 0.9rem; }
+  .tk-gen-row { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; }
+  .tk-gen-row select { width: auto; min-width: 15rem; }
+  .tk-gen-row button { margin-top: 0; }
+  .tk-gen-note { font-size: 0.78rem; color: var(--muted); margin-top: 0.5rem; line-height: 1.5; }
+  .tk-gen-note.warn { color: var(--warn); }
+  .tk-gen-out { margin-top: 0.8rem; font-size: 0.85rem; }
+  .tk-gen-out video { width: 100%; max-width: 480px; border-radius: 8px; margin-top: 0.5rem; display: block; }
 </style>
 </head>
 <body>
@@ -264,6 +272,15 @@
       <span class="sb-status" id="tk-status"></span>
     </div>
     <div id="tk-list"></div>
+    <div class="tk-gen" id="tk-gen">
+      <div class="tk-gen-row">
+        <select id="tk-model"></select>
+        <button id="tk-estimate-btn" class="secondary">Estimate Cost</button>
+        <button id="tk-generate-btn">Generate</button>
+      </div>
+      <div class="tk-gen-note" id="tk-gen-note"></div>
+      <div class="tk-gen-out" id="tk-gen-out"></div>
+    </div>
   </section>
 </main>
 
@@ -294,7 +311,10 @@ function selectedTakeId() {
   return _selectedTakeId;
 }
 
+let _takesData = null;
+
 function renderTakes(data) {
+  _takesData = data;
   tkList.innerHTML = "";
   const shots = data.shots || {};
   const shotIds = Object.keys(shots).sort();
@@ -394,6 +414,7 @@ function selectTake(takeId) {
     const mark = card.querySelector(".tk-mark");
     if (mark) mark.textContent = isSelected ? "✓ selected" : "";
   }
+  refreshGenState();
 }
 
 async function loadTakes() {
@@ -684,12 +705,178 @@ async function redoFrame(shotId, card) {
   }
 }
 
+
+const tkModel = document.getElementById("tk-model");
+const tkEstimateBtn = document.getElementById("tk-estimate-btn");
+const tkGenerateBtn = document.getElementById("tk-generate-btn");
+const tkGenNote = document.getElementById("tk-gen-note");
+const tkGenOut = document.getElementById("tk-gen-out");
+
+let _renderBackend = null;
+
+function selectedTake() {
+  if (!_selectedTakeId) return null;
+  const [shotId, num] = _selectedTakeId.split("#");
+  for (const shot of Object.values(_takesData?.shots || {})) {
+    for (const take of shot) {
+      if (take.take_id === _selectedTakeId) return take;
+    }
+  }
+  return null;
+}
+
+function setGenNote(text, warn) {
+  tkGenNote.textContent = text;
+  tkGenNote.classList.toggle("warn", Boolean(warn));
+}
+
+function refreshGenState() {
+  const take = selectedTake();
+  const ready = Boolean(take && _renderBackend);
+  tkEstimateBtn.disabled = !ready;
+  tkGenerateBtn.disabled = !ready;
+
+  if (!_renderBackend) return;
+  if (!take) {
+    setGenNote("Select a take above to generate from it.");
+    return;
+  }
+  if (!_renderBackend.public_base_url) {
+    setGenNote(
+      "Set MOVIECREW_PUBLIC_BASE_URL so the model can fetch the take — a provider " +
+      "cannot reach this portal on localhost.",
+      true
+    );
+    return;
+  }
+  const live = _renderBackend.live
+    ? ""
+    : " Backend is the offline fake — set OPENROUTER_API_KEY to generate for real.";
+  setGenNote(`Take ${take.take_id} will drive the camera motion.${live}`, !_renderBackend.live);
+}
+
+async function loadRenderModels() {
+  try {
+    const res = await fetch("/api/render/models");
+    const data = await res.json();
+    if (!res.ok) return;
+    _renderBackend = data;
+    tkModel.innerHTML = "";
+    for (const model of data.models || []) {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.name || model.id;
+      if (model.id === data.default_model) option.selected = true;
+      tkModel.appendChild(option);
+    }
+    if (!tkModel.options.length) {
+      const option = document.createElement("option");
+      option.value = data.default_model;
+      option.textContent = data.default_model;
+      tkModel.appendChild(option);
+    }
+    refreshGenState();
+  } catch (err) {
+    setGenNote(`Could not load models: ${err}`, true);
+  }
+}
+
+function promptForTake(take) {
+  // Prefer the shot's own Veo prompt when a plan is loaded; fall back to what
+  // the take was blocked from, so generating never depends on a plan.
+  const prompt = (_project?.render_plan?.prompts || []).find(
+    (p) => p.shot_id === take.shot_id
+  );
+  if (prompt) return prompt.prompt;
+  return [take.camera_move, take.lens, take.framing].filter(Boolean).join(", ");
+}
+
+async function submitRender(estimateOnly) {
+  const take = selectedTake();
+  if (!take) return;
+  clearError();
+  tkGenOut.textContent = "";
+  setGenNote(estimateOnly ? "Estimating…" : "Submitting…");
+
+  try {
+    const res = await fetch("/api/render", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        scene_id: take.scene_id,
+        shot_id: take.shot_id,
+        take_number: take.take_number,
+        prompt: promptForTake(take),
+        model: tkModel.value,
+        estimate_only: Boolean(estimateOnly),
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || "Render failed.");
+      refreshGenState();
+      return;
+    }
+    if (estimateOnly) {
+      const cost = data.cost === null || data.cost === undefined ? "unknown" : `$${data.cost}`;
+      setGenNote(
+        `${data.model}: ${cost} for ${data.duration_s}s` +
+        (data.drives_motion_from_take ? ", driving motion from the take." : ".")
+      );
+      return;
+    }
+    setGenNote(`Submitted ${data.job_id} — polling…`);
+    pollRender(data.job_id);
+  } catch (err) {
+    showError(`Render failed: ${err}`);
+    refreshGenState();
+  }
+}
+
+async function pollRender(jobId) {
+  try {
+    const res = await fetch(`/api/render/${jobId}`);
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || "Could not poll render.");
+      return;
+    }
+    if (!data.is_terminal) {
+      setGenNote(`${jobId}: ${data.status}…`);
+      setTimeout(() => pollRender(jobId), 3000);
+      return;
+    }
+    if (data.status !== "succeeded") {
+      setGenNote(`${jobId} ${data.status}: ${data.error || "no reason given"}`, true);
+      return;
+    }
+    const cost = data.cost === null || data.cost === undefined ? "" : ` · $${data.cost}`;
+    setGenNote(`${jobId} succeeded${cost}`);
+    tkGenOut.innerHTML = "";
+    if (data.video_url && /^https?:/.test(data.video_url)) {
+      const video = document.createElement("video");
+      video.src = data.video_url;
+      video.controls = true;
+      tkGenOut.appendChild(video);
+    } else {
+      tkGenOut.textContent = `Output: ${data.video_url || "(none)"}`;
+    }
+    loadTakes();
+  } catch (err) {
+    showError(`Could not poll render: ${err}`);
+  }
+}
+
 tkRefreshBtn.addEventListener("click", loadTakes);
+tkEstimateBtn.addEventListener("click", () => submitRender(true));
+tkGenerateBtn.addEventListener("click", () => submitRender(false));
+tkModel.addEventListener("change", refreshGenState);
 generateBtn.addEventListener("click", generate);
 sbGenerateBtn.addEventListener("click", generateStoryboard);
 sbApproveBtn.addEventListener("click", approveBoard);
 loadHealth();
 loadTakes();
+loadRenderModels();
 </script>
 </body>
 </html>
