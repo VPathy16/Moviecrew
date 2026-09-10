@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -237,3 +238,29 @@ def test_ensure_importable_error_names_the_preference(bridge, monkeypatch):
     error = bridge.ensure_moviecrew_importable("/nonexistent/path")
     if error is not None:  # only asserts when the import genuinely failed
         assert "Preferences" in error
+
+
+# ---------------------------------------------------------------------- #
+# Icon safety                                                             #
+# ---------------------------------------------------------------------- #
+
+_ADDON_DIR = _BRIDGE_PATH.parent
+
+
+def test_every_icon_goes_through_the_guard():
+    """A wrong icon name raises TypeError inside draw(), which aborts the
+    whole panel — every control after the bad row vanishes with no visible
+    cause. `_icon()` degrades that to a missing icon, so nothing may pass an
+    icon literal directly.
+
+    Regression: `CON_CAMERASOLVE` (the real enum is `CON_CAMERASOLVER`)
+    silently blanked the sidebar below the shot summary.
+    """
+    offenders = []
+    for path in sorted(_ADDON_DIR.glob("*.py")):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r'icon="[A-Z0-9_]+"', line):
+                offenders.append(f"{path.name}:{number}: {line.strip()}")
+    assert not offenders, "icon literals must be wrapped in _icon():\n" + "\n".join(
+        offenders
+    )

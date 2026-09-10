@@ -13,6 +13,7 @@ No `bl_info`: this is a Blender 4.2+ extension, described by
 import bpy
 
 from . import bridge, operators, panel
+from .panel import _icon
 
 # Blender's dynamic EnumProperty items must be kept alive by Python or the
 # strings are garbage-collected out from under the UI — a well-known way to
@@ -73,9 +74,9 @@ class MovieCrewPreferences(bpy.types.AddonPreferences):
         column.prop(self, "moviecrew_path")
         error = bridge.ensure_moviecrew_importable(self.moviecrew_path)
         if error:
-            column.label(text=error, icon="ERROR")
+            column.label(text=error, icon=_icon("ERROR"))
         else:
-            column.label(text="MovieCrew package found", icon="CHECKMARK")
+            column.label(text="MovieCrew package found", icon=_icon("CHECKMARK"))
 
 
 class MovieCrewProperties(bpy.types.PropertyGroup):

@@ -16,6 +16,20 @@ import bpy
 
 from . import bridge
 
+# Icon names are an RNA enum, and a wrong one raises TypeError *inside*
+# draw() — which aborts the entire panel, so every control after the bad row
+# silently disappears with no visible cause. Resolving through _icon() turns
+# that failure into a missing icon instead of a missing UI.
+_VALID_ICONS = frozenset(
+    bpy.types.UILayout.bl_rna.functions["label"]
+    .parameters["icon"]
+    .enum_items.keys()
+)
+
+
+def _icon(name: str) -> str:
+    return name if name in _VALID_ICONS else "NONE"
+
 
 def _draw_shot_summary(layout, props) -> None:
     """What the pipeline wrote for the selected shot, before any blocking."""
@@ -24,12 +38,12 @@ def _draw_shot_summary(layout, props) -> None:
         return
 
     box = layout.box()
-    box.label(text=shot.get("description", "")[:64], icon="SEQUENCE")
+    box.label(text=shot.get("description", "")[:64], icon=_icon("SEQUENCE"))
     row = box.row(align=True)
-    row.label(text=shot.get("camera_move", "—"), icon="CON_CAMERASOLVE")
+    row.label(text=shot.get("camera_move", "—"), icon=_icon("CON_CAMERASOLVER"))
     row.label(text=shot.get("lens", "—"))
     row = box.row(align=True)
-    row.label(text=shot.get("framing", "—"), icon="IMAGE_PLANE")
+    row.label(text=shot.get("framing", "—"), icon=_icon("IMAGE_PLANE"))
     row.label(text=f"{shot.get('duration_s', 0)}s")
 
 
@@ -45,11 +59,11 @@ def draw_body(layout, context, *, compact: bool = False) -> None:
 
     if not bridge.PROJECT:
         column = layout.column()
-        column.label(text="No project loaded", icon="ERROR")
-        column.operator("moviecrew.load_project", icon="FILE_FOLDER")
+        column.label(text="No project loaded", icon=_icon("ERROR"))
+        column.operator("moviecrew.load_project", icon=_icon("FILE_FOLDER"))
         return
 
-    layout.label(text=bridge.PROJECT.get("title", "Untitled"), icon="CAMERA_DATA")
+    layout.label(text=bridge.PROJECT.get("title", "Untitled"), icon=_icon("CAMERA_DATA"))
 
     column = layout.column(align=True)
     column.prop(props, "scene_id", text="Scene")
@@ -61,9 +75,9 @@ def draw_body(layout, context, *, compact: bool = False) -> None:
     column = layout.column(align=True)
     column.prop(props, "blocked_by", text="")
     if props.blocked_by == "AUTO":
-        column.operator("moviecrew.block_shot", icon="AUTO")
+        column.operator("moviecrew.block_shot", icon=_icon("AUTO"))
     elif not compact:
-        column.label(text="Block the camera by hand", icon="INFO")
+        column.label(text="Block the camera by hand", icon=_icon("INFO"))
 
     if not compact:
         layout.separator()
@@ -74,16 +88,16 @@ def draw_body(layout, context, *, compact: bool = False) -> None:
 
     row = layout.row()
     row.scale_y = 1.4
-    row.operator("moviecrew.render_take", icon="RENDER_ANIMATION")
+    row.operator("moviecrew.render_take", icon=_icon("RENDER_ANIMATION"))
 
     if props.shot_id and props.takes_root:
-        layout.label(text=f"Next: take {props.next_take_number:03d}", icon="DOT")
+        layout.label(text=f"Next: take {props.next_take_number:03d}", icon=_icon("DOT"))
     elif not props.takes_root:
         # The bar cannot set this, so say where it lives rather than silently
         # leaving Render Take greyed out.
         layout.label(
             text="Set Takes in the sidebar" if compact else "Set a takes folder",
-            icon="ERROR",
+            icon=_icon("ERROR"),
         )
 
 
@@ -114,7 +128,7 @@ class MOVIECREW_PT_sidebar(bpy.types.Panel):
 
 
 def _draw_header_button(self, context) -> None:
-    self.layout.popover(panel="MOVIECREW_PT_bar", text="", icon="CAMERA_DATA")
+    self.layout.popover(panel="MOVIECREW_PT_bar", text="", icon=_icon("CAMERA_DATA"))
 
 
 CLASSES = (MOVIECREW_PT_bar, MOVIECREW_PT_sidebar)
