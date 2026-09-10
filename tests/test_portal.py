@@ -1,15 +1,22 @@
 """Tests for the optional FastAPI portal (the PLAN path only).
 
 Fully offline: uses fastapi.testclient.TestClient and the mock LLM backend,
-no network and no real API key needed. Skips cleanly if fastapi isn't
-installed (the `portal` extra is optional).
+no network and no real API key needed. Skips cleanly when the test client
+isn't available (the `portal` extra is optional).
+
+Guarded on TestClient itself rather than on `fastapi`, and catching
+RuntimeError as well as ImportError: fastapi can import perfectly while
+`fastapi.testclient` still fails, because starlette raises RuntimeError —
+not ImportError — when its HTTP client dependency is missing. A plain
+`importorskip("fastapi")` lets that through as a hard collection error.
 """
 
 import pytest
 
-pytest.importorskip("fastapi")
-
-from fastapi.testclient import TestClient  # noqa: E402
+try:
+    from fastapi.testclient import TestClient
+except (ImportError, RuntimeError) as exc:
+    pytest.skip(f"fastapi TestClient unavailable: {exc}", allow_module_level=True)
 
 from moviecrew.portal.app import app  # noqa: E402
 
