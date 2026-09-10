@@ -2,8 +2,14 @@
 
 Two surfaces onto the same properties: a compact popover hung off the 3D
 viewport header — always visible, one click from anywhere — and a full
-N-panel tab for when there's more to read. Both draw `draw_body`, so they
+N-panel tab for the settings behind it. Both draw `draw_body`, so they
 cannot drift apart.
+
+The split is not cosmetic. A Blender popover does not scroll: it sizes to
+its content and clips whatever overflows, with no way for the user to reach
+what's been cut off. So the bar carries only the per-take actions, and
+anything you set once — project path, takes folder, fps — lives in the
+sidebar, which scrolls.
 """
 
 import bpy
@@ -27,7 +33,14 @@ def _draw_shot_summary(layout, props) -> None:
     row.label(text=f"{shot.get('duration_s', 0)}s")
 
 
-def draw_body(layout, context) -> None:
+def draw_body(layout, context, *, compact: bool = False) -> None:
+    """Draw the controls.
+
+    `compact` trims to what the floating bar can hold. A Blender popover does
+    not scroll — it sizes to its content and clips the overflow — so the bar
+    carries the per-take actions only, and the settings behind them live in
+    the sidebar, which does scroll.
+    """
     props = context.scene.moviecrew
 
     if not bridge.PROJECT:
@@ -42,20 +55,22 @@ def draw_body(layout, context) -> None:
     column.prop(props, "scene_id", text="Scene")
     column.prop(props, "shot_id", text="Shot")
 
-    _draw_shot_summary(layout, props)
+    if not compact:
+        _draw_shot_summary(layout, props)
 
     column = layout.column(align=True)
-    column.prop(props, "blocked_by", text="Blocking")
+    column.prop(props, "blocked_by", text="")
     if props.blocked_by == "AUTO":
         column.operator("moviecrew.block_shot", icon="AUTO")
-    else:
+    elif not compact:
         column.label(text="Block the camera by hand", icon="INFO")
 
-    layout.separator()
-
-    column = layout.column(align=True)
-    column.prop(props, "takes_root", text="Takes")
-    column.prop(props, "fps", text="FPS")
+    if not compact:
+        layout.separator()
+        column = layout.column(align=True)
+        column.prop(props, "project_path", text="Project")
+        column.prop(props, "takes_root", text="Takes")
+        column.prop(props, "fps", text="FPS")
 
     row = layout.row()
     row.scale_y = 1.4
@@ -63,6 +78,13 @@ def draw_body(layout, context) -> None:
 
     if props.shot_id and props.takes_root:
         layout.label(text=f"Next: take {props.next_take_number:03d}", icon="DOT")
+    elif not props.takes_root:
+        # The bar cannot set this, so say where it lives rather than silently
+        # leaving Render Take greyed out.
+        layout.label(
+            text="Set Takes in the sidebar" if compact else "Set a takes folder",
+            icon="ERROR",
+        )
 
 
 class MOVIECREW_PT_bar(bpy.types.Panel):
@@ -72,10 +94,10 @@ class MOVIECREW_PT_bar(bpy.types.Panel):
     bl_label = "MovieCrew"
     bl_space_type = "VIEW_3D"
     bl_region_type = "HEADER"
-    bl_ui_units_x = 15
+    bl_ui_units_x = 14
 
     def draw(self, context):
-        draw_body(self.layout, context)
+        draw_body(self.layout, context, compact=True)
 
 
 class MOVIECREW_PT_sidebar(bpy.types.Panel):
