@@ -15,7 +15,10 @@ dependencies = []
 anthropic = ["anthropic>=0.40"]
 video = ["google-genai>=1.0"]
 portal = ["fastapi>=0.110", "uvicorn>=0.30"]
-dev = ["pytest>=8"]
+# httpx2 backs starlette's TestClient, which the portal tests run through.
+# Without it `pip install -e ".[dev,portal]"` collects fastapi but still cannot
+# run those tests — recent starlette raises RuntimeError on the missing client.
+dev = ["pytest>=8", "pyflakes>=3", "httpx2>=0.28"]
 
 [tool.setuptools.packages.find]
 include = ["moviecrew*"]

@@ -297,9 +297,14 @@ def test_still_prompt_keeps_subject_and_light():
 # ---------------------------------------------------------------------- #
 
 
-pytest.importorskip("fastapi")
-
-from fastapi.testclient import TestClient  # noqa: E402
+# Guarded on TestClient itself, and catching RuntimeError as well as
+# ImportError: fastapi can import fine while `fastapi.testclient` still fails,
+# because starlette raises RuntimeError — not ImportError — when its HTTP
+# client dependency is missing.
+try:
+    from fastapi.testclient import TestClient
+except (ImportError, RuntimeError) as exc:
+    pytest.skip(f"fastapi TestClient unavailable: {exc}", allow_module_level=True)
 
 from moviecrew.portal.app import _sessions, app  # noqa: E402
 
