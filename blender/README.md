@@ -11,12 +11,22 @@ MovieCrew portal reads.
 
 Requires **Blender 4.2 or newer** (this is an extension, not a legacy add-on).
 
-1. Zip the inner package:
+1. Build the extension. Blender's own builder is preferred — it validates the
+   manifest and leaves build artefacts out:
    ```
-   cd blender && zip -r moviecrew.zip moviecrew_blender
+   cd blender
+   blender --command extension build --source-dir moviecrew_blender
+   ```
+   Without Blender on your `PATH`, zip it by hand — but **exclude
+   `__pycache__`**. Running the test suite can compile `bridge.py` into the
+   package, and that bytecode is built for your system Python, not the 3.11
+   Blender ships:
+   ```
+   cd blender
+   zip -r moviecrew.zip moviecrew_blender -x '*__pycache__*' '*.pyc'
    ```
 2. In Blender: **Edit → Preferences → Add-ons → ▾ → Install from Disk**, pick
-   `moviecrew.zip`, and enable **MovieCrew**.
+   the built zip, and enable **MovieCrew**.
 3. In the add-on's preferences, set **MovieCrew Repository** to the folder
    containing the `moviecrew` package — this repo's root.
 
