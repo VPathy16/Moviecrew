@@ -17,7 +17,7 @@ from moviecrew.schema import (
     RenderPlan,
     Scene,
     Shot,
-    VeoPrompt,
+    ShotIntent,
 )
 
 TASKS = [
@@ -77,14 +77,23 @@ def test_full_pipeline_builds_a_consistent_project():
         )
         scenes.append(scene)
 
-    prompts = [VeoPrompt(**p) for p in prompter["prompts"]]
-    for prompt in prompts:
-        assert prompt.duration_s in VEO_LEGAL_DURATIONS_S
+    intents = [
+        ShotIntent(
+            shot_id=p["shot_id"],
+            description=p["prompt"],
+            negative=p.get("negative_prompt", ""),
+            duration_s=p.get("duration_s", 8),
+            reference_images=list(p.get("reference_images", [])),
+        )
+        for p in prompter["prompts"]
+    ]
+    for intent in intents:
+        assert intent.duration_s in VEO_LEGAL_DURATIONS_S
 
     flags = [ContinuityFlag(**f) for f in continuity["flags"]]
 
     render_plan = RenderPlan(
-        prompts=prompts,
+        intents=intents,
         flags=flags,
         order=editor["order"],
         est_duration_s=editor["est_duration_s"],
@@ -101,7 +110,7 @@ def test_full_pipeline_builds_a_consistent_project():
 
     # All shot ids referenced by prompts/flags/order must exist in the scenes.
     all_shot_ids = {shot.id for scene in project.scenes for shot in scene.shots}
-    for prompt in project.render_plan.prompts:
+    for prompt in project.render_plan.intents:
         assert prompt.shot_id in all_shot_ids
     for flag in project.render_plan.flags:
         assert flag.target in all_shot_ids

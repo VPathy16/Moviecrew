@@ -112,15 +112,17 @@ class StudioSession:
         board_dir.mkdir(parents=True, exist_ok=True)
 
         prompts_by_shot_id = {
-            p.shot_id: p.prompt
-            for p in (self.project.render_plan.prompts if self.project.render_plan else [])
+            intent.shot_id: intent.description
+            for intent in (
+                self.project.render_plan.intents if self.project.render_plan else []
+            )
         }
 
         self.board = []
         for scene in self.project.scenes:
             for shot in scene.shots:
-                veo_prompt = prompts_by_shot_id.get(shot.id, shot.description)
-                still_prompt = _veo_to_still_prompt(veo_prompt)
+                shot_text = prompts_by_shot_id.get(shot.id, shot.description)
+                still_prompt = _veo_to_still_prompt(shot_text)
                 frame = self._generate_frame(shot.id, still_prompt, board_dir)
                 self.board.append(frame)
 
@@ -164,8 +166,10 @@ class StudioSession:
         board_dir.mkdir(parents=True, exist_ok=True)
 
         prompts_by_shot_id = {
-            p.shot_id: p.prompt
-            for p in (self.project.render_plan.prompts if self.project.render_plan else [])
+            intent.shot_id: intent.description
+            for intent in (
+                self.project.render_plan.intents if self.project.render_plan else []
+            )
         }
 
         if shot_id:

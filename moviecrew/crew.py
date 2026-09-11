@@ -39,9 +39,9 @@ from .schema import (
     RenderPlan,
     Scene,
     Shot,
-    VeoPrompt,
+    ShotIntent,
 )
-from .video import RenderResult, VideoBackend
+from .video import RenderResult, VideoBackend, veo_prompt
 
 
 def _merge_bible(provided: Bible, designer_out: dict) -> Bible:
@@ -164,28 +164,30 @@ class MovieCrew:
 
         select_anchors(scenes, chains, bible)
 
-        prompts: list[VeoPrompt] = []
+        intents: list[ShotIntent] = []
         flags: list[ContinuityFlag] = []
         for shot in all_shots:
             prompter_out = self.prompter.run(shot=asdict(shot))
             raw_prompts = [p for p in prompter_out["prompts"] if p["shot_id"] == shot.id]
             for raw_prompt in raw_prompts:
-                prompt_text = raw_prompt["prompt"]
-                prompts.append(
-                    VeoPrompt(
+                description = raw_prompt["prompt"]
+                intents.append(
+                    ShotIntent(
                         shot_id=shot.id,
-                        prompt=prompt_text,
-                        negative_prompt=raw_prompt.get("negative_prompt", ""),
+                        description=description,
+                        negative=raw_prompt.get("negative_prompt", ""),
                         duration_s=shot.duration_s,
                         aspect_ratio="16:9",
                         reference_images=list(shot.reference_image_ids),
                     )
                 )
-                flags.extend(veo_constraint_flags(prompt_text, shot))
+                # A Veo-specific lint, run here so its warnings reach the
+                # plan; it reads an intent's text and never constrains it.
+                flags.extend(veo_constraint_flags(description, shot))
 
         continuity_out = self.continuity.run(
             scenes=[asdict(scene) for scene in scenes],
-            prompts=[asdict(prompt) for prompt in prompts],
+            prompts=[asdict(intent) for intent in intents],
         )
         flags.extend(ContinuityFlag(**f) for f in continuity_out["flags"])
 
@@ -210,7 +212,7 @@ class MovieCrew:
         est_duration_s = sum(shot.duration_s for shot in all_shots)
 
         render_plan = RenderPlan(
-            prompts=prompts,
+            intents=intents,
             flags=flags,
             order=order,
             chains=chains,
@@ -227,8 +229,12 @@ class MovieCrew:
         )
 
     def render(self, project: Project, backend: VideoBackend) -> list[RenderResult]:
-        """Render every prompt in project.render_plan through `backend`, in
+        """Render every intent in project.render_plan through `backend`, in
         render_plan.order. Pure orchestration: makes no network calls itself.
+
+        Each intent is adapted into a Veo request by `video.veo_prompt()`
+        immediately before the backend sees it — the one place in the whole
+        pipeline where Veo's limits apply.
 
         Chain-aware: a shot that continues a Veo extend-chain is rendered
         with extend_from set to its predecessor's shot id within that chain;
@@ -250,15 +256,15 @@ class MovieCrew:
             for predecessor, shot_id in zip(chain, chain[1:]):
                 extend_from_by_shot_id[shot_id] = predecessor
 
-        prompts_by_shot_id = {prompt.shot_id: prompt for prompt in render_plan.prompts}
+        intents_by_shot_id = {intent.shot_id: intent for intent in render_plan.intents}
         results: list[RenderResult] = []
         for shot_id in render_plan.order:
-            prompt = prompts_by_shot_id.get(shot_id)
-            if prompt is None:
+            intent = intents_by_shot_id.get(shot_id)
+            if intent is None:
                 continue
             results.append(
                 backend.render(
-                    prompt,
+                    veo_prompt(intent),
                     extend_from=extend_from_by_shot_id.get(shot_id),
                     in_multishot_chain=in_multishot_chain_by_shot_id.get(shot_id, False),
                 )

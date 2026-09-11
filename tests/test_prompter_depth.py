@@ -98,7 +98,7 @@ def test_prompt_detail_flows_through_movie_crew_without_breaking_shape():
     )
 
     assert project.render_plan is not None
-    for prompt in project.render_plan.prompts:
-        assert prompt.prompt
-        assert prompt.negative_prompt
-        assert prompt.aspect_ratio == "16:9"
+    for intent in project.render_plan.intents:
+        assert intent.description
+        assert intent.negative
+        assert intent.aspect_ratio == "16:9"

@@ -21,21 +21,21 @@ def test_stub_backend_renders_every_prompt_in_order():
     results = crew.render(project, StubVideoBackend())
 
     assert [result.shot_id for result in results] == render_plan.order
-    assert len(results) == len(render_plan.prompts)
+    assert len(results) == len(render_plan.intents)
 
-    prompts_by_shot_id = {prompt.shot_id: prompt for prompt in render_plan.prompts}
+    intents_by_shot_id = {intent.shot_id: intent for intent in render_plan.intents}
     for result in results:
         assert result.status == "stubbed"
         assert result.backend == "stub"
         assert result.uri is None
 
-        prompt = prompts_by_shot_id[result.shot_id]
-        assert result.raw["prompt"] == prompt.prompt
-        assert result.raw["negative_prompt"] == prompt.negative_prompt
-        assert result.raw["duration_s"] == prompt.duration_s
+        intent = intents_by_shot_id[result.shot_id]
+        assert result.raw["prompt"] == intent.description
+        assert result.raw["negative_prompt"] == intent.negative
+        assert result.raw["duration_s"] == intent.duration_s
         assert result.raw["duration_s"] in VEO_LEGAL_DURATIONS_S
-        assert result.raw["aspect_ratio"] == prompt.aspect_ratio
-        assert result.raw["reference_images"] == prompt.reference_images
+        assert result.raw["aspect_ratio"] == intent.aspect_ratio
+        assert result.raw["reference_images"] == intent.reference_images
 
 
 def test_chained_shots_pass_extend_from_to_the_backend():

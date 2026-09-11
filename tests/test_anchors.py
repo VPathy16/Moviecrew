@@ -122,7 +122,7 @@ def test_end_to_end_anchoring_via_mock_pipeline(tmp_path):
     assert head.reference_image_ids
     assert all(path.startswith(out_dir) for path in head.reference_image_ids)
 
-    head_prompt = next(p for p in render_plan.prompts if p.shot_id == head_id)
+    head_prompt = next(p for p in render_plan.intents if p.shot_id == head_id)
     assert head_prompt.reference_images == head.reference_image_ids
     assert head_prompt.duration_s == 8
 

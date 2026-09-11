@@ -226,7 +226,7 @@
 <body>
 <header>
   <h1>MovieCrew Portal</h1>
-  <p>Concept in, shot-by-shot Veo prompts out — plan path only.</p>
+  <p>Concept in, shot-by-shot intent out — then previz, generate, review.</p>
 </header>
 <main>
   <!-- Input panel -->
@@ -620,8 +620,8 @@ function renderPlanResults(project) {
 
   const shotsById = {};
   for (const scene of project.scenes) for (const shot of scene.shots) shotsById[shot.id] = shot;
-  const promptsByShotId = {};
-  for (const prompt of plan.prompts || []) promptsByShotId[prompt.shot_id] = prompt;
+  const intentsByShotId = {};
+  for (const intent of plan.intents || []) intentsByShotId[intent.shot_id] = intent;
 
   const chainsEl = document.getElementById("chains");
   chainsEl.innerHTML = "";
@@ -634,8 +634,8 @@ function renderPlanResults(project) {
     chainDiv.appendChild(head);
     for (const shotId of chain) {
       const shot = shotsById[shotId];
-      const prompt = promptsByShotId[shotId];
-      if (!shot || !prompt) continue;
+      const intent = intentsByShotId[shotId];
+      if (!shot || !intent) continue;
       const shotDiv = document.createElement("div");
       shotDiv.className = "shot";
       const shotHead = document.createElement("div");
@@ -648,12 +648,12 @@ function renderPlanResults(project) {
       shotDiv.appendChild(shotHead);
       const promptBox = document.createElement("div");
       promptBox.className = "prompt-box";
-      promptBox.textContent = prompt.prompt;
+      promptBox.textContent = intent.description;
       shotDiv.appendChild(promptBox);
       const copyBtn = document.createElement("button");
       copyBtn.className = "copy-btn";
       copyBtn.textContent = "Copy prompt";
-      copyBtn.onclick = () => navigator.clipboard.writeText(prompt.prompt);
+      copyBtn.onclick = () => navigator.clipboard.writeText(intent.description);
       shotDiv.appendChild(copyBtn);
       chainDiv.appendChild(shotDiv);
     }
@@ -927,12 +927,12 @@ async function loadRenderModels() {
 }
 
 function promptForTake(take) {
-  // Prefer the shot's own Veo prompt when a plan is loaded; fall back to what
-  // the take was blocked from, so generating never depends on a plan.
-  const prompt = (_project?.render_plan?.prompts || []).find(
-    (p) => p.shot_id === take.shot_id
+  // Prefer the shot's own intent when a plan is loaded; fall back to what the
+  // take was blocked from, so generating never depends on a plan.
+  const intent = (_project?.render_plan?.intents || []).find(
+    (i) => i.shot_id === take.shot_id
   );
-  if (prompt) return prompt.prompt;
+  if (intent) return intent.description;
   return [take.camera_move, take.lens, take.framing].filter(Boolean).join(", ");
 }
 

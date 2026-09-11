@@ -88,7 +88,12 @@ def select_anchors(
 
 
 def veo_constraint_flags(prompt_text: str, shot: Shot) -> list[ContinuityFlag]:
-    """Flag known Veo failure modes that VeoPrompt itself has no field for."""
+    """Flag known Veo failure modes that no field on a shot captures.
+
+    A vendor lint, deliberately: it reads a shot's text and warns, but never
+    constrains what a `ShotIntent` may say. Veo's actual limits are applied
+    by `video.veo_prompt()` at the execution boundary.
+    """
     flags: list[ContinuityFlag] = []
 
     if _ON_SCREEN_TEXT_RE.search(prompt_text):

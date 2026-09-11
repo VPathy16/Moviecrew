@@ -30,7 +30,7 @@ def test_make_returns_a_consistent_project():
     render_plan = project.render_plan
     assert render_plan is not None
 
-    prompt_shot_ids = {prompt.shot_id for prompt in render_plan.prompts}
+    prompt_shot_ids = {prompt.shot_id for prompt in render_plan.intents}
     assert prompt_shot_ids == all_shot_ids
 
     assert set(render_plan.order) == all_shot_ids

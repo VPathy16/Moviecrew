@@ -50,14 +50,14 @@ def test_plan_with_mock_backend_returns_full_project():
         assert scene["shots"]
 
     render_plan = project["render_plan"]
-    assert render_plan["prompts"]
+    assert render_plan["intents"]
     assert render_plan["chains"]
     assert render_plan["order"]
 
-    for prompt in render_plan["prompts"]:
-        assert prompt["prompt"]
-        assert "negative_prompt" in prompt
-        assert prompt["aspect_ratio"] == "16:9"
+    for intent in render_plan["intents"]:
+        assert intent["description"]
+        assert "negative" in intent
+        assert intent["aspect_ratio"] == "16:9"
 
 
 def test_plan_with_explicit_detail_level():
@@ -65,7 +65,7 @@ def test_plan_with_explicit_detail_level():
         "/api/plan", json={"concept": "A heist at a museum.", "backend": "mock", "detail": "lean"}
     )
     assert res.status_code == 200
-    assert res.json()["render_plan"]["prompts"]
+    assert res.json()["render_plan"]["intents"]
 
 
 def test_plan_rejects_unknown_backend():

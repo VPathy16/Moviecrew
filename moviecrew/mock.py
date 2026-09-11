@@ -4,7 +4,7 @@ Returns canned JSON per task. Field names mirror moviecrew.schema exactly so
 the dicts can be unpacked straight into the dataclasses. IDs are chosen to
 line up across tasks (scene "sc1" -> shots "sc1-sh1"/"sc1-sh2" -> prompts/
 flags keyed by those shot ids) so a caller can drive the full schema — Bible,
-Scene, Shot, VeoPrompt, ContinuityFlag, RenderPlan — end to end from mock
+Scene, Shot, ShotIntent, ContinuityFlag, RenderPlan — end to end from mock
 responses alone.
 """
 

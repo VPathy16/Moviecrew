@@ -68,8 +68,11 @@ class RenderCapabilities:
 class ShotSpec:
     """One render request, in backend-neutral terms.
 
-    Deliberately not `VeoPrompt`: that name and shape belong to the frozen
-    schema and to one vendor. `from_veo_prompt` is the one-way adapter.
+    The execution-side twin of `schema.ShotIntent`: an intent says what the
+    shot should be, a spec says what this request will carry. They are kept
+    apart because a spec holds things no intent should know — a resolution,
+    a seed, a URL a provider can fetch a driving take from. `from_intent` is
+    the one-way adapter.
 
     `reference_video` is the previz take driving camera motion;
     `first_frame` / `last_frame` are its bookend stills, used by backends
@@ -90,14 +93,20 @@ class ShotSpec:
     seed: Optional[int] = None
 
     @classmethod
-    def from_veo_prompt(cls, prompt: Any, **overrides: Any) -> "ShotSpec":
+    def from_intent(cls, intent: Any, **overrides: Any) -> "ShotSpec":
+        """Adapt a `ShotIntent` into a request spec.
+
+        Duration is rounded to whole seconds here and clamped later by the
+        backend's own `capabilities.clamp_duration`, so the intent keeps the
+        length that was actually wanted.
+        """
         spec = cls(
-            shot_id=prompt.shot_id,
-            prompt=prompt.prompt,
-            negative_prompt=getattr(prompt, "negative_prompt", ""),
-            duration_s=getattr(prompt, "duration_s", 8),
-            aspect_ratio=getattr(prompt, "aspect_ratio", "16:9"),
-            reference_images=list(getattr(prompt, "reference_images", [])),
+            shot_id=intent.shot_id,
+            prompt=intent.description,
+            negative_prompt=getattr(intent, "negative", ""),
+            duration_s=int(round(getattr(intent, "duration_s", 8))),
+            aspect_ratio=getattr(intent, "aspect_ratio", "16:9"),
+            reference_images=list(getattr(intent, "reference_images", [])),
         )
         for key, value in overrides.items():
             setattr(spec, key, value)
