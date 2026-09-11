@@ -2,7 +2,7 @@
 
 Stdlib-only dataclasses describing the pipeline's shared vocabulary: a
 project's "Bible" (locked characters/locations/style — the consistency
-layer), its scenes and shots, the Veo prompts generated per shot, and the
+layer), its scenes and shots, the backend-neutral `ShotIntent` per shot, and the
 continuity flags / render plan produced downstream. No third-party
 dependencies here so this module always imports, even without the
 `anthropic` extra installed.
@@ -11,27 +11,33 @@ dependencies here so this module always imports, even without the
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Optional
 
-# --- Veo constraints -------------------------------------------------------
+_ASPECT_RATIO_RE = re.compile(r"^(\d+):(\d+)$")
 
-# Legal clip lengths for Veo 3/3.1; 8s is the max for standard generation.
-VEO_LEGAL_DURATIONS_S: tuple[int, ...] = (4, 6, 8)
-VEO_MAX_DURATION_S: int = max(VEO_LEGAL_DURATIONS_S)
-VEO_MIN_DURATION_S: int = min(VEO_LEGAL_DURATIONS_S)
-VEO_MAX_REFERENCE_IMAGES: int = 3
-VEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16")
-
-# Veo extends a clip by continuing it from its final frame, up to 20 times,
-# so one continuous take ("chain") is at most 1 base clip + 20 extensions.
-VEO_MAX_EXTENSIONS: int = 20
-VEO_MAX_CHAIN_SEGMENTS: int = VEO_MAX_EXTENSIONS + 1
+DEFAULT_ASPECT_RATIO = "16:9"
 
 
-def clamp_duration(seconds: float) -> int:
-    """Snap an arbitrary duration to the nearest legal Veo clip length."""
-    return min(VEO_LEGAL_DURATIONS_S, key=lambda legal: abs(legal - seconds))
+def parse_aspect_ratio(ratio: str) -> tuple[int, int]:
+    """`"239:100"` -> `(239, 100)`. Raises on anything that isn't a ratio.
+
+    Both sides must be positive: `0:0`, `16:0` and `0:9` are well-formed
+    strings and meaningless as ratios, so they are refused here rather than
+    surfacing as a division error inside some backend.
+
+    Which ratios are *renderable* is a backend's business — 2.39:1
+    anamorphic is a legitimate thing for a film to want, and the fact that
+    one model cannot produce it is a fact about that model.
+    """
+    match = _ASPECT_RATIO_RE.match(ratio or "")
+    if not match:
+        raise ValueError(f"aspect_ratio must look like 'W:H', got {ratio!r}")
+    width, height = int(match.group(1)), int(match.group(2))
+    if width <= 0 or height <= 0:
+        raise ValueError(f"aspect_ratio sides must both be positive, got {ratio!r}")
+    return width, height
 
 
 # --- Bible (consistency layer) ---------------------------------------------
@@ -90,10 +96,23 @@ class Bible:
 
 @dataclass
 class Shot:
+    """One shot as the production intends it — not as a backend can render it.
+
+    `duration_s` is whatever the shot wants, in seconds. It is deliberately
+    not snapped to any backend's legal clip lengths and deliberately a
+    float: 2.5 seconds and 11.5 seconds are ordinary creative intentions,
+    and a pipeline that rounds them on the way in has destroyed information
+    before anyone chose what would render the shot.
+
+    `reference_image_ids` is likewise uncapped. A backend that accepts three
+    references truncates to three at its own boundary; the shot keeps what
+    the production attached to it.
+    """
+
     id: str
     scene_id: str
     description: str
-    duration_s: int
+    duration_s: float
     camera_move: str = ""
     lens: str = ""
     framing: str = ""
@@ -103,11 +122,9 @@ class Shot:
     consistency_anchor: bool = False
 
     def __post_init__(self) -> None:
-        self.duration_s = clamp_duration(self.duration_s)
-        if len(self.reference_image_ids) > VEO_MAX_REFERENCE_IMAGES:
+        if self.duration_s <= 0:
             raise ValueError(
-                f"shot {self.id}: at most {VEO_MAX_REFERENCE_IMAGES} reference "
-                f"images allowed, got {len(self.reference_image_ids)}"
+                f"shot {self.id}: duration_s must be positive, got {self.duration_s}"
             )
 
 
@@ -126,21 +143,55 @@ class Scene:
 
 
 @dataclass
-class VeoPrompt:
+class ShotIntent:
+    """What a shot should be, in terms no backend owns.
+
+    This is the pipeline's centre: what the agents produce and what every
+    stage downstream consumes. It replaced `VeoPrompt`, which put one
+    vendor's name and one vendor's limits at the middle of the system — so
+    a shot could not be expressed without first deciding what would render
+    it, and every stage inherited constraints belonging to a single model.
+
+    Nothing here is clamped to a backend's rules. A duration is whatever the
+    shot wants, in seconds, as a float, and an aspect ratio is any real
+    ratio. Veo's 4/6/8-second legality, its cap of three reference images,
+    its two renderable aspect ratios — those are applied by
+    `video.veo_prompt()` at the moment a request is actually built, and a
+    different backend applies its own. An intent that survives being asked
+    for is a better record of what was wanted than one silently rounded on
+    creation.
+
+    It deliberately carries **no reference images**. Those live on the
+    `Shot`, which storyboard approval mutates, and a copy taken at plan time
+    goes stale the moment a board is approved. An execution adapter resolves
+    them from live project state instead — see `production.resolve_shot`.
+    Two mutable copies of the same production state is how a canonical
+    representation stops being canonical.
+
+    `description` is prose today. That is a known interim state: the
+    roadmap's next step turns cinematography into structure (camera
+    transforms, lens, focus, composition, actor marks), and the prose
+    becomes something generated from that structure for the benefit of
+    models that want words. Nothing here blocks that — a structured field
+    can be added beside `description` and the prose derived from it.
+    """
+
     shot_id: str
-    prompt: str
-    negative_prompt: str = ""
-    duration_s: int = VEO_MAX_DURATION_S
-    aspect_ratio: str = "16:9"
-    reference_images: list[str] = field(default_factory=list)
+    description: str
+    negative: str = ""
+    duration_s: float = 8.0
+    aspect_ratio: str = DEFAULT_ASPECT_RATIO
 
     def __post_init__(self) -> None:
-        self.duration_s = clamp_duration(self.duration_s)
-        if self.aspect_ratio not in VEO_ASPECT_RATIOS:
+        if self.duration_s <= 0:
             raise ValueError(
-                f"prompt for shot {self.shot_id}: aspect_ratio must be one of "
-                f"{VEO_ASPECT_RATIOS}"
+                f"intent for shot {self.shot_id}: duration_s must be positive, "
+                f"got {self.duration_s}"
             )
+        try:
+            parse_aspect_ratio(self.aspect_ratio)
+        except ValueError as exc:
+            raise ValueError(f"intent for shot {self.shot_id}: {exc}") from exc
 
 
 @dataclass
@@ -152,11 +203,11 @@ class ContinuityFlag:
 
 @dataclass
 class RenderPlan:
-    prompts: list[VeoPrompt] = field(default_factory=list)
+    intents: list[ShotIntent] = field(default_factory=list)
     flags: list[ContinuityFlag] = field(default_factory=list)
     order: list[str] = field(default_factory=list)
     chains: list[list[str]] = field(default_factory=list)
-    est_duration_s: int = 0
+    est_duration_s: float = 0.0
 
 
 # --- Project (top-level container) ------------------------------------------

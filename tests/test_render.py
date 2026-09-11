@@ -21,7 +21,7 @@ from moviecrew.render_openrouter import (
     OpenRouterRenderClient,
     RenderError,
 )
-from moviecrew.schema import VeoPrompt
+from moviecrew.schema import ShotIntent
 
 
 # ---------------------------------------------------------------------- #
@@ -49,24 +49,30 @@ def test_clamp_duration_respects_the_ceiling():
 # ---------------------------------------------------------------------- #
 
 
-def test_shot_spec_from_veo_prompt_carries_the_prompt():
-    prompt = VeoPrompt(
+def test_shot_spec_from_intent_carries_the_shot():
+    intent = ShotIntent(
         shot_id="sc1-sh1",
-        prompt="Mara climbs the cliff path.",
-        negative_prompt="blurry",
+        description="Mara climbs the cliff path.",
+        negative="blurry",
         duration_s=8,
-        reference_images=["ch1.png"],
     )
-    spec = ShotSpec.from_veo_prompt(prompt)
+    spec = ShotSpec.from_intent(intent, reference_images=["ch1.png"])
     assert spec.shot_id == "sc1-sh1"
+    assert spec.prompt == "Mara climbs the cliff path."
     assert spec.negative_prompt == "blurry"
     assert spec.reference_images == ["ch1.png"]
 
 
 def test_shot_spec_overrides_apply():
-    prompt = VeoPrompt(shot_id="s1", prompt="p")
-    spec = ShotSpec.from_veo_prompt(prompt, reference_video="https://x/take.mp4")
+    intent = ShotIntent(shot_id="s1", description="p")
+    spec = ShotSpec.from_intent(intent, reference_video="https://x/take.mp4")
     assert spec.reference_video == "https://x/take.mp4"
+
+
+def test_shot_spec_keeps_an_intents_unusual_duration():
+    """Clamping belongs to the backend's capabilities, not to the adapter."""
+    spec = ShotSpec.from_intent(ShotIntent(shot_id="s1", description="p", duration_s=11.4))
+    assert spec.duration_s == 11
 
 
 def test_shot_spec_defaults_are_not_shared():

@@ -18,7 +18,7 @@ from moviecrew.schema import (
     RenderPlan,
     Scene,
     Shot,
-    VeoPrompt,
+    ShotIntent,
 )
 
 
@@ -82,12 +82,19 @@ def test_cinematographer_contract(client: MockLLMClient):
 
 def test_prompter_contract(client: MockLLMClient):
     prompter = client.complete_json(task="prompter", system="", user="")
-    prompts = [VeoPrompt(**p) for p in prompter["prompts"]]
-    assert prompts
-    for prompt in prompts:
-        assert prompt.prompt
-        assert prompt.negative_prompt
-        assert prompt.reference_images
+    intents = [
+        ShotIntent(
+            shot_id=p["shot_id"],
+            description=p["prompt"],
+            negative=p.get("negative_prompt", ""),
+            duration_s=p.get("duration_s", 8),
+        )
+        for p in prompter["prompts"]
+    ]
+    assert intents
+    for intent in intents:
+        assert intent.description
+        assert intent.negative
 
 
 def test_continuity_contract(client: MockLLMClient):
@@ -135,9 +142,17 @@ def test_full_project_assembles_strictly_from_mock_responses(client: MockLLMClie
         for raw_scene in writer["scenes"]
     ]
 
-    prompts = [VeoPrompt(**p) for p in prompter["prompts"]]
+    intents = [
+        ShotIntent(
+            shot_id=p["shot_id"],
+            description=p["prompt"],
+            negative=p.get("negative_prompt", ""),
+            duration_s=p.get("duration_s", 8),
+        )
+        for p in prompter["prompts"]
+    ]
     flags = [ContinuityFlag(**f) for f in continuity["flags"]]
-    render_plan = RenderPlan(prompts=prompts, flags=flags, **editor)
+    render_plan = RenderPlan(intents=intents, flags=flags, **editor)
 
     project = Project(
         title=director["title"],

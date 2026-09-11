@@ -232,3 +232,130 @@ def test_a_download_failure_does_not_lose_the_provider_url(take, takes_root, mon
     assert body["local_path"] is None
     assert body["status"] == "succeeded"
     assert body["video_url"]
+
+
+# ---------------------------------------------------------------------- #
+# The real render path resolves canonical project state                   #
+# ---------------------------------------------------------------------- #
+
+
+def _add_take(root, *, scene_id="sc1", shot_id="sc1-sh1", number=1):
+    record = Take(
+        shot_id=shot_id,
+        scene_id=scene_id,
+        take_number=number,
+        video_path=f"{scene_id}/{shot_id}/take_{number:03d}.mp4",
+        duration_s=8.0,
+    )
+    save_take(record, root)
+    video = root / scene_id / shot_id / f"take_{number:03d}.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(_MP4)
+    return record
+
+
+def _fake_client():
+    """The FakeRenderClient the portal is currently using."""
+    from moviecrew.portal.app import _render_client
+
+    backend, err = _render_client()
+    assert err is None
+    return backend
+
+
+def _plan_session(client):
+    res = client.post("/api/plan", json={"concept": "A keeper and a sea spirit."})
+    assert res.status_code == 200
+    return res.json()["session_id"]
+
+
+def test_render_resolves_the_shot_intent_from_the_session(takes_root, monkeypatch):
+    """The browser sends a session id, not a reconstructed prompt: the server
+    reads the shot's intent out of the project it already holds."""
+    from moviecrew.portal.app import _sessions
+
+    monkeypatch.setenv("MOVIECREW_PUBLIC_BASE_URL", "https://previz.example.test")
+    session_id = _plan_session(client)
+    project = _sessions[session_id].project
+    shot = project.scenes[0].shots[0]
+    intent = next(i for i in project.render_plan.intents if i.shot_id == shot.id)
+    _add_take(takes_root, scene_id=shot.scene_id, shot_id=shot.id)
+
+    res = client.post(
+        "/api/render",
+        json={
+            "scene_id": shot.scene_id,
+            "shot_id": shot.id,
+            "take_number": 1,
+            "session_id": session_id,
+        },
+    )
+    assert res.status_code == 200, res.json()
+
+    spec, _model = _fake_client().submitted[-1]
+    assert spec.prompt == intent.description
+    assert spec.shot_id == shot.id
+
+
+def test_storyboard_approval_changes_the_next_render_request(takes_root, monkeypatch):
+    """The end-to-end regression: approve a board, then render, and the
+    request carries the approved still."""
+    from moviecrew.image import MockImageProvider
+    from moviecrew.portal.app import _sessions
+
+    class Promoting(MockImageProvider):
+        promotes_references = True
+
+    monkeypatch.setenv("MOVIECREW_PUBLIC_BASE_URL", "https://previz.example.test")
+    session_id = _plan_session(client)
+    session = _sessions[session_id]
+    session.image_provider = Promoting()
+
+    shot = session.project.scenes[0].shots[0]
+    shot.consistency_anchor = True
+    _add_take(takes_root, scene_id=shot.scene_id, shot_id=shot.id)
+
+    body = {
+        "scene_id": shot.scene_id,
+        "shot_id": shot.id,
+        "take_number": 1,
+        "session_id": session_id,
+    }
+    assert client.post("/api/render", json=body).status_code == 200
+    before = list(_fake_client().submitted[-1][0].reference_images)
+
+    client.post("/api/storyboard", json={"session_id": session_id})
+    client.post("/api/storyboard/approve", json={"session_id": session_id})
+
+    assert client.post("/api/render", json=body).status_code == 200
+    after = list(_fake_client().submitted[-1][0].reference_images)
+
+    assert after != before, "approval must reach the request"
+    assert after[0].endswith(".png")
+    assert after[0] in shot.reference_image_ids
+
+
+def test_render_without_a_session_or_prompt_is_refused(takes_root):
+    _add_take(takes_root)
+    res = client.post(
+        "/api/render",
+        json={"scene_id": "sc1", "shot_id": "sc1-sh1", "take_number": 1},
+    )
+    assert res.status_code == 400
+    assert "session_id" in res.json()["error"]
+
+
+def test_a_session_that_lacks_the_shot_is_an_error_not_a_silent_fallback(takes_root):
+    _add_take(takes_root, scene_id="sc9", shot_id="sc9-sh1")
+    session_id = _plan_session(client)
+    res = client.post(
+        "/api/render",
+        json={
+            "scene_id": "sc9",
+            "shot_id": "sc9-sh1",
+            "take_number": 1,
+            "session_id": session_id,
+        },
+    )
+    assert res.status_code == 404
+    assert "disagree" in res.json()["error"]

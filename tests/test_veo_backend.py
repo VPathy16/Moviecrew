@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import os
 
-from moviecrew.schema import VEO_MAX_DURATION_S, VeoPrompt
+from moviecrew.video import VEO_MAX_DURATION_S
+from moviecrew.video import VeoPrompt
 from moviecrew.video import VeoBackend
 
 

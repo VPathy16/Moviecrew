@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from .image import ImageProvider, NullImageProvider
-from .schema import VEO_MAX_REFERENCE_IMAGES, Project
+from .schema import Project
 
 
 class Stage(str, Enum):
@@ -112,15 +112,17 @@ class StudioSession:
         board_dir.mkdir(parents=True, exist_ok=True)
 
         prompts_by_shot_id = {
-            p.shot_id: p.prompt
-            for p in (self.project.render_plan.prompts if self.project.render_plan else [])
+            intent.shot_id: intent.description
+            for intent in (
+                self.project.render_plan.intents if self.project.render_plan else []
+            )
         }
 
         self.board = []
         for scene in self.project.scenes:
             for shot in scene.shots:
-                veo_prompt = prompts_by_shot_id.get(shot.id, shot.description)
-                still_prompt = _veo_to_still_prompt(veo_prompt)
+                shot_text = prompts_by_shot_id.get(shot.id, shot.description)
+                still_prompt = _veo_to_still_prompt(shot_text)
                 frame = self._generate_frame(shot.id, still_prompt, board_dir)
                 self.board.append(frame)
 
@@ -133,9 +135,13 @@ class StudioSession:
         provider declares promotes_references=True (real generators); with
         Null/Mock providers the existing reference_image_ids are left
         untouched so hand-supplied library stills survive.  When promoting,
-        the board image is PREPENDED and the list is capped at
-        VEO_MAX_REFERENCE_IMAGES; the pre-promotion list is stashed on the
-        frame so revise() can restore it.
+        the board image is PREPENDED and nothing is dropped: the approved
+        frame is the most important reference, and a backend that accepts
+        fewer takes the first N at its own boundary.  Truncating here would
+        discard a still the production deliberately attached, to satisfy a
+        limit belonging to whichever renderer happened to be configured.
+        The pre-promotion list is stashed on the frame so revise() can
+        restore it.
         """
         frames_by_shot_id = {f.shot_id: f for f in self.board}
 
@@ -147,8 +153,7 @@ class StudioSession:
                 if not self.image_provider.promotes_references:
                     continue
                 frame.prior_reference_image_ids = list(shot.reference_image_ids)
-                new_refs = [frame.image_path] + shot.reference_image_ids
-                shot.reference_image_ids = new_refs[:VEO_MAX_REFERENCE_IMAGES]
+                shot.reference_image_ids = [frame.image_path] + shot.reference_image_ids
 
         self.stage = Stage.OUTPUT
 
@@ -164,8 +169,10 @@ class StudioSession:
         board_dir.mkdir(parents=True, exist_ok=True)
 
         prompts_by_shot_id = {
-            p.shot_id: p.prompt
-            for p in (self.project.render_plan.prompts if self.project.render_plan else [])
+            intent.shot_id: intent.description
+            for intent in (
+                self.project.render_plan.intents if self.project.render_plan else []
+            )
         }
 
         if shot_id:

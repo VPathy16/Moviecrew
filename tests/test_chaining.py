@@ -9,7 +9,8 @@ each chain's first member's position in `order`.
 from moviecrew.crew import MovieCrew
 from moviecrew.mock import MockLLMClient
 from moviecrew.rules import normalize_chains
-from moviecrew.schema import VEO_MAX_CHAIN_SEGMENTS, Shot
+from moviecrew.schema import Shot
+from moviecrew.video import VEO_MAX_CHAIN_SEGMENTS, segment_for_veo
 
 
 def _shot(shot_id: str) -> Shot:
@@ -58,16 +59,32 @@ def test_normalize_chains_drops_duplicate_within_a_single_raw_chain():
     assert chains == [["a", "b"]]
 
 
-def test_normalize_chains_splits_oversized_chains():
+def test_a_long_editorial_chain_stays_whole():
+    """A chain is a creative statement — these shots are one continuous take.
+    Veo can only execute 21 segments per extend-run, but that is Veo's
+    problem and `video.segment_for_veo` solves it at the boundary. Cutting
+    the canonical chain here would make an editorial decision on behalf of
+    whichever backend happened to be configured."""
     shot_ids = [f"s{i}" for i in range(VEO_MAX_CHAIN_SEGMENTS + 5)]
     shots = [_shot(shot_id) for shot_id in shot_ids]
+
     chains = normalize_chains(shots, shot_ids, [shot_ids])
 
-    assert len(chains) == 2
-    assert chains[0] == shot_ids[:VEO_MAX_CHAIN_SEGMENTS]
-    assert chains[1] == shot_ids[VEO_MAX_CHAIN_SEGMENTS:]
-    for chain in chains:
-        assert len(chain) <= VEO_MAX_CHAIN_SEGMENTS
+    assert chains == [shot_ids]
+    assert len(chains[0]) > VEO_MAX_CHAIN_SEGMENTS
+
+
+def test_the_veo_adapter_segments_that_long_chain_for_execution():
+    shot_ids = [f"s{i}" for i in range(VEO_MAX_CHAIN_SEGMENTS + 5)]
+    shots = [_shot(shot_id) for shot_id in shot_ids]
+    chain = normalize_chains(shots, shot_ids, [shot_ids])[0]
+
+    runs = segment_for_veo(chain)
+
+    assert len(runs) == 2
+    assert [shot_id for run in runs for shot_id in run] == chain
+    for run in runs:
+        assert len(run) <= VEO_MAX_CHAIN_SEGMENTS
 
 
 def test_normalize_chains_orders_chains_by_first_member_index():
@@ -88,4 +105,5 @@ def test_make_produces_well_formed_chains_via_mock():
     assert set(chained_ids) == all_shot_ids
     assert len(chained_ids) == len(set(chained_ids))  # every shot exactly once
     for chain in render_plan.chains:
-        assert len(chain) <= VEO_MAX_CHAIN_SEGMENTS
+        for run in segment_for_veo(chain):
+            assert len(run) <= VEO_MAX_CHAIN_SEGMENTS

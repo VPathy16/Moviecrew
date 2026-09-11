@@ -9,7 +9,7 @@ reference provider, nothing has a real reference still, so no shot anchors
 
 from moviecrew.crew import MovieCrew
 from moviecrew.mock import MockLLMClient
-from moviecrew.schema import VEO_LEGAL_DURATIONS_S
+from moviecrew.video import VEO_LEGAL_DURATIONS_S
 
 
 def test_make_returns_a_consistent_project():
@@ -30,7 +30,7 @@ def test_make_returns_a_consistent_project():
     render_plan = project.render_plan
     assert render_plan is not None
 
-    prompt_shot_ids = {prompt.shot_id for prompt in render_plan.prompts}
+    prompt_shot_ids = {prompt.shot_id for prompt in render_plan.intents}
     assert prompt_shot_ids == all_shot_ids
 
     assert set(render_plan.order) == all_shot_ids

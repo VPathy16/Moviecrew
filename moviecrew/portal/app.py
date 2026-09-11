@@ -54,6 +54,7 @@ from ..llm import LLMClient
 from ..mock import MockLLMClient
 from ..reference import FileReferenceImageProvider, ReferenceImageProvider
 from ..studio import Stage, StudioSession
+from ..production import UnknownShot, resolve_shot
 from ..render import FakeRenderClient, JobStatus, ShotSpec
 from ..takes import list_takes, resolve_video, save_take, shot_dir
 
@@ -397,6 +398,58 @@ def _render_client():
     return client, None
 
 
+def _spec_for(req, take, reference_video: Optional[str]):
+    """Build the request spec from canonical project state where there is any.
+
+    The order is deliberate: production state first, take second, explicit
+    override last. A session id resolves the shot's intent and its *current*
+    references — so a board approved a moment ago is in the request — and the
+    take supplies only what it alone knows, the driving clip. Without a
+    session the take's own metadata stands in, which is what makes a previz
+    renderable before the pipeline has ever run.
+    """
+    session = _sessions.get(req.session_id) if req.session_id else None
+    state = None
+    if session is not None:
+        try:
+            state = resolve_shot(session.project, req.shot_id)
+        except UnknownShot:
+            return None, _error(
+                404,
+                f"session {req.session_id!r} has no shot {req.shot_id!r}; the take "
+                "and the loaded project disagree.",
+            )
+
+    if state is not None:
+        spec = ShotSpec.from_intent(
+            state.intent,
+            reference_images=state.reference_images,
+            reference_video=reference_video,
+        )
+    elif req.prompt:
+        spec = ShotSpec(
+            shot_id=take.shot_id,
+            prompt=req.prompt,
+            duration_s=int(take.duration_s or 8),
+            reference_video=reference_video,
+        )
+    else:
+        return None, _error(
+            400,
+            "nothing to render: pass session_id so the shot's intent can be "
+            "resolved from the project, or prompt to render the take directly.",
+        )
+
+    # Explicit overrides win, and only where they were actually given.
+    if req.prompt and state is not None:
+        spec.prompt = req.prompt
+    if req.reference_images is not None:
+        spec.reference_images = list(req.reference_images)
+    if req.duration_s is not None:
+        spec.duration_s = int(round(req.duration_s))
+    return spec, None
+
+
 def _find_take(scene_id: str, shot_id: str, take_number: int):
     root = _takes_root()
     return next(
@@ -426,12 +479,28 @@ class StoryboardRequest(BaseModel):
 
 
 class RenderRequest(BaseModel):
+    """A request to generate one shot from one take.
+
+    `session_id` is how the canonical project reaches this endpoint. With it,
+    the shot's `ShotIntent` and its *current* reference images are resolved
+    server-side and become the request — so approving a storyboard changes
+    what the next render actually receives.
+
+    `prompt` and `reference_images` are overrides, not the normal path. The
+    browser reconstructing canonical filmmaking state and posting it back is
+    exactly the arrangement that let an approved board and a submitted
+    render disagree. They stay for the case where no plan is loaded at all —
+    a take rendered straight from Blender — and are documented as such.
+    """
+
     scene_id: str
     shot_id: str
     take_number: int
-    prompt: str
+    session_id: Optional[str] = None
+    prompt: str = ""
     model: str = ""
-    reference_images: list[str] = []
+    reference_images: Optional[list[str]] = None
+    duration_s: Optional[float] = None
     estimate_only: bool = False
 
 
@@ -564,7 +633,14 @@ def render_take(req: RenderRequest):
     model = req.model or _DEFAULT_RENDER_MODEL
     capabilities = client.capabilities(model)
 
+    # The request is validated before the deployment is: a request naming a
+    # shot this project does not have is wrong however the portal is hosted,
+    # and saying so first gives the more useful error.
     reference_video = _public_take_url(take)
+    spec, err = _spec_for(req, take, reference_video)
+    if err:
+        return err
+
     if capabilities.supports_video_reference and reference_video is None:
         return _error(
             400,
@@ -572,14 +648,6 @@ def render_take(req: RenderRequest):
             f"reachable address. Set {_PUBLIC_BASE_URL_ENV} to where it can be "
             "fetched from — a provider cannot reach a loopback address.",
         )
-
-    spec = ShotSpec(
-        shot_id=take.shot_id,
-        prompt=req.prompt,
-        duration_s=int(take.duration_s or 8),
-        reference_video=reference_video,
-        reference_images=list(req.reference_images),
-    )
 
     if req.estimate_only:
         return {

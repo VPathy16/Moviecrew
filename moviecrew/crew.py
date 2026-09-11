@@ -28,8 +28,15 @@ from .agents import (
 )
 from .llm import LLMClient
 from .reference import NullReferenceImageProvider, ReferenceImageProvider, populate_reference_stills
-from .rules import normalize_chains, select_anchors, veo_constraint_flags
+from .production import UnknownShot, resolve_shot
+from .rules import (
+    normalize_chains,
+    normalize_order,
+    select_anchors,
+    veo_constraint_flags,
+)
 from .schema import (
+    DEFAULT_ASPECT_RATIO,
     Bible,
     Character,
     ContinuityFlag,
@@ -39,9 +46,97 @@ from .schema import (
     RenderPlan,
     Scene,
     Shot,
-    VeoPrompt,
+    ShotIntent,
 )
-from .video import RenderResult, VideoBackend
+from .video import RenderResult, VideoBackend, segment_for_veo, veo_prompt
+
+
+class PipelineError(RuntimeError):
+    """The pipeline could not produce a complete project.
+
+    Raised where the alternative would be to carry on with a film that is
+    quietly missing a shot. An agent returning malformed output is a
+    recoverable condition — a shot disappearing from the plan without anyone
+    noticing is not.
+    """
+
+
+def _shots_for_scene(
+    scene: Scene, raw_shots: list[dict], seen_shot_ids: set[str]
+) -> list[Shot]:
+    """Build one scene's shots, refusing to lose any of them silently.
+
+    The cinematographer is a language model and its output is a proposal.
+    Shots belonging to another scene are rejected rather than dropped on the
+    floor, because a shot filtered out here would never appear in the plan,
+    never be rendered, and never be missed. Duplicate ids are rejected for
+    the same reason: the second one would overwrite or shadow the first.
+    """
+    shots: list[Shot] = []
+    for raw in raw_shots:
+        shot_id = raw.get("id")
+        scene_id = raw.get("scene_id")
+        if scene_id != scene.id:
+            raise PipelineError(
+                f"cinematographer returned shot {shot_id!r} with scene_id "
+                f"{scene_id!r} while working on scene {scene.id!r}"
+            )
+        if shot_id in seen_shot_ids:
+            raise PipelineError(f"duplicate shot id {shot_id!r}")
+        seen_shot_ids.add(shot_id)
+        shots.append(Shot(**raw))
+
+    if not shots:
+        raise PipelineError(f"cinematographer returned no shots for scene {scene.id!r}")
+    return shots
+
+
+def _prompt_for_shot(
+    shot: Shot, raw_prompts: list[dict]
+) -> tuple[dict, list[ContinuityFlag]]:
+    """The one prompt belonging to `shot`, plus flags about what else came back.
+
+    A prompter that answers with the wrong shot id used to produce nothing
+    for this shot at all — the filter matched zero rows and the loop moved
+    on, leaving a shot in the film with no intent behind it. That is now an
+    error. Extra prompts for other shots are dropped with a warning rather
+    than an error: the shot at hand still got what it needed.
+    """
+    flags: list[ContinuityFlag] = []
+    mine = [p for p in raw_prompts if p.get("shot_id") == shot.id]
+    others = {p.get("shot_id") for p in raw_prompts} - {shot.id}
+
+    if others:
+        flags.append(
+            ContinuityFlag(
+                target=shot.id,
+                kind="warning",
+                message=(
+                    f"Prompter returned prompts for unrelated shots "
+                    f"{sorted(str(o) for o in others)}; ignored."
+                ),
+            )
+        )
+
+    if not mine:
+        raise PipelineError(
+            f"prompter returned no prompt for shot {shot.id!r} "
+            f"(it answered for {sorted(str(o) for o in others) or 'nothing'})"
+        )
+
+    if len(mine) > 1:
+        flags.append(
+            ContinuityFlag(
+                target=shot.id,
+                kind="warning",
+                message=f"Prompter returned {len(mine)} prompts for this shot; used the first.",
+            )
+        )
+
+    if "prompt" not in mine[0]:
+        raise PipelineError(f"prompter output for shot {shot.id!r} has no 'prompt' field")
+
+    return mine[0], flags
 
 
 def _merge_bible(provided: Bible, designer_out: dict) -> Bible:
@@ -148,44 +243,52 @@ class MovieCrew:
 
         scenes: list[Scene] = []
         all_shots: list[Shot] = []
+        seen_shot_ids: set[str] = set()
         for raw_scene in raw_scenes:
             scene = Scene(**raw_scene)
-
             cine_out = self.cinematographer.run(scene=raw_scene)
-            shots = [Shot(**s) for s in cine_out["shots"] if s["scene_id"] == scene.id]
-
-            scene.shots = shots
+            scene.shots = _shots_for_scene(scene, cine_out.get("shots", []), seen_shot_ids)
             scenes.append(scene)
-            all_shots.extend(shots)
+            all_shots.extend(scene.shots)
+
+        if not all_shots:
+            raise PipelineError("the cinematographer produced no shots for any scene")
 
         editor_out = self.editor.run(shot_ids=[shot.id for shot in all_shots])
-        order = editor_out["order"]
+        order = normalize_order(all_shots, editor_out.get("order", []))
         chains = normalize_chains(all_shots, order, editor_out.get("chains", []))
 
         select_anchors(scenes, chains, bible)
 
-        prompts: list[VeoPrompt] = []
+        intents: list[ShotIntent] = []
         flags: list[ContinuityFlag] = []
         for shot in all_shots:
             prompter_out = self.prompter.run(shot=asdict(shot))
-            raw_prompts = [p for p in prompter_out["prompts"] if p["shot_id"] == shot.id]
-            for raw_prompt in raw_prompts:
-                prompt_text = raw_prompt["prompt"]
-                prompts.append(
-                    VeoPrompt(
-                        shot_id=shot.id,
-                        prompt=prompt_text,
-                        negative_prompt=raw_prompt.get("negative_prompt", ""),
-                        duration_s=shot.duration_s,
-                        aspect_ratio="16:9",
-                        reference_images=list(shot.reference_image_ids),
-                    )
+            raw_prompt, extra_flags = _prompt_for_shot(shot, prompter_out.get("prompts", []))
+            flags.extend(extra_flags)
+
+            description = raw_prompt["prompt"]
+            intents.append(
+                ShotIntent(
+                    shot_id=shot.id,
+                    description=description,
+                    negative=raw_prompt.get("negative_prompt", ""),
+                    duration_s=shot.duration_s,
+                    aspect_ratio=DEFAULT_ASPECT_RATIO,
                 )
-                flags.extend(veo_constraint_flags(prompt_text, shot))
+            )
+            # A Veo-specific lint, run here so its warnings reach the plan;
+            # it reads a shot's text and never constrains it.
+            flags.extend(veo_constraint_flags(description, shot))
+
+        if len(intents) != len(all_shots):  # pragma: no cover - belt and braces
+            raise PipelineError(
+                f"expected one intent per shot ({len(all_shots)}), got {len(intents)}"
+            )
 
         continuity_out = self.continuity.run(
             scenes=[asdict(scene) for scene in scenes],
-            prompts=[asdict(prompt) for prompt in prompts],
+            prompts=[asdict(intent) for intent in intents],
         )
         flags.extend(ContinuityFlag(**f) for f in continuity_out["flags"])
 
@@ -210,7 +313,7 @@ class MovieCrew:
         est_duration_s = sum(shot.duration_s for shot in all_shots)
 
         render_plan = RenderPlan(
-            prompts=prompts,
+            intents=intents,
             flags=flags,
             order=order,
             chains=chains,
@@ -227,8 +330,12 @@ class MovieCrew:
         )
 
     def render(self, project: Project, backend: VideoBackend) -> list[RenderResult]:
-        """Render every prompt in project.render_plan through `backend`, in
+        """Render every intent in project.render_plan through `backend`, in
         render_plan.order. Pure orchestration: makes no network calls itself.
+
+        Each intent is adapted into a Veo request by `video.veo_prompt()`
+        immediately before the backend sees it — the one place in the whole
+        pipeline where Veo's limits apply.
 
         Chain-aware: a shot that continues a Veo extend-chain is rendered
         with extend_from set to its predecessor's shot id within that chain;
@@ -244,21 +351,25 @@ class MovieCrew:
         extend_from_by_shot_id: dict[str, Optional[str]] = {}
         in_multishot_chain_by_shot_id: dict[str, bool] = {}
         for chain in render_plan.chains:
-            in_chain = len(chain) >= 2
-            for shot_id in chain:
-                in_multishot_chain_by_shot_id[shot_id] = in_chain
-            for predecessor, shot_id in zip(chain, chain[1:]):
-                extend_from_by_shot_id[shot_id] = predecessor
+            # An editorial chain stays whole in the plan; Veo can only carry
+            # so many segments per extend-run, so the split happens here, at
+            # execution, and each run restarts from its own base clip.
+            for run in segment_for_veo(chain):
+                in_run = len(run) >= 2
+                for shot_id in run:
+                    in_multishot_chain_by_shot_id[shot_id] = in_run
+                for predecessor, shot_id in zip(run, run[1:]):
+                    extend_from_by_shot_id[shot_id] = predecessor
 
-        prompts_by_shot_id = {prompt.shot_id: prompt for prompt in render_plan.prompts}
         results: list[RenderResult] = []
         for shot_id in render_plan.order:
-            prompt = prompts_by_shot_id.get(shot_id)
-            if prompt is None:
+            try:
+                state = resolve_shot(project, shot_id)
+            except UnknownShot:
                 continue
             results.append(
                 backend.render(
-                    prompt,
+                    veo_prompt(state.intent, reference_images=state.reference_images),
                     extend_from=extend_from_by_shot_id.get(shot_id),
                     in_multishot_chain=in_multishot_chain_by_shot_id.get(shot_id, False),
                 )

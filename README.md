@@ -34,7 +34,9 @@ in [Known limits](#known-limits).
 ## The arc
 
 1. **Plan** — a concept goes through the seven agents and comes out as a
-   `Project`: bible, scenes, shots, and a `RenderPlan` of prompts.
+   `Project`: bible, scenes, shots, and a `RenderPlan` of `ShotIntent`s.
+   Durations, references and chain lengths are whatever the film wants —
+   a backend clamps them at its own adapter, never before.
 2. **Storyboard** — one still per shot for review; approving promotes each
    anchored frame into that shot's reference images.
 3. **Previz** — the Blender add-on blocks a camera from the shot's prose and
@@ -50,7 +52,7 @@ in [Known limits](#known-limits).
 
 ```bash
 pip install -e ".[portal,dev]"
-python -m pytest        # 371 passing, no key and no network needed
+python -m pytest        # 447 passing, no key and no network needed
 ```
 
 The core has no third-party dependencies — the OpenRouter clients are stdlib
@@ -171,12 +173,20 @@ render against the shot that was asked for.
 ## Layout
 
 - `moviecrew/schema.py` — the shared vocabulary as stdlib dataclasses:
-  `Bible`, `Scene`, `Shot`, `VeoPrompt`, `ContinuityFlag`, `RenderPlan`,
-  `Project`, plus the legal clip constraints.
+  `Bible`, `Scene`, `Shot`, `ShotIntent`, `ContinuityFlag`, `RenderPlan`,
+  `Project`. `ShotIntent` is the centre: what a shot should be, in terms no
+  backend owns, carrying no vendor's limits. The module does not know a
+  vendor named Veo exists.
+- `moviecrew/production.py` — resolves canonical state for one shot at the
+  moment of execution, so a request carries the references a board approval
+  just changed rather than a copy taken at plan time.
 - `moviecrew/agents.py`, `crew.py` — the seven agents and the orchestrator.
 - `moviecrew/llm.py` — `LLMClient` and the direct Anthropic backend.
   `llm_openrouter.py` routes the same interface through OpenRouter.
 - `moviecrew/image.py`, `image_openrouter.py` — storyboard stills.
+- `moviecrew/video.py` — the Veo execution boundary. Owns `VeoPrompt` and
+  `veo_prompt()`, the adapter where Veo's clip lengths, reference cap and
+  legal aspect ratios are applied — and the only place they are.
 - `moviecrew/render.py` — the backend-neutral render abstraction: submit,
   poll, fetch, and a `capabilities()` callers branch on instead of a backend
   name. `render_openrouter.py` implements it; `FakeRenderClient` is the

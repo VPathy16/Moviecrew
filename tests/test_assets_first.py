@@ -235,7 +235,7 @@ def test_make_without_bible_works_unchanged():
     crew = MovieCrew(MockLLMClient())
     project = crew.make("A lighthouse story")
     assert project.title
-    assert project.render_plan.prompts
+    assert project.render_plan.intents
     assert project.bible.props  # mock now includes prop1
 
 
@@ -243,7 +243,7 @@ def test_make_with_bible_still_produces_render_plan(provided_bible):
     crew = MovieCrew(MockLLMClient())
     project = crew.make("A story", bible=provided_bible)
     assert project.render_plan is not None
-    assert project.render_plan.prompts
+    assert project.render_plan.intents
 
 
 # ---------------------------------------------------------------------- #
