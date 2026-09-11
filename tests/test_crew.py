@@ -9,7 +9,7 @@ reference provider, nothing has a real reference still, so no shot anchors
 
 from moviecrew.crew import MovieCrew
 from moviecrew.mock import MockLLMClient
-from moviecrew.schema import VEO_LEGAL_DURATIONS_S
+from moviecrew.video import VEO_LEGAL_DURATIONS_S
 
 
 def test_make_returns_a_consistent_project():

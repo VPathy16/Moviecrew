@@ -153,10 +153,12 @@ class DesignerAgent(Agent):
 class CinematographerAgent(Agent):
     role = "cinematographer"
     system_prompt = (
-        "You are the Cinematographer. Given one scene, break it into shots. Every shot's "
-        "duration_s MUST be 4, 6, or 8 seconds.\n"
+        "You are the Cinematographer. Given one scene, break it into shots. Give each "
+        "shot the duration the cut actually wants, in seconds — 2.5, 5, 11.5 and 18 "
+        "are all legitimate; do not round to fit any particular renderer, which will "
+        "clamp or split later if it must. Durations must be positive.\n"
         'Respond with JSON only: {"shots": [{"id": str, "scene_id": str, '
-        '"description": str, "duration_s": int, "camera_move": str, "lens": str, '
+        '"description": str, "duration_s": number, "camera_move": str, "lens": str, '
         '"framing": str}]}.'
     )
 
@@ -258,12 +260,14 @@ class ContinuityAgent(Agent):
 class EditorAgent(Agent):
     role = "editor"
     system_prompt = (
-        "You are the Editor. Given every shot id, return the final render order, "
-        "plus how shots chain into continuous takes for Veo's extend-from-final-frame "
-        "feature. Group ADJACENT shots that form one continuous take into a chain "
-        "(shot ids in extend order); a hard cut starts a new chain; a standalone shot "
-        "is a one-element chain. Every shot id must appear exactly once across all "
-        "chains, consistent with order.\n"
+        "You are the Editor. Given every shot id, return the final screening order, "
+        "plus how shots group into continuous takes. A chain is an editorial "
+        "statement: these shots play as one unbroken take, with no cut between them. "
+        "Group ADJACENT shots that form one continuous take into a chain (in playing "
+        "order); a hard cut starts a new chain; a standalone shot is a one-element "
+        "chain. Chain length is a creative choice — do not shorten a take because you "
+        "imagine a tool might struggle with it. Every shot id must appear exactly "
+        "once across all chains, consistent with order.\n"
         'Respond with JSON only: {"order": [str, ...], "chains": [[str, ...], ...]}.'
     )
 

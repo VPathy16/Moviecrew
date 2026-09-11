@@ -22,15 +22,50 @@ import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
-from .schema import (
-    VEO_ASPECT_RATIOS,
-    VEO_MAX_DURATION_S,
-    VEO_MAX_REFERENCE_IMAGES,
-    ShotIntent,
-    clamp_duration,
-)
+from .schema import ShotIntent
+
+# --- Veo's limits ----------------------------------------------------------
+#
+# These live here, not in the schema, because every one of them is a fact
+# about Veo rather than about a shot. Nothing upstream reads them: a shot may
+# be 11.5 seconds with five references in a forty-shot continuous take, and
+# it is this module's job to say how much of that Veo can actually do.
+
+# Legal clip lengths for Veo 3/3.1; 8s is the max for standard generation.
+VEO_LEGAL_DURATIONS_S: tuple[int, ...] = (4, 6, 8)
+VEO_MAX_DURATION_S: int = max(VEO_LEGAL_DURATIONS_S)
+VEO_MIN_DURATION_S: int = min(VEO_LEGAL_DURATIONS_S)
+VEO_MAX_REFERENCE_IMAGES: int = 3
+VEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16")
+
+# Veo extends a clip by continuing it from its final frame, up to 20 times,
+# so one Veo-executable run is at most 1 base clip + 20 extensions.
+VEO_MAX_EXTENSIONS: int = 20
+VEO_MAX_CHAIN_SEGMENTS: int = VEO_MAX_EXTENSIONS + 1
+
+
+def clamp_duration(seconds: float) -> int:
+    """Snap an arbitrary duration to the nearest legal Veo clip length."""
+    return min(VEO_LEGAL_DURATIONS_S, key=lambda legal: abs(legal - seconds))
+
+
+def segment_for_veo(chain: Sequence[str]) -> list[list[str]]:
+    """Split one editorial chain into Veo-executable runs.
+
+    An editorial chain is a creative statement — these shots are one
+    continuous take — and it stays whole in the render plan however long it
+    is. Veo can only carry 21 segments in a single extend-run, so execution
+    splits it here, at the boundary, and the canonical chain is untouched.
+
+    A different backend segments differently or not at all; a live-action
+    unit does not segment at all, it just rolls.
+    """
+    return [
+        list(chain[start : start + VEO_MAX_CHAIN_SEGMENTS])
+        for start in range(0, len(chain), VEO_MAX_CHAIN_SEGMENTS)
+    ] or [[]]
 
 
 @dataclass
@@ -58,8 +93,15 @@ class VeoPrompt:
             )
 
 
-def veo_prompt(intent: ShotIntent) -> VeoPrompt:
+def veo_prompt(
+    intent: ShotIntent, *, reference_images: Sequence[str] = ()
+) -> VeoPrompt:
     """Adapt a backend-neutral intent into a Veo request.
+
+    References are passed in rather than read off the intent: they live on
+    the `Shot`, which storyboard approval mutates, so they are resolved from
+    live project state at the moment of execution (`production.resolve_shot`)
+    rather than copied at plan time and left to go stale.
 
     Where the intent exceeds what Veo accepts, this is where it gets cut
     down: the duration snaps to the nearest legal clip length and the
@@ -73,7 +115,7 @@ def veo_prompt(intent: ShotIntent) -> VeoPrompt:
         negative_prompt=intent.negative,
         duration_s=clamp_duration(intent.duration_s),
         aspect_ratio=intent.aspect_ratio,
-        reference_images=list(intent.reference_images)[:VEO_MAX_REFERENCE_IMAGES],
+        reference_images=list(reference_images)[:VEO_MAX_REFERENCE_IMAGES],
     )
 
 # See https://ai.google.dev/gemini-api/docs/video for the current Veo model

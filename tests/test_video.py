@@ -8,7 +8,7 @@ payloads carrying the shot's reference images and clamped duration.
 
 from moviecrew.crew import MovieCrew
 from moviecrew.mock import MockLLMClient
-from moviecrew.schema import VEO_LEGAL_DURATIONS_S
+from moviecrew.video import VEO_LEGAL_DURATIONS_S, clamp_duration
 from moviecrew.video import StubVideoBackend
 
 
@@ -24,6 +24,11 @@ def test_stub_backend_renders_every_prompt_in_order():
     assert len(results) == len(render_plan.intents)
 
     intents_by_shot_id = {intent.shot_id: intent for intent in render_plan.intents}
+    shot_refs = {
+        shot.id: shot.reference_image_ids
+        for scene in project.scenes
+        for shot in scene.shots
+    }
     for result in results:
         assert result.status == "stubbed"
         assert result.backend == "stub"
@@ -32,10 +37,11 @@ def test_stub_backend_renders_every_prompt_in_order():
         intent = intents_by_shot_id[result.shot_id]
         assert result.raw["prompt"] == intent.description
         assert result.raw["negative_prompt"] == intent.negative
-        assert result.raw["duration_s"] == intent.duration_s
+        # The intent keeps the intended cut; Veo's clamp lands in the request.
+        assert result.raw["duration_s"] == clamp_duration(intent.duration_s)
         assert result.raw["duration_s"] in VEO_LEGAL_DURATIONS_S
         assert result.raw["aspect_ratio"] == intent.aspect_ratio
-        assert result.raw["reference_images"] == intent.reference_images
+        assert result.raw["reference_images"] == shot_refs[result.shot_id][:3]
 
 
 def test_chained_shots_pass_extend_from_to_the_backend():

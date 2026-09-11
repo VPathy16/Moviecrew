@@ -35,6 +35,8 @@ in [Known limits](#known-limits).
 
 1. **Plan** — a concept goes through the seven agents and comes out as a
    `Project`: bible, scenes, shots, and a `RenderPlan` of `ShotIntent`s.
+   Durations, references and chain lengths are whatever the film wants —
+   a backend clamps them at its own adapter, never before.
 2. **Storyboard** — one still per shot for review; approving promotes each
    anchored frame into that shot's reference images.
 3. **Previz** — the Blender add-on blocks a camera from the shot's prose and
@@ -50,7 +52,7 @@ in [Known limits](#known-limits).
 
 ```bash
 pip install -e ".[portal,dev]"
-python -m pytest        # 371 passing, no key and no network needed
+python -m pytest        # 447 passing, no key and no network needed
 ```
 
 The core has no third-party dependencies — the OpenRouter clients are stdlib
@@ -161,7 +163,11 @@ Measured, not guessed — each of these came out of a live render.
 - `moviecrew/schema.py` — the shared vocabulary as stdlib dataclasses:
   `Bible`, `Scene`, `Shot`, `ShotIntent`, `ContinuityFlag`, `RenderPlan`,
   `Project`. `ShotIntent` is the centre: what a shot should be, in terms no
-  backend owns, carrying no vendor's limits.
+  backend owns, carrying no vendor's limits. The module does not know a
+  vendor named Veo exists.
+- `moviecrew/production.py` — resolves canonical state for one shot at the
+  moment of execution, so a request carries the references a board approval
+  just changed rather than a copy taken at plan time.
 - `moviecrew/agents.py`, `crew.py` — the seven agents and the orchestrator.
 - `moviecrew/llm.py` — `LLMClient` and the direct Anthropic backend.
   `llm_openrouter.py` routes the same interface through OpenRouter.

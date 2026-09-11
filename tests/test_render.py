@@ -55,9 +55,8 @@ def test_shot_spec_from_intent_carries_the_shot():
         description="Mara climbs the cliff path.",
         negative="blurry",
         duration_s=8,
-        reference_images=["ch1.png"],
     )
-    spec = ShotSpec.from_intent(intent)
+    spec = ShotSpec.from_intent(intent, reference_images=["ch1.png"])
     assert spec.shot_id == "sc1-sh1"
     assert spec.prompt == "Mara climbs the cliff path."
     assert spec.negative_prompt == "blurry"

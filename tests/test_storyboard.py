@@ -216,10 +216,14 @@ def test_approve_with_mock_provider_leaves_original_refs_untouched(session):
     assert shot.reference_image_ids == ["library_still.png"]
 
 
-def test_promoting_provider_prepends_and_caps_at_max(tmp_path, project):
-    """Promoting provider prepends the board image and caps at VEO_MAX_REFERENCE_IMAGES."""
-    from moviecrew.schema import VEO_MAX_REFERENCE_IMAGES
+def test_promoting_provider_prepends_and_keeps_every_reference(tmp_path, project):
+    """The approved frame goes first and nothing is discarded.
 
+    Truncating here would drop a still the production deliberately attached,
+    to satisfy a limit belonging to whichever renderer happened to be
+    configured. The Veo adapter takes the first three at its own boundary —
+    see test_the_veo_adapter_is_where_the_cap_applies below.
+    """
     promo_session = StudioSession(
         session_id="promo-session",
         stage=Stage.SHOT_DEFS,
@@ -230,15 +234,38 @@ def test_promoting_provider_prepends_and_caps_at_max(tmp_path, project):
     promo_session.produce()
     shot = promo_session.project.scenes[0].shots[0]
     shot.consistency_anchor = True
-    # Pre-load refs that fill the cap; the oldest should be dropped after prepend.
     shot.reference_image_ids = ["r1.png", "r2.png", "r3.png"]
 
     promo_session.approve()
 
     frame = next(f for f in promo_session.board if f.shot_id == shot.id)
-    assert shot.reference_image_ids[0] == frame.image_path, "board image must be first"
-    assert len(shot.reference_image_ids) == VEO_MAX_REFERENCE_IMAGES
-    assert shot.reference_image_ids[1] == "r1.png"
+    assert shot.reference_image_ids == [frame.image_path, "r1.png", "r2.png", "r3.png"]
+
+
+def test_the_veo_adapter_is_where_the_cap_applies(tmp_path, project):
+    """Approval keeps four references; the Veo request carries three."""
+    from moviecrew.production import resolve_shot
+    from moviecrew.video import VEO_MAX_REFERENCE_IMAGES, veo_prompt
+
+    promo_session = StudioSession(
+        session_id="cap-at-the-boundary",
+        stage=Stage.SHOT_DEFS,
+        project=project,
+        session_dir=str(tmp_path),
+        image_provider=PromotingMockImageProvider(),
+    )
+    promo_session.produce()
+    shot = promo_session.project.scenes[0].shots[0]
+    shot.consistency_anchor = True
+    shot.reference_image_ids = ["r1.png", "r2.png", "r3.png"]
+    promo_session.approve()
+
+    state = resolve_shot(promo_session.project, shot.id)
+    prompt = veo_prompt(state.intent, reference_images=state.reference_images)
+
+    assert len(state.reference_images) == 4
+    assert len(prompt.reference_images) == VEO_MAX_REFERENCE_IMAGES
+    assert prompt.reference_images[0] == shot.reference_image_ids[0]
 
 
 def test_revise_restores_stashed_originals(tmp_path, project):

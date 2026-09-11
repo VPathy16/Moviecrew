@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from moviecrew.crew import MovieCrew
 from moviecrew.mock import MockLLMClient
+from moviecrew.production import resolve_shot
 from moviecrew.rules import select_anchors
 from moviecrew.schema import Bible, Character, Scene, Shot
 
@@ -31,7 +32,7 @@ _ALWAYS_REAL = lambda path: True  # noqa: E731
 _NEVER_REAL = lambda path: False  # noqa: E731
 
 
-def test_chain_head_with_real_ref_is_anchored_and_forced_to_eight_seconds():
+def test_chain_head_with_real_ref_is_anchored():
     sh1, sh2 = _shot("sc1-sh1", "sc1", duration_s=4), _shot("sc1-sh2", "sc1", duration_s=4)
     scene = _scene("sc1", character_ids=["ch1"], shots=[sh1, sh2])
     ch1 = Character(id="ch1", name="ch1", description="x", reference_images=["ref-ch1.png"])
@@ -40,7 +41,29 @@ def test_chain_head_with_real_ref_is_anchored_and_forced_to_eight_seconds():
 
     assert sh1.consistency_anchor is True
     assert sh1.reference_image_ids == ["ref-ch1.png"]
-    assert sh1.duration_s == 8
+
+
+def test_anchoring_does_not_rewrite_the_shot_s_duration():
+    """Veo needs 8s clips when references are present. That is Veo's rule and
+    VeoBackend applies it; anchoring must not rewrite the intended cut."""
+    sh1 = _shot("sc1-sh1", "sc1", duration_s=4)
+    scene = _scene("sc1", character_ids=["ch1"], shots=[sh1])
+    ch1 = Character(id="ch1", name="ch1", description="x", reference_images=["ref-ch1.png"])
+
+    select_anchors([scene], [["sc1-sh1"]], _bible([ch1]), is_real=_ALWAYS_REAL)
+
+    assert sh1.duration_s == 4
+
+
+def test_anchoring_does_not_truncate_references_to_a_backend_s_cap():
+    refs = [f"ref{n}.png" for n in range(5)]
+    sh1 = _shot("sc1-sh1", "sc1", duration_s=4)
+    scene = _scene("sc1", character_ids=["ch1"], shots=[sh1])
+    ch1 = Character(id="ch1", name="ch1", description="x", reference_images=refs)
+
+    select_anchors([scene], [["sc1-sh1"]], _bible([ch1]), is_real=_ALWAYS_REAL)
+
+    assert sh1.reference_image_ids == refs
 
 
 def test_non_head_shots_in_a_chain_stay_unanchored():
@@ -118,13 +141,17 @@ def test_end_to_end_anchoring_via_mock_pipeline(tmp_path):
     )
 
     assert head.consistency_anchor is True
-    assert head.duration_s == 8
     assert head.reference_image_ids
     assert all(path.startswith(out_dir) for path in head.reference_image_ids)
 
-    head_prompt = next(p for p in render_plan.intents if p.shot_id == head_id)
-    assert head_prompt.reference_images == head.reference_image_ids
-    assert head_prompt.duration_s == 8
+    # The intent carries no copy of the references — they are resolved from
+    # the shot at execution time, so approving a board later is reflected.
+    head_intent = next(i for i in render_plan.intents if i.shot_id == head_id)
+    assert not hasattr(head_intent, "reference_images")
+    assert head_intent.duration_s == head.duration_s
+
+    state = resolve_shot(project, head_id)
+    assert state.reference_images == head.reference_image_ids
 
     expected_duration = sum(
         shot.duration_s for scene in project.scenes for shot in scene.shots

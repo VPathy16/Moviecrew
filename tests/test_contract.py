@@ -88,7 +88,6 @@ def test_prompter_contract(client: MockLLMClient):
             description=p["prompt"],
             negative=p.get("negative_prompt", ""),
             duration_s=p.get("duration_s", 8),
-            reference_images=list(p.get("reference_images", [])),
         )
         for p in prompter["prompts"]
     ]
@@ -96,7 +95,6 @@ def test_prompter_contract(client: MockLLMClient):
     for intent in intents:
         assert intent.description
         assert intent.negative
-        assert intent.reference_images
 
 
 def test_continuity_contract(client: MockLLMClient):
@@ -150,7 +148,6 @@ def test_full_project_assembles_strictly_from_mock_responses(client: MockLLMClie
             description=p["prompt"],
             negative=p.get("negative_prompt", ""),
             duration_s=p.get("duration_s", 8),
-            reference_images=list(p.get("reference_images", [])),
         )
         for p in prompter["prompts"]
     ]

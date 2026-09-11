@@ -926,13 +926,11 @@ async function loadRenderModels() {
   }
 }
 
-function promptForTake(take) {
-  // Prefer the shot's own intent when a plan is loaded; fall back to what the
-  // take was blocked from, so generating never depends on a plan.
-  const intent = (_project?.render_plan?.intents || []).find(
-    (i) => i.shot_id === take.shot_id
-  );
-  if (intent) return intent.description;
+function fallbackPromptForTake(take) {
+  // Only used when no plan is loaded. With a session the server resolves the
+  // shot's intent and its current references itself — the browser must not
+  // reconstruct canonical filmmaking state, which is how an approved board
+  // and a submitted render came to disagree.
   return [take.camera_move, take.lens, take.framing].filter(Boolean).join(", ");
 }
 
@@ -951,7 +949,10 @@ async function submitRender(estimateOnly) {
         scene_id: take.scene_id,
         shot_id: take.shot_id,
         take_number: take.take_number,
-        prompt: promptForTake(take),
+        // The session is the handle to canonical project state; the server
+        // resolves the intent and the current references from it.
+        session_id: _sessionId,
+        prompt: _sessionId ? "" : fallbackPromptForTake(take),
         model: tkModel.value,
         estimate_only: Boolean(estimateOnly),
       }),

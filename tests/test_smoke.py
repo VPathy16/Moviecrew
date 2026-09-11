@@ -7,8 +7,8 @@ network access and no API key required.
 """
 
 from moviecrew.mock import MockLLMClient
+from moviecrew.video import VEO_LEGAL_DURATIONS_S
 from moviecrew.schema import (
-    VEO_LEGAL_DURATIONS_S,
     Bible,
     Character,
     ContinuityFlag,
@@ -83,7 +83,6 @@ def test_full_pipeline_builds_a_consistent_project():
             description=p["prompt"],
             negative=p.get("negative_prompt", ""),
             duration_s=p.get("duration_s", 8),
-            reference_images=list(p.get("reference_images", [])),
         )
         for p in prompter["prompts"]
     ]

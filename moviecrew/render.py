@@ -21,7 +21,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 
 class JobStatus(str, Enum):
@@ -93,8 +93,20 @@ class ShotSpec:
     seed: Optional[int] = None
 
     @classmethod
-    def from_intent(cls, intent: Any, **overrides: Any) -> "ShotSpec":
+    def from_intent(
+        cls,
+        intent: Any,
+        *,
+        reference_images: Sequence[str] = (),
+        **overrides: Any,
+    ) -> "ShotSpec":
         """Adapt a `ShotIntent` into a request spec.
+
+        References are passed in rather than read off the intent: they live
+        on the `Shot`, which storyboard approval mutates, so they are
+        resolved from live project state at execution time
+        (`production.resolve_shot`) instead of copied at plan time and left
+        to go stale.
 
         Duration is rounded to whole seconds here and clamped later by the
         backend's own `capabilities.clamp_duration`, so the intent keeps the
@@ -106,7 +118,7 @@ class ShotSpec:
             negative_prompt=getattr(intent, "negative", ""),
             duration_s=int(round(getattr(intent, "duration_s", 8))),
             aspect_ratio=getattr(intent, "aspect_ratio", "16:9"),
-            reference_images=list(getattr(intent, "reference_images", [])),
+            reference_images=list(reference_images),
         )
         for key, value in overrides.items():
             setattr(spec, key, value)

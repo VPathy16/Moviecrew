@@ -1,7 +1,7 @@
 """Deterministic, backend-agnostic guardrails layered on top of LLM output.
 
 These never call an LLM: they enforce the schema's hard constraints (the
-Veo reference-image cap) and flag known Veo failure modes (on-screen text,
+backend caps here) and flag known Veo failure modes (on-screen text,
 crowded action, extreme close-ups) so continuity warnings don't depend on
 a model remembering to mention them.
 """
@@ -12,8 +12,6 @@ import os
 import re
 
 from .schema import (
-    VEO_MAX_CHAIN_SEGMENTS,
-    VEO_MAX_REFERENCE_IMAGES,
     Bible,
     ContinuityFlag,
     Scene,
@@ -38,12 +36,19 @@ def select_anchors(
     """Mark each chain's head shot as a consistency anchor when its scene has
     a character with a real reference still, and attach those stills.
 
-    Consistency within a take comes from Veo extension (see moviecrew.video);
-    a hard cut (a chain's first shot) is where a character can drift, so
-    that's where reference images get attached. Veo requires 8s clips when
-    reference images are present, so an anchored shot's duration is forced
-    to 8. Every other shot is explicitly unanchored with no reference ids,
-    overwriting whatever the cinematographer agent guessed.
+    Consistency within a continuous take comes from the take itself; a hard
+    cut (a chain's first shot) is where a character can drift, so that is
+    where reference images get attached. Every other shot is explicitly
+    unanchored with no reference ids, overwriting whatever the
+    cinematographer agent guessed.
+
+    This decides two things and no others: whether a shot is an anchor, and
+    which references belong to it. It does not touch duration and does not
+    truncate the reference list — Veo needs 8s clips when references are
+    present and accepts three of them, and both of those are applied by
+    `video.veo_prompt()` / `VeoBackend` at the execution boundary. Forcing
+    them here would rewrite the production's intent to suit one backend
+    before a backend had even been chosen.
     """
     shots_by_id: dict[str, Shot] = {
         shot.id: shot for scene in scenes for shot in scene.shots
@@ -76,8 +81,7 @@ def select_anchors(
             continue
 
         head.consistency_anchor = True
-        head.reference_image_ids = refs[:VEO_MAX_REFERENCE_IMAGES]
-        head.duration_s = 8
+        head.reference_image_ids = refs
         anchor_shot_ids.add(head_id)
 
     for shot in shots_by_id.values():
@@ -126,17 +130,50 @@ def veo_constraint_flags(prompt_text: str, shot: Shot) -> list[ContinuityFlag]:
     return flags
 
 
+def normalize_order(shots: list[Shot], raw_order: list[str]) -> list[str]:
+    """A deterministic screening order containing every shot exactly once.
+
+    The editor's output is a proposal from a language model, so it is not
+    trusted as given: unknown ids are dropped, duplicates collapse to their
+    first appearance, and any shot the editor forgot is appended in the
+    order the scenes and shots were written. What survives is the editor's
+    intent where it was valid, and a total order regardless — a shot that
+    silently vanished from `order` would silently vanish from the film.
+    """
+    valid_ids = {shot.id for shot in shots}
+
+    order: list[str] = []
+    seen: set[str] = set()
+    for shot_id in raw_order:
+        if shot_id in valid_ids and shot_id not in seen:
+            seen.add(shot_id)
+            order.append(shot_id)
+
+    for shot in shots:
+        if shot.id not in seen:
+            seen.add(shot.id)
+            order.append(shot.id)
+
+    return order
+
+
 def normalize_chains(
     shots: list[Shot], order: list[str], raw_chains: list[list[str]]
 ) -> list[list[str]]:
-    """Turn the editor's raw chain grouping into something deterministic and
-    Veo-legal.
+    """Turn the editor's raw chain grouping into deterministic editorial chains.
+
+    A chain is a creative statement — these shots are one continuous take —
+    and it is kept whole however long it runs. Backends disagree about how
+    much of a continuous take they can execute in one piece (Veo carries 21
+    segments per extend-run; a live-action unit just rolls), so that
+    segmentation belongs to the execution adapter: `video.segment_for_veo`.
+    Cutting the canonical chain here would make an editorial decision on
+    behalf of whichever backend happened to be configured.
 
     Drops unknown shot ids, sorts each chain's members by their position in
-    `order`, splits any chain longer than VEO_MAX_CHAIN_SEGMENTS into
-    consecutive sub-chains, assigns every shot in `order` that the editor
-    left ungrouped to its own singleton chain, and returns chains ordered by
-    the order-index of their first member.
+    `order`, assigns every shot in `order` that the editor left ungrouped to
+    its own singleton chain, and returns chains ordered by the order-index
+    of their first member.
     """
     valid_ids = {shot.id for shot in shots} & set(order)
     index_by_id = {shot_id: i for i, shot_id in enumerate(order)}
@@ -159,10 +196,5 @@ def normalize_chains(
             chains.append([shot_id])
             assigned.add(shot_id)
 
-    split_chains: list[list[str]] = []
-    for chain in chains:
-        for start in range(0, len(chain), VEO_MAX_CHAIN_SEGMENTS):
-            split_chains.append(chain[start : start + VEO_MAX_CHAIN_SEGMENTS])
-
-    split_chains.sort(key=lambda chain: index_by_id[chain[0]])
-    return split_chains
+    chains.sort(key=lambda chain: index_by_id[chain[0]])
+    return chains
