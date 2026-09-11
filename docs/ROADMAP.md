@@ -14,21 +14,27 @@ The order matters: each one is load-bearing for the ones after it.
 
 ---
 
-## 1. Replace `VeoPrompt` as the centre with a backend-neutral `ShotIntent`
+## 1. Replace `VeoPrompt` as the centre with a backend-neutral `ShotIntent` ✅
 
 Model-specific adapters belong only at execution boundaries.
 
-**Where we are.** `VeoPrompt` is in the frozen schema, `RenderPlan.prompts` is a
-list of them, and it appears across `crew.py`, `rules.py`, `video.py`,
-`mock.py` and `render.py` — a vendor's name and a vendor's shape sitting at the
-centre of the pipeline. `render.ShotSpec` is already backend-neutral, but it
-lives at the execution layer and is adapted *from* `VeoPrompt` one way
-(`ShotSpec.from_veo_prompt`).
+**Done.** `ShotIntent` is what the agents produce and what everything
+downstream consumes; `RenderPlan.intents` replaced `RenderPlan.prompts`.
+Nothing on an intent is clamped to a backend's rules — `duration_s` is a float
+in seconds rather than one of Veo's 4/6/8, references are however many the shot
+has, and `aspect_ratio` is validated for shape rather than against Veo's two
+legal values.
 
-**What changes.** `ShotIntent` becomes what the agents produce and what
-everything downstream consumes. Veo, Seedance, Kling and any future backend get
-adapters at the edge that render an intent into their own request shape. The
-prompt string stops being the artifact and becomes one serialization of it.
+`VeoPrompt` moved to `video.py`, the Veo execution boundary, because everything
+it validates is a fact about Veo and not about a shot. `video.veo_prompt()` is
+the adapter that snaps the duration and truncates the reference list, leaving
+the intent intact so what was asked for stays recoverable after a request that
+could not honour it. `ShotSpec.from_veo_prompt` became `ShotSpec.from_intent`,
+so the generative path adapts from the same object — one intent now feeds both
+adapters unchanged.
+
+**Still prose.** `description` is a string, which is item 2's job. The centre is
+neutral now; it is not yet structured.
 
 ---
 
