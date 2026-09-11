@@ -48,6 +48,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..agents import DETAIL_LEVELS
+from ..assets import (
+    BUCKET_ENV,
+    ENDPOINT_ENV,
+    PUBLIC_BASE_ENV,
+    AssetError,
+    S3AssetStore,
+    build_asset_store,
+    is_reachable,
+)
 from ..crew import MovieCrew
 from ..image import ImageProvider, MockImageProvider
 from ..llm import LLMClient
@@ -86,6 +95,9 @@ _render_jobs: dict[str, dict] = {}
 # Render clients are stateful and cache their model catalogue, so one is
 # kept per key rather than rebuilt per request.
 _render_clients: dict[str, object] = {}
+
+# Asset stores, keyed by the configuration that produced them.
+_asset_stores: dict[tuple, object] = {}
 
 _DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 
@@ -351,22 +363,73 @@ def _public_base_url() -> str:
     return os.environ.get(_PUBLIC_BASE_URL_ENV, "").rstrip("/")
 
 
-def _public_take_url(take) -> Optional[str]:
-    """A URL a generative backend can fetch this take from.
+def _asset_store():
+    """The configured asset store, cached.
 
-    None when no public base is configured, or when the one configured is a
-    loopback address — a provider resolving `127.0.0.1` would reach its own
-    machine, not this one, and the render would fail confusingly late.
+    A store is stateless but resolving it re-reads the environment, and the
+    S3 variant is the one a render depends on — building it per request would
+    make a misconfiguration show up intermittently rather than at startup.
+    """
+    key = (
+        os.environ.get(BUCKET_ENV, ""),
+        os.environ.get(ENDPOINT_ENV, ""),
+        os.environ.get(PUBLIC_BASE_ENV, ""),
+        _public_base_url(),
+    )
+    cached = _asset_stores.get(key)
+    if cached is None:
+        cached = build_asset_store(
+            local_root=str(_takes_root()), local_base_url=_public_base_url()
+        )
+        _asset_stores[key] = cached
+    return cached
+
+
+def _portal_take_url(take) -> Optional[str]:
+    """The take's URL as served by this portal, if it is publicly addressable.
+
+    The fallback for deployments with no bucket: a tunnel or a LAN address
+    pointed at $MOVIECREW_PUBLIC_BASE_URL. A loopback address is refused —
+    a provider resolving `127.0.0.1` reaches its own machine, not this one,
+    and the render fails confusingly late.
     """
     base = _public_base_url()
-    if not base:
-        return None
-    lowered = base.lower()
-    if any(host in lowered for host in _LOCAL_HOSTS):
+    if not base or not is_reachable(base):
         return None
     return (
         f"{base}/api/takes/{take.scene_id}/{take.shot_id}/{take.take_number}/video"
     )
+
+
+def _reference_url_for_take(take) -> tuple[Optional[str], Optional[str]]:
+    """A URL a render backend can fetch this take from, uploading if needed.
+
+    Prefers the asset store: with a bucket configured the take is uploaded
+    once under a stable key and served from a CDN, which is durable and
+    typed. Falls back to this portal's own address, which is what a tunnelled
+    demo uses.
+
+    Returns `(url, error)` rather than raising, because a failure here is
+    configuration — the caller turns it into a 400 that says which knob is
+    missing, not a traceback.
+    """
+    store = _asset_store()
+    if store.serves_public_urls and isinstance(store, S3AssetStore):
+        source = resolve_video(take, _takes_root())
+        if not source.is_file():
+            return None, f"take {take.take_id} has no video file to upload"
+        key = f"takes/{take.scene_id}/{take.shot_id}/take_{take.take_number:03d}.mp4"
+        existing = store.url(key)
+        try:
+            # Uploading is idempotent for our purposes: the same take always
+            # lands on the same key, so a re-render costs one PUT, not a
+            # duplicate object.
+            asset = store.put(str(source), key)
+        except AssetError as exc:
+            return existing, f"could not upload take to the asset store: {exc}"
+        return asset.url, None
+
+    return _portal_take_url(take), None
 
 
 def _render_client():
@@ -533,6 +596,8 @@ def health() -> dict:
         "detail_levels": sorted(DETAIL_LEVELS),
         "takes_root": str(root),
         "takes_root_exists": root.is_dir(),
+        "asset_store": _asset_store().name,
+        "asset_store_public": _asset_store().serves_public_urls,
     }
 
 
@@ -636,7 +701,7 @@ def render_take(req: RenderRequest):
     # The request is validated before the deployment is: a request naming a
     # shot this project does not have is wrong however the portal is hosted,
     # and saying so first gives the more useful error.
-    reference_video = _public_take_url(take)
+    reference_video, asset_warning = _reference_url_for_take(take)
     spec, err = _spec_for(req, take, reference_video)
     if err:
         return err
@@ -644,9 +709,11 @@ def render_take(req: RenderRequest):
     if capabilities.supports_video_reference and reference_video is None:
         return _error(
             400,
-            f"{model} drives motion from the take, but this portal has no publicly "
-            f"reachable address. Set {_PUBLIC_BASE_URL_ENV} to where it can be "
-            "fetched from — a provider cannot reach a loopback address.",
+            f"{model} drives motion from the take, but there is nowhere it can be "
+            f"fetched from. Configure a bucket ({BUCKET_ENV}, {ENDPOINT_ENV}, "
+            f"credentials and {PUBLIC_BASE_ENV}) or point {_PUBLIC_BASE_URL_ENV} at "
+            f"a publicly reachable address for this portal. "
+            + (asset_warning or "A provider cannot reach a loopback address."),
         )
 
     if req.estimate_only:
