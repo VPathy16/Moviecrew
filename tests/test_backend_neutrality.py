@@ -390,6 +390,9 @@ def test_a_model_with_no_extend_primitive_does_not_pretend_to_chain(tmp_path):
 
 
 def test_a_model_with_a_video_reference_keeps_the_take_whole(tmp_path):
+    """Video input is half of it; the clip also has to reach the next
+    render. Here a publisher supplies that half — without one this chain
+    would be segmented instead, which `test_execution_semantics` covers."""
     shots = [
         Shot(id=f"s{i}", scene_id="sc1", description="d", duration_s=6) for i in range(3)
     ]
@@ -397,6 +400,7 @@ def test_a_model_with_a_video_reference_keeps_the_take_whole(tmp_path):
     backend = _backend(
         _capabilities(supports_video_reference=True, max_video_references=1),
         out_dir=str(tmp_path),
+        publish=lambda shot_id, url: f"https://cdn.example/{shot_id}.mp4",
     )
 
     MovieCrew(MockLLMClient()).render(_project(shots, chains=[chain]), backend)
@@ -409,16 +413,22 @@ def test_a_model_with_a_video_reference_keeps_the_take_whole(tmp_path):
 
 def test_a_broken_take_is_reported_not_papered_over(tmp_path):
     """If the predecessor produced nothing, the continuation is not a
-    continuation — that has to surface."""
+    continuation — that has to surface.
+
+    The publisher is what isolates this case: a backend that could not
+    chain at all would be refused one step earlier, for a different reason.
+    """
     backend = _backend(
-        _capabilities(supports_video_reference=True), out_dir=str(tmp_path)
+        _capabilities(supports_video_reference=True),
+        out_dir=str(tmp_path),
+        publish=lambda shot_id, url: f"https://cdn.example/{shot_id}.mp4",
     )
     spec = backend.adapt(ShotIntent(shot_id="s2", description="d"))
 
     result = backend.render(spec, extend_from="s1", in_multishot_chain=True)
 
     assert result.status == "failed"
-    assert "s1" in result.raw["error"]
+    assert "no rendered output for predecessor shot 's1'" in result.raw["error"]
 
 
 def test_the_backend_reports_the_client_it_actually_used(tmp_path):

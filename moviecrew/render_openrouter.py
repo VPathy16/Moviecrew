@@ -261,6 +261,13 @@ class OpenRouterRenderClient(RenderClient):
             supported_aspect_ratios=ratios,
             supports_first_last_frame=bool(frame_images),
             supports_video_reference=max_videos > 0,
+            # A result here is not a reusable input. `fetch` attaches a Bearer
+            # token to download it for exactly that reason, and a URL handed
+            # onward as someone else's `video_urls` entry carries no such
+            # header. Accepting a video reference says nothing about whether
+            # this provider's own output can be one, so it is answered
+            # separately rather than inferred from the line above.
+            produces_reusable_video_reference=False,
             max_video_references=max_videos,
             max_image_references=(
                 int(entry["max_image_references"])

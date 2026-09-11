@@ -54,6 +54,21 @@ class RenderCapabilities:
     supported_aspect_ratios: tuple[str, ...] = ()
     supports_first_last_frame: bool = False
     supports_video_reference: bool = False
+    #: Whether a finished render's own result artifact can be handed back to
+    #: this provider as the input of a *later* generation, as-is.
+    #:
+    #: Not the same question as `supports_video_reference`, and conflating
+    #: the two spends money: a provider can accept a video reference and
+    #: still return results behind its own auth (OpenRouter's `unsigned_urls`
+    #: need a Bearer token, which nothing attaches when the URL is passed
+    #: onward as a reference), or behind a URL that expires. A backend that
+    #: answers False here can still chain — by republishing each clip
+    #: somewhere readable first — but it cannot chain on its own results.
+    #:
+    #: False is the default because the honest answer for an unknown
+    #: provider is "not proven", and the cost of being wrong is a paid
+    #: render that silently ignores its reference.
+    produces_reusable_video_reference: bool = False
     max_video_references: int = 0
     #: None means the catalogue did not say — not that the model refuses
     #: images. 0 means it refuses them. Conflating the two is how every

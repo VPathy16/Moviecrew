@@ -8,7 +8,9 @@ footage or money without raising anything.
 Regression tests for the #23 review:
   1. assembly followed canonical chains, not execution runs
   2. max_image_references=0 meant both "no cap" and "no references"
-  3. a chained clip's URL may not be one the provider can read
+  3. a chain was kept whole on video-input support alone, and a paid
+     continuation was submitted against a URL the provider may not be able
+     to read — with only a warning recorded after the fact
   4. a billed generation whose download failed reported success
 """
 
@@ -307,14 +309,55 @@ def test_cap_image_references_is_the_one_rule(cap, expected):
 
 
 # ---------------------------------------------------------------------- #
-# 3. A chained clip must be one the provider can actually read            #
+# 3. A chain survives only if the predecessor can actually be delivered   #
 # ---------------------------------------------------------------------- #
 
 
-def test_chaining_without_a_publisher_says_the_url_may_be_unreachable(tmp_path):
-    """OpenRouter results sit behind the same API auth as everything else —
+def _publisher(published: list[tuple[str, str]]):
+    def publish(shot_id: str, url: str) -> str:
+        published.append((shot_id, url))
+        return f"https://cdn.example/{shot_id}.mp4"
+
+    return publish
+
+
+def test_video_input_alone_does_not_buy_a_chain(tmp_path):
+    """The review's finding, as a test.
+
+    OpenRouter results sit behind the same API auth as everything else —
     fetch() sends a Bearer token for exactly that reason — and a URL passed
-    onward in provider.options carries no such header."""
+    onward in provider.options carries no such header. Accepting video input
+    says nothing about whether *this* provider's own output can be that
+    input, so a chain must not survive on the first fact alone.
+    """
+    backend = _hosted(
+        _capabilities(supports_video_reference=True), out_dir=str(tmp_path)
+    )
+
+    assert backend.reference_delivery_available is False
+    assert backend.can_chain is False
+    assert backend.segment(["s0", "s1", "s2"]) == [["s0"], ["s1"], ["s2"]]
+
+
+def test_no_paid_continuation_is_submitted_without_a_delivery_path(tmp_path):
+    """The money question: three shots still render, none as a continuation."""
+    shots = _shots(3)
+    project = _project(shots, [[shot.id for shot in shots]])
+    backend = _hosted(
+        _capabilities(supports_video_reference=True), out_dir=str(tmp_path)
+    )
+
+    results = MovieCrew(MockLLMClient()).render(project, backend)
+    submitted = [spec for spec, _model in backend.client.submitted]
+
+    assert [r.status for r in results] == ["succeeded"] * 3
+    assert all(spec.reference_video is None for spec in submitted)
+    assert all(result.raw["extend_from"] is None for result in results)
+    assert all(result.raw["in_multishot_chain"] is False for result in results)
+
+
+def test_an_undeliverable_clip_is_never_recorded_as_continuable(tmp_path):
+    """Nothing may later mistake a protected URL for a usable reference."""
     shots = _shots(2)
     project = _project(shots, [[shot.id for shot in shots]])
     backend = _hosted(
@@ -323,30 +366,119 @@ def test_chaining_without_a_publisher_says_the_url_may_be_unreachable(tmp_path):
 
     results = MovieCrew(MockLLMClient()).render(project, backend)
 
-    assert any("publish=" in w for w in results[1].raw["warnings"])
+    assert backend.produced_url_by_shot_id == {}
+    # The raw URL is still there to inspect or retry — it is just not a
+    # reference.
+    assert results[0].raw["video_url"]
 
 
-def test_a_publisher_rehosts_the_clip_and_the_warning_goes(tmp_path):
+def test_a_hand_built_continuation_fails_loudly_rather_than_spending(tmp_path):
+    """segment() never asks for this, so reaching render() means misuse."""
+    from moviecrew.schema import ShotIntent
+
+    backend = _hosted(
+        _capabilities(supports_video_reference=True), out_dir=str(tmp_path)
+    )
+    spec = backend.adapt(ShotIntent(shot_id="s1", description="d"))
+
+    result = backend.render(spec, extend_from="s0", in_multishot_chain=True)
+
+    assert result.status == "failed"
+    assert "publish=" in result.raw["error"]
+    assert backend.client.submitted == []
+
+
+def test_a_publisher_makes_the_take_whole_again(tmp_path):
     published: list[tuple[str, str]] = []
-
-    def publish(shot_id: str, url: str) -> str:
-        published.append((shot_id, url))
-        return f"https://cdn.example/{shot_id}.mp4"
-
     shots = _shots(2)
     project = _project(shots, [[shot.id for shot in shots]])
     backend = _hosted(
         _capabilities(supports_video_reference=True),
         out_dir=str(tmp_path),
-        publish=publish,
+        publish=_publisher(published),
     )
+
+    assert backend.can_chain is True
+    assert backend.segment(["s0", "s1"]) == [["s0", "s1"]]
 
     results = MovieCrew(MockLLMClient()).render(project, backend)
 
     assert backend.produced_url_by_shot_id["s0"] == "https://cdn.example/s0.mp4"
     assert results[1].raw["reference_video"] == "https://cdn.example/s0.mp4"
-    assert not any("publish=" in w for w in results[1].raw["warnings"])
     assert [shot_id for shot_id, _ in published] == ["s0", "s1"]
+
+
+def test_the_republished_url_is_used_and_the_providers_own_is_not(tmp_path):
+    """Specifically: the reference is the rehosted clip, never the raw result."""
+    published: list[tuple[str, str]] = []
+    shots = _shots(2)
+    project = _project(shots, [[shot.id for shot in shots]])
+    backend = _hosted(
+        _capabilities(supports_video_reference=True),
+        out_dir=str(tmp_path),
+        publish=_publisher(published),
+    )
+
+    results = MovieCrew(MockLLMClient()).render(project, backend)
+    raw_provider_url = results[0].raw["video_url"]
+    continuation = [spec for spec, _model in backend.client.submitted][1]
+
+    assert raw_provider_url
+    assert continuation.reference_video == "https://cdn.example/s0.mp4"
+    assert continuation.reference_video != raw_provider_url
+    # And what the publisher was handed is the provider's URL, once.
+    assert published[0] == ("s0", raw_provider_url)
+
+
+def test_a_client_with_reusable_results_chains_without_a_publisher(tmp_path):
+    """The other delivery path, and the reason this is a capability rather
+    than an `if publish is None`: a provider whose own results can be fed
+    straight back needs no rehosting to carry a take."""
+    shots = _shots(2)
+    project = _project(shots, [[shot.id for shot in shots]])
+    backend = _hosted(
+        _capabilities(
+            supports_video_reference=True, produces_reusable_video_reference=True
+        ),
+        out_dir=str(tmp_path),
+    )
+
+    assert backend.reference_delivery_available is True
+    assert backend.can_chain is True
+
+    results = MovieCrew(MockLLMClient()).render(project, backend)
+    continuation = [spec for spec, _model in backend.client.submitted][1]
+
+    assert continuation.reference_video == results[0].raw["video_url"]
+
+
+def test_delivery_alone_does_not_buy_a_chain_either(tmp_path):
+    """The symmetric half: a publisher cannot make a model take video input."""
+    backend = _hosted(
+        _capabilities(supports_video_reference=False),
+        out_dir=str(tmp_path),
+        publish=_publisher([]),
+    )
+
+    assert backend.reference_delivery_available is True
+    assert backend.can_chain is False
+    assert backend.segment(["s0", "s1"]) == [["s0"], ["s1"]]
+
+
+def test_openrouter_does_not_claim_its_own_results_are_reusable():
+    """The concrete provider behind the finding, pinned so a catalogue
+    change cannot quietly re-enable unsafe chaining."""
+    client = _catalogue(
+        {
+            "id": "vendor/model",
+            "max_video_references": 1,
+            "supported_durations": [4, 8],
+        }
+    )
+    capabilities = client.capabilities("vendor/model")
+
+    assert capabilities.supports_video_reference is True
+    assert capabilities.produces_reusable_video_reference is False
 
 
 # ---------------------------------------------------------------------- #

@@ -18,11 +18,26 @@ Four things it does not fake:
 *Chaining.* Veo continues a clip from its own final frame, which is what
 makes a 21-shot continuous take one unbroken generation. A hosted model
 usually has no such primitive. Rather than accept a chain and quietly render
-the shots as unrelated clips, this backend asks its client what it can do:
-if the model takes a video reference, the chain stays whole and each shot is
-driven by its predecessor's output; if it does not, `segment()` breaks the
-chain into single shots so no caller is told a take is continuous when it
-is not.
+the shots as unrelated clips, this backend asks its client what it can do
+and keeps a take whole only when two separate things are both true:
+
+  1. the model accepts a video reference at all, and
+  2. this backend can put the predecessor's clip somewhere the next
+     generation can actually read it.
+
+They are different capabilities and only the first one is about the model.
+A provider can take a video reference and still return its own results
+behind auth that nothing re-attaches when the URL is passed onward, or
+behind a URL that expires — so "it accepts video input" is not evidence
+that the chain will hold. Delivery comes either from a `publish` callable
+that rehosts each clip, or from a client that declares its own results are
+reusable (`RenderCapabilities.produces_reusable_video_reference`).
+
+Without both, `segment()` breaks the chain into single shots. That is the
+conservative answer on purpose: the alternative is submitting a paid
+continuation against a URL already known to be unreadable, and getting back
+either a failure or — worse — a clip that ignored its reference while
+MovieCrew goes on claiming the take is continuous.
 
 *What a clip contains.* Even with a video reference, conditioning is not
 extension: the model returns the new shot, not the take so far. So this
@@ -94,23 +109,57 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
         self._monotonic = monotonic
         self.produced_url_by_shot_id: dict[str, str] = {}
 
-    def _reference_url(self, shot_id: str, video_url: str) -> str:
-        """The URL a *later* shot should be given to continue from.
+    def _reference_url(self, shot_id: str, video_url: str) -> Optional[str]:
+        """The URL a *later* shot can be given to continue from, or None.
 
-        A finished render's own URL is not necessarily one the provider can
+        None means there is no way to hand this clip to the next generation,
+        and a caller must not substitute the raw result URL for it: a
+        finished render's own URL is not necessarily one the provider can
         fetch. OpenRouter returns results under `unsigned_urls`, which sit
         behind the same API auth as everything else — `fetch()` attaches a
         Bearer token for exactly that reason — and a URL handed onward in
         `provider.options.video_urls` carries no such header.
 
-        `publish` is the way out: give it a callable that puts the clip
-        somewhere publicly readable (an `AssetStore`, a CDN) and returns
-        that URL. Without one, the raw result URL is passed on and the
-        provider may or may not be able to read it.
+        Two things can make a clip deliverable. `publish` is the general
+        one: a callable that puts the clip somewhere readable (an
+        `AssetStore`, a CDN) and returns that URL. The other is a client
+        that says its own results are already reusable — a provider with
+        native asset ids, say — which it declares through
+        `RenderCapabilities.produces_reusable_video_reference`.
         """
-        if self._publish is None:
+        if self._publish is not None:
+            return self._publish(shot_id, video_url)
+        if self._capabilities().produces_reusable_video_reference:
             return video_url
-        return self._publish(shot_id, video_url)
+        return None
+
+    # -- can this backend carry a take? --------------------------------- #
+
+    @property
+    def reference_delivery_available(self) -> bool:
+        """Can a produced clip be handed to the next generation at all?
+
+        Independent of whether any model would accept it: this is about
+        getting the artifact somewhere readable, not about video input.
+        """
+        return (
+            self._publish is not None
+            or self._capabilities().produces_reusable_video_reference
+        )
+
+    @property
+    def can_chain(self) -> bool:
+        """Whether a take can stay continuous on this backend.
+
+        Both halves are required — a model that consumes a video reference,
+        and a predecessor artifact the next render can actually read. This
+        is the single place that decision is made; `segment()` asks it
+        before anything is submitted, and `render()` refuses a continuation
+        that reaches it anyway.
+        """
+        return self._capabilities().supports_video_reference and (
+            self.reference_delivery_available
+        )
 
     @property
     def name(self) -> str:
@@ -127,16 +176,17 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
         return self.client.capabilities(self.model)
 
     def segment(self, chain: Sequence[str]) -> list[list[str]]:
-        """Keep a take whole only if this model can actually carry it.
+        """Keep a take whole only if this backend can actually carry it.
 
-        With a video reference, each shot can be driven by the previous
-        one's output, so the chain survives as a chain. Without one, there is
-        no mechanism to continue anything and the honest answer is that every
-        shot stands alone.
+        Two conditions, not one. The model has to accept a video reference,
+        and the previous clip has to be deliverable to it — see `can_chain`.
+        Missing either, every shot stands alone, and it is decided here,
+        before a single paid render is submitted, rather than discovered
+        mid-take when a continuation comes back wrong.
         """
         if not chain:
             return [[]]
-        if self._capabilities().supports_video_reference:
+        if self.can_chain:
             return [list(chain)]
         return [[shot_id] for shot_id in chain]
 
@@ -167,9 +217,24 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
         in_multishot_chain: bool = False,
     ) -> RenderResult:
         spec = request
+        # Every backend reports warnings the same way, so the key is always
+        # present. An unreadable continuation is not one of them any more:
+        # that is a segmentation decision now, made before any spend.
         warnings: list[str] = []
 
         if extend_from is not None:
+            if not self.can_chain:
+                # `segment()` never produces a run that asks for this, so
+                # reaching here means a hand-built call. Refuse it: the only
+                # alternative is a paid render against a reference this
+                # backend already knows it cannot deliver.
+                return self._failure(
+                    spec,
+                    f"cannot continue from shot {extend_from!r}: "
+                    + self._why_not_chainable(),
+                    extend_from=extend_from,
+                    in_multishot_chain=in_multishot_chain,
+                )
             predecessor_url = self.produced_url_by_shot_id.get(extend_from)
             if predecessor_url is None:
                 # The take is broken either way; say so rather than render a
@@ -182,12 +247,6 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
                     in_multishot_chain=in_multishot_chain,
                 )
             spec = replace(spec, reference_video=predecessor_url)
-            if self._publish is None:
-                warnings.append(
-                    "continuing from the predecessor's own result URL, which "
-                    "may require API auth the provider will not send. Pass "
-                    "publish= to host the clip somewhere publicly readable."
-                )
 
         raw = {
             "model": self.model,
@@ -230,9 +289,12 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
 
             if job.video_url:
                 raw["video_url"] = job.video_url
-                self.produced_url_by_shot_id[spec.shot_id] = self._reference_url(
-                    spec.shot_id, job.video_url
-                )
+                reference = self._reference_url(spec.shot_id, job.video_url)
+                if reference is not None:
+                    # Only a clip a later render could actually read is
+                    # recorded as continuable. The raw URL stays in `raw`
+                    # either way, so nothing is lost for inspection or retry.
+                    self.produced_url_by_shot_id[spec.shot_id] = reference
 
             os.makedirs(self.out_dir, exist_ok=True)
             out_path = self.client.fetch(
@@ -269,6 +331,20 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
                 in_multishot_chain=in_multishot_chain,
                 raw=raw,
             )
+
+    def _why_not_chainable(self) -> str:
+        """Which half of `can_chain` is missing, in words a caller can act on."""
+        if not self._capabilities().supports_video_reference:
+            return (
+                f"model {self.model!r} does not accept a video reference, so "
+                "it has no way to continue from a previous clip."
+            )
+        return (
+            f"model {self.model!r} accepts a video reference, but this backend "
+            "has no way to deliver the previous clip to it. Pass publish= to "
+            "rehost each clip somewhere the provider can read, or use a client "
+            "whose own results are reusable as references."
+        )
 
     def _failure(
         self,
