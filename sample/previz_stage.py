@@ -7,6 +7,7 @@ reads back:
             prompt says who each hue is.
   grey    = environment.  Road, kerbs, buildings, street furniture.  Never
             cast, only there to make space legible.
+  white   = the face a figure is turned toward.
 
 v2 adds the depth cues v1 lacked.  In v1 every mark floated in an empty void,
 identically lit at every distance, so the only thing separating a block at
@@ -32,6 +33,14 @@ KERB   = (176, 178, 183)
 PAINT  = (232, 233, 236)
 BUILD  = (128, 131, 138)
 FOG_AT = 46.0          # distance at which everything has faded to sky
+
+# box_faces() order: top, front(-y), back(+y), left, right.
+_FRONT_FACE, _BACK_FACE = 1, 2
+
+# How much white is mixed into the face a figure is turned toward. A tint,
+# not a repaint: replacing the face outright drowned the hue that carries
+# identity, and identity is the channel that was already unreliable.
+FACING_TINT = 0.5
 
 
 def project(p):
@@ -68,15 +77,27 @@ def box_faces(cx, cy, w, d, h, z0=0.0):
 
 
 # --- cast: colour = character ---------------------------------------------
+#
+# v3 gives each proxy the character's real proportions. In v2 every actor was
+# an identical 0.55 x 0.40 x 1.80 capsule differing only in hue, so the model
+# had no geometric reason to bind a coloured box to a named person — and the
+# behaviours arrived as a set with the mapping onto characters re-rolled
+# between generations. A short slight figure and a tall broad one are told
+# apart by shape, which is a far harder signal than a colour the prompt
+# merely asserts.
 ELEMENTS = [
-    dict(name="red",    rgb=(214,  52,  48), size=(0.55, 0.40, 1.80),
-         at=lambda t: (-3.2 + 6.4 * t, 6.5)),
-    dict(name="blue",   rgb=( 46,  92, 214), size=(0.55, 0.40, 1.78),
-         at=lambda t: (0.2, 15.0)),
-    dict(name="green",  rgb=( 54, 158,  72), size=(0.55, 0.40, 1.82),
-         at=lambda t: (1.9, 19.0 - 9.5 * t)),
+    # woman in the raincoat: short, narrow
+    dict(name="red",    rgb=(214,  52,  48), size=(0.44, 0.34, 1.62),
+         at=lambda t: (-3.2 + 6.4 * t, 6.5), facing=0.0),
+    # police officer: tall, broad shoulders
+    dict(name="blue",   rgb=( 46,  92, 214), size=(0.68, 0.44, 1.88),
+         at=lambda t: (0.2, 15.0), facing=180.0),
+    # man in the work jacket: mid build — shifted clear of the lamppost
+    dict(name="green",  rgb=( 54, 158,  72), size=(0.55, 0.40, 1.75),
+         at=lambda t: (2.3, 19.0 - 9.5 * t), facing=180.0),
+    # parked taxi: a prop, not a person
     dict(name="yellow", rgb=(226, 184,  44), size=(1.30, 2.60, 0.85),
-         at=lambda t: (-3.6, 9.0)),
+         at=lambda t: (-3.6, 9.0), facing=None),   # a prop has no facing
 ]
 
 # --- environment: grey = not cast ------------------------------------------
@@ -85,7 +106,14 @@ BUILDINGS = [
     (sx * (KERB_X + 2.2 + (i % 2) * 1.1), 5.0 + i * 4.6, 4.0, 4.4, 7.0 + (i * 2.7) % 9.0)
     for sx in (-1, 1) for i in range(10)
 ]
-OCCLUDER = (2.0, 12.0, 1.2, 0.8, 1.15)     # green passes behind, then in front
+# A lamppost, not a block. v2 put a 1.2m-wide box at x=2.0 and walked the
+# green actor down x=1.9 — their footprints overlapped, so he passed straight
+# through a solid object. A previz whose whole job is describing physical
+# space must not contain a physical impossibility. The post sits on the
+# camera -> green-at-19m sightline, so he starts occluded and steps out from
+# behind it, with 0.45m of clearance he never crosses.
+OCCLUDER = (1.30, 12.0, 0.25, 0.25, 4.0)
+LAMP_HEAD = (1.30, 12.0, 0.70, 0.30, 0.18)
 
 
 def env_faces():
@@ -108,11 +136,15 @@ def env_faces():
         for quad, k in box_faces(cx, cy, w, d, h):
             depth = float(np.mean([p[1] for p in quad]))
             out.append((depth, [project(p) for p in quad], fog(shade(BUILD, k), depth)))
-    # mid-ground occluder
-    cx, cy, w, d, h = OCCLUDER
-    for quad, k in box_faces(cx, cy, w, d, h):
+    # mid-ground occluder: post plus lamp head, so it reads as street furniture
+    for cx, cy, w, d, h in (OCCLUDER,):
+        for quad, k in box_faces(cx, cy, w, d, h):
+            depth = float(np.mean([p[1] for p in quad]))
+            out.append((depth, [project(p) for p in quad], fog(shade(KERB, k), depth)))
+    cx, cy, w, d, h = LAMP_HEAD
+    for quad, k in box_faces(cx, cy, w, d, h, z0=OCCLUDER[4] - 0.1):
         depth = float(np.mean([p[1] for p in quad]))
-        out.append((depth, [project(p) for p in quad], fog(shade(KERB, k), depth)))
+        out.append((depth, [project(p) for p in quad], fog(shade(PAINT, k), depth)))
     return out
 
 
@@ -133,9 +165,19 @@ def render(t):
         faces.append((y + 0.4, [project((x - w, y - d, 0.02)), project((x + w, y - d, 0.02)),
                                 project((x + w, y + d, 0.02)), project((x - w, y + d, 0.02))],
                       fog(shade(ROAD, 0.86), y)))
-        for quad, k in box_faces(x, y, w, d, h):
+        # Face 1 is the box's -y side. Marking it lets the render read which
+        # way a figure is turned: a flat monolith says where someone stands
+        # and nothing about where they look.
+        for index, (quad, k) in enumerate(box_faces(x, y, w, d, h)):
             depth = float(np.mean([p[1] for p in quad]))
-            faces.append((depth, [project(p) for p in quad], fog(shade(el["rgb"], k), depth, k=0.55)))
+            rgb = el["rgb"]
+            facing = el.get("facing")
+            marked = (index == _FRONT_FACE and facing == 0.0) or (
+                index == _BACK_FACE and facing == 180.0
+            )
+            if marked:
+                rgb = tuple(int(c + (255 - c) * FACING_TINT) for c in rgb)
+            faces.append((depth, [project(p) for p in quad], fog(shade(rgb, k), depth, k=0.55)))
 
     for _, pts, col in sorted(faces, key=lambda f: -f[0]):
         dr.polygon(pts, fill=col)
