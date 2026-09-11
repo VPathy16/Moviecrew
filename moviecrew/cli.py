@@ -197,7 +197,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _print_render_results(results)
 
         if args.assemble:
-            assembled = assemble_film(project, results, args.assemble)
+            # Which clips carry the footage depends on how this backend split
+            # the chains and on what its clips contain, so assembly is told
+            # what was actually executed rather than left to guess.
+            assembled = assemble_film(
+                project,
+                results,
+                args.assemble,
+                runs=crew.plan_execution(project, video_backend),
+            )
             if assembled:
                 print(f"  assembled -> {assembled}")
             else:

@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
-from .backend import RenderResult, VideoBackend
+from .backend import ChainOutput, RenderResult, VideoBackend
 from .schema import ShotIntent
 
 __all__ = [
@@ -42,6 +42,7 @@ __all__ = [
     "VEO_MAX_EXTENSIONS",
     "VEO_MAX_REFERENCE_IMAGES",
     "VEO_MIN_DURATION_S",
+    "ChainOutput",
     "VeoAdapting",
     "VeoBackend",
     "VeoPrompt",
@@ -188,6 +189,10 @@ class VeoAdapting(VideoBackend[VeoPrompt]):
     the adaptation in one place means the stub is a faithful rehearsal of
     the real request rather than a second implementation that can drift.
     """
+
+    # Veo extends a clip from its own final frame, so the last shot of a run
+    # carries the whole run. Only that clip belongs in the cut.
+    chain_output = ChainOutput.CUMULATIVE
 
     def segment(self, chain: Sequence[str]) -> list[list[str]]:
         return segment_for_veo(chain)

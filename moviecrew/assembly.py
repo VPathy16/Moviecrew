@@ -1,10 +1,11 @@
 """Assembles a project's rendered chains into one film via ffmpeg.
 
-Each render_plan chain produces one continuous clip: for a multi-shot
-chain that's the cumulative take at chain[-1] (extension output is
-cumulative — predecessor + ~7s); for a singleton chain it's that shot's
-own clip. assemble_film concatenates those clips, in chain order, into a
-single output file.
+What a chain produces depends on the backend that shot it. Veo extends a
+clip from its own final frame, so a multi-shot chain comes back as one
+cumulative take at the run's last shot. A backend that cannot continue a
+take returns a clip per shot, and all of them belong in the cut. So
+assemble_film follows the ExecutionRuns the backend actually performed
+(MovieCrew.plan_execution), not the canonical editorial chains.
 
 Command building is split into a pure function (build_concat_command) so
 tests can assert on the ffmpeg invocation without shelling out; the real
@@ -15,10 +16,10 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from typing import Optional
+from typing import Optional, Sequence
 
 from .schema import Project
-from .backend import RenderResult
+from .backend import ChainOutput, ExecutionRun, RenderResult
 
 _RESOLUTION_HEIGHTS: dict[str, int] = {"720p": 720, "1080p": 1080, "4k": 2160}
 
@@ -63,36 +64,68 @@ def assemble_film(
     results: list[RenderResult],
     out_path: str,
     *,
+    runs: Optional[Sequence[ExecutionRun]] = None,
     run=subprocess.run,
     ffmpeg: str = "ffmpeg",
     target_resolution: str = "720p",
     fps: int = 24,
 ) -> Optional[str]:
-    """Concatenate each chain's final clip, in chain order, into `out_path`.
+    """Concatenate the rendered footage, in screening order, into `out_path`.
 
-    Returns `out_path` on success, or None if there were no usable clips to
-    assemble (e.g. every chain's final render failed). Skips and warns about
-    any chain whose final result is missing, failed, or has no uri.
+    `runs` is how the backend actually executed the plan — pass what
+    `MovieCrew.plan_execution()` returned for the same backend. It decides
+    which clips carry the footage, and the canonical chains cannot: a chain
+    of four shots is one cumulative clip on Veo and four separate clips on a
+    backend that cannot continue a take, and assuming the first would drop
+    three quarters of that chain on the floor.
+
+    Omitting `runs` falls back to treating each canonical chain as one
+    cumulative run, which is Veo's behaviour and was this function's only
+    behaviour. That assumption is announced for any chain where it could be
+    wrong, because being silently wrong here costs shots out of the film.
+
+    Returns `out_path` on success, or None if there were no usable clips
+    (e.g. every render failed). Skips and warns about any clip that is
+    missing, failed, or has no uri.
     """
     render_plan = project.render_plan
     if render_plan is None or not render_plan.chains:
         print("assemble_film: project has no render plan / chains to assemble", file=sys.stderr)
         return None
 
+    if runs is None:
+        runs = [
+            ExecutionRun(
+                chain=tuple(chain),
+                shot_ids=tuple(chain),
+                output=ChainOutput.CUMULATIVE,
+            )
+            for chain in render_plan.chains
+            if chain
+        ]
+        for multi_shot in (r for r in runs if len(r.shot_ids) > 1):
+            print(
+                f"assemble_film: no execution runs given; assuming the chain "
+                f"ending in {multi_shot.shot_ids[-1]!r} came back as one "
+                "cumulative clip. Pass runs=crew.plan_execution(project, "
+                "backend) if the backend renders a clip per shot.",
+                file=sys.stderr,
+            )
+
     results_by_shot_id = {result.shot_id: result for result in results}
 
     clips: list[str] = []
-    for chain in render_plan.chains:
-        final_shot_id = chain[-1]
-        result = results_by_shot_id.get(final_shot_id)
-        if result is None or result.status != "succeeded" or not result.uri:
-            print(
-                f"assemble_film: skipping chain ending in {final_shot_id!r} "
-                "(no successful render to assemble)",
-                file=sys.stderr,
-            )
-            continue
-        clips.append(result.uri)
+    for execution_run in runs:
+        for shot_id in execution_run.clip_shot_ids:
+            result = results_by_shot_id.get(shot_id)
+            if result is None or result.status != "succeeded" or not result.uri:
+                print(
+                    f"assemble_film: skipping {shot_id!r} "
+                    "(no successful render to assemble)",
+                    file=sys.stderr,
+                )
+                continue
+            clips.append(result.uri)
 
     if not clips:
         print("assemble_film: no usable clips to assemble", file=sys.stderr)

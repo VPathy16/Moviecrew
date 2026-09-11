@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Generic, Optional, Sequence, TypeVar
 
 from .schema import ShotIntent
@@ -47,10 +48,59 @@ class RenderResult:
     raw: Optional[dict[str, Any]] = None
 
 
+class ChainOutput(str, Enum):
+    """What a backend's clip for a shot in a run actually contains.
+
+    This is the distinction that decides how a film is cut together, and
+    getting it wrong silently drops footage.
+
+    Veo extends a clip by continuing it from its own final frame, so the
+    clip for the last shot of a run *is* the whole run — concatenating the
+    earlier ones would repeat the take. That is CUMULATIVE.
+
+    Conditioning a generation on a reference video is not that. The model is
+    handed the previous clip to match, and returns only the new shot. Every
+    clip in the run is its own footage and all of them belong in the cut.
+    That is PER_SHOT, and it is the default, because it is also what a
+    camera crew, a Blender render and almost everything else produces.
+    """
+
+    CUMULATIVE = "cumulative"
+    PER_SHOT = "per_shot"
+
+
+@dataclass(frozen=True)
+class ExecutionRun:
+    """One stretch of an editorial chain, as a backend actually executed it.
+
+    A chain is what the edit wants; a run is what one backend could do in
+    one piece; `output` says what came back. Assembly needs all three,
+    because the clips to concatenate follow the run and its semantics, not
+    the chain.
+    """
+
+    chain: tuple[str, ...]
+    shot_ids: tuple[str, ...]
+    output: ChainOutput = ChainOutput.PER_SHOT
+
+    @property
+    def clip_shot_ids(self) -> list[str]:
+        """Whose clips carry this run's footage, in screening order."""
+        if not self.shot_ids:
+            return []
+        if self.output is ChainOutput.CUMULATIVE:
+            return [self.shot_ids[-1]]
+        return list(self.shot_ids)
+
+
 class VideoBackend(ABC, Generic[Request]):
     """One system that can turn a shot's intent into a clip."""
 
     name: str = ""
+
+    #: What one of this backend's clips contains — see `ChainOutput`. The
+    #: default is the common case: a clip is its own shot and nothing more.
+    chain_output: ChainOutput = ChainOutput.PER_SHOT
 
     def segment(self, chain: Sequence[str]) -> list[list[str]]:
         """Split one editorial chain into runs this backend can execute.

@@ -29,7 +29,7 @@ from .agents import (
 from .llm import LLMClient
 from .reference import NullReferenceImageProvider, ReferenceImageProvider, populate_reference_stills
 from .production import UnknownShot, resolve_shot
-from .backend import RenderResult, VideoBackend
+from .backend import ExecutionRun, RenderResult, VideoBackend
 from .rules import (
     generative_video_flags,
     normalize_chains,
@@ -329,6 +329,37 @@ class MovieCrew:
             render_plan=render_plan,
         )
 
+    def plan_execution(
+        self, project: Project, backend: VideoBackend
+    ) -> list[ExecutionRun]:
+        """How `backend` will actually execute this plan's editorial chains.
+
+        An editorial chain stays whole in the plan; a backend that can only
+        carry so much of a take in one piece splits it here, at execution,
+        and each run restarts from its own base clip. The runs are returned
+        rather than kept private because assembly needs them: which clips
+        carry the footage depends on how the work was split and on what the
+        backend's clips contain, and neither is knowable from the canonical
+        chains alone.
+        """
+        render_plan = project.render_plan
+        if render_plan is None:
+            return []
+
+        runs: list[ExecutionRun] = []
+        for chain in render_plan.chains:
+            for run in backend.segment(chain):
+                if not run:
+                    continue
+                runs.append(
+                    ExecutionRun(
+                        chain=tuple(chain),
+                        shot_ids=tuple(run),
+                        output=backend.chain_output,
+                    )
+                )
+        return runs
+
     def render(self, project: Project, backend: VideoBackend) -> list[RenderResult]:
         """Render every intent in project.render_plan through `backend`, in
         render_plan.order. Pure orchestration: makes no network calls itself,
@@ -352,18 +383,15 @@ class MovieCrew:
         if render_plan is None:
             return []
 
+        runs = self.plan_execution(project, backend)
         extend_from_by_shot_id: dict[str, Optional[str]] = {}
         in_multishot_chain_by_shot_id: dict[str, bool] = {}
-        for chain in render_plan.chains:
-            # An editorial chain stays whole in the plan; a backend that can
-            # only carry so much of a take in one piece splits it here, at
-            # execution, and each run restarts from its own base clip.
-            for run in backend.segment(chain):
-                in_run = len(run) >= 2
-                for shot_id in run:
-                    in_multishot_chain_by_shot_id[shot_id] = in_run
-                for predecessor, shot_id in zip(run, run[1:]):
-                    extend_from_by_shot_id[shot_id] = predecessor
+        for run in runs:
+            in_run = len(run.shot_ids) >= 2
+            for shot_id in run.shot_ids:
+                in_multishot_chain_by_shot_id[shot_id] = in_run
+            for predecessor, shot_id in zip(run.shot_ids, run.shot_ids[1:]):
+                extend_from_by_shot_id[shot_id] = predecessor
 
         results: list[RenderResult] = []
         for shot_id in render_plan.order:

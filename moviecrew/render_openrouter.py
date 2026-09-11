@@ -262,7 +262,11 @@ class OpenRouterRenderClient(RenderClient):
             supports_first_last_frame=bool(frame_images),
             supports_video_reference=max_videos > 0,
             max_video_references=max_videos,
-            max_image_references=int(entry.get("max_image_references") or 0),
+            max_image_references=(
+                int(entry["max_image_references"])
+                if entry.get("max_image_references") is not None
+                else None
+            ),
             supports_audio=bool(entry.get("supports_audio", False)),
             cost_model=CostModel(unit=unit, amount=amount),
         )
@@ -298,8 +302,9 @@ class OpenRouterRenderClient(RenderClient):
                 : max(1, capabilities.max_video_references)
             ]
         if spec.reference_images:
-            limit = capabilities.max_image_references or len(spec.reference_images)
-            options["image_urls"] = list(spec.reference_images)[:limit]
+            capped = capabilities.cap_image_references(spec.reference_images)
+            if capped:
+                options["image_urls"] = capped
         if spec.negative_prompt:
             options["negative_prompt"] = spec.negative_prompt
         if options:
