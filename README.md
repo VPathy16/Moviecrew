@@ -132,6 +132,12 @@ One key covers all three stages:
 The direct-to-Anthropic backend routes per task instead — Opus for the
 director and continuity passes, Haiku for the editor.
 
+Model choice is configuration, not code: `render.RenderClient` exposes a
+`capabilities()` that callers branch on instead of a backend name, so a model
+that takes a driving video and one that takes only first/last frames are the
+same code path. [`docs/ROADMAP.md`](docs/ROADMAP.md) extends that seam to cover
+Blender, Unreal and live action as peer execution strategies.
+
 Renders land in `<takes root>/<scene>/<shot>/renders/<job id>.mp4`. They are
 downloaded rather than linked: a provider URL expires, and the render cost
 real money.
@@ -155,6 +161,12 @@ Measured, not guessed — each of these came out of a live render.
   render succeeds, bills in full, and simply doesn't use your previz.
 - **Hosting takes is unsolved.** `MOVIECREW_PUBLIC_BASE_URL` plus a tunnel
   works, but it isn't a product answer.
+
+Most of these share a root cause: a shot is carried as prose, so nothing
+downstream can reason about it. [`docs/ROADMAP.md`](docs/ROADMAP.md) is the
+architecture that fixes it — intent as data, a production graph, USD and OTIO
+for interchange, a bidirectional Blender client, and an evaluator that scores a
+render against the shot that was asked for.
 
 ## Layout
 
