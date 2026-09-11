@@ -8,11 +8,15 @@ from typing import Optional, Sequence
 
 from .agents import DETAIL_LEVELS
 from .assembly import assemble_film
+from .backend import RenderResult, VideoBackend
 from .crew import MovieCrew
 from .llm import LLMClient
 from .mock import MockLLMClient
 from .reference import FileReferenceImageProvider, ReferenceImageProvider
-from .video import RenderResult, StubVideoBackend, VeoBackend, VideoBackend
+from .video import StubVideoBackend, VeoBackend
+
+# OpenRouter's Seedance id; override with --render-model.
+DEFAULT_GENERATIVE_MODEL = "bytedance/seedance-1-pro"
 
 
 def _build_llm(backend: str) -> LLMClient:
@@ -27,6 +31,29 @@ def _build_llm(backend: str) -> LLMClient:
 
         return AnthropicLLMClient()
     raise ValueError(f"unknown backend: {backend}")
+
+
+def _build_video_backend(
+    choice: str, *, model: str, out_dir: str, resolution: str
+) -> VideoBackend:
+    """Pick an execution backend. Each one adapts a shot in its own terms;
+    nothing above this line knows which was chosen.
+    """
+    if choice == "stub":
+        return StubVideoBackend()
+    if choice == "veo":
+        return VeoBackend(out_dir=out_dir)
+    if choice == "openrouter":
+        from .generative import GenerativeVideoBackend
+        from .render_openrouter import OpenRouterRenderClient
+
+        return GenerativeVideoBackend(
+            OpenRouterRenderClient(),
+            model=model,
+            out_dir=out_dir,
+            resolution=resolution,
+        )
+    raise ValueError(f"unknown video backend: {choice}")
 
 
 def _print_summary(project) -> None:
@@ -72,13 +99,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument(
         "--video-backend",
-        choices=["stub", "veo"],
+        choices=["stub", "veo", "openrouter"],
         default="stub",
         help=(
-            "Video backend used by --render (default: stub, runs fully offline; "
+            "Video backend used by --render (default: stub, runs fully offline). "
             "veo calls the real Veo API and requires a GEMINI_API_KEY/GOOGLE_API_KEY "
-            "and the google-genai extra)"
+            "and the google-genai extra. openrouter renders through a hosted model "
+            "(see --render-model) and requires an OPENROUTER_API_KEY. Both spend money."
         ),
+    )
+    parser.add_argument(
+        "--render-model",
+        metavar="ID",
+        default=DEFAULT_GENERATIVE_MODEL,
+        help=(
+            f"Model id for --video-backend openrouter (default: {DEFAULT_GENERATIVE_MODEL})"
+        ),
+    )
+    parser.add_argument(
+        "--render-dir",
+        metavar="DIR",
+        default="renders",
+        help="Directory rendered clips are written to (default: renders)",
+    )
+    parser.add_argument(
+        "--resolution",
+        default="720p",
+        help="Render resolution for backends that accept one (default: 720p)",
     )
     parser.add_argument(
         "--assemble",
@@ -101,7 +148,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "--detail",
         choices=sorted(DETAIL_LEVELS),
         default="cinematic",
-        help="Veo prompt density: lean (short), cinematic (default), or maximal (dense)",
+        help="Shot-prompt density: lean (short), cinematic (default), or maximal (dense)",
     )
     parser.add_argument(
         "--bible",
@@ -140,7 +187,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _print_summary(project)
 
     if args.render:
-        video_backend: VideoBackend = StubVideoBackend() if args.video_backend == "stub" else VeoBackend()
+        video_backend = _build_video_backend(
+            args.video_backend,
+            model=args.render_model,
+            out_dir=args.render_dir,
+            resolution=args.resolution,
+        )
         results = crew.render(project, video_backend)
         _print_render_results(results)
 

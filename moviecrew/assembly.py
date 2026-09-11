@@ -1,7 +1,7 @@
 """Assembles a project's rendered chains into one film via ffmpeg.
 
 Each render_plan chain produces one continuous clip: for a multi-shot
-chain that's the cumulative take at chain[-1] (Veo extension output is
+chain that's the cumulative take at chain[-1] (extension output is
 cumulative — predecessor + ~7s); for a singleton chain it's that shot's
 own clip. assemble_film concatenates those clips, in chain order, into a
 single output file.
@@ -18,7 +18,7 @@ import sys
 from typing import Optional
 
 from .schema import Project
-from .video import RenderResult
+from .backend import RenderResult
 
 _RESOLUTION_HEIGHTS: dict[str, int] = {"720p": 720, "1080p": 1080, "4k": 2160}
 
@@ -35,10 +35,10 @@ def build_concat_command(
 
     Uses the concat *filter* (not the -c copy concat demuxer): each input is
     scaled to a common height/fps first, since chained vs. standalone clips
-    can come back from Veo at different source dimensions and -c copy concat
+    can come back from a backend at different source dimensions and -c copy concat
     requires identical codecs/dimensions across inputs.
 
-    Carries audio through (Veo clips always have a native audio track); this
+    Carries audio through (generated clips normally have a native audio track); this
     assumes every input clip has an audio stream — a missing-audio fallback
     (e.g. anullsrc) can come later if that stops holding.
     """

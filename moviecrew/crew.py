@@ -29,11 +29,12 @@ from .agents import (
 from .llm import LLMClient
 from .reference import NullReferenceImageProvider, ReferenceImageProvider, populate_reference_stills
 from .production import UnknownShot, resolve_shot
+from .backend import RenderResult, VideoBackend
 from .rules import (
+    generative_video_flags,
     normalize_chains,
     normalize_order,
     select_anchors,
-    veo_constraint_flags,
 )
 from .schema import (
     DEFAULT_ASPECT_RATIO,
@@ -48,7 +49,6 @@ from .schema import (
     Shot,
     ShotIntent,
 )
-from .video import RenderResult, VideoBackend, segment_for_veo, veo_prompt
 
 
 class PipelineError(RuntimeError):
@@ -277,9 +277,9 @@ class MovieCrew:
                     aspect_ratio=DEFAULT_ASPECT_RATIO,
                 )
             )
-            # A Veo-specific lint, run here so its warnings reach the plan;
-            # it reads a shot's text and never constrains it.
-            flags.extend(veo_constraint_flags(description, shot))
+            # A lint, run here so its warnings reach the plan; it reads a
+            # shot's text and warns, and never constrains it.
+            flags.extend(generative_video_flags(description, shot))
 
         if len(intents) != len(all_shots):  # pragma: no cover - belt and braces
             raise PipelineError(
@@ -331,18 +331,22 @@ class MovieCrew:
 
     def render(self, project: Project, backend: VideoBackend) -> list[RenderResult]:
         """Render every intent in project.render_plan through `backend`, in
-        render_plan.order. Pure orchestration: makes no network calls itself.
+        render_plan.order. Pure orchestration: makes no network calls itself,
+        and names no vendor.
 
-        Each intent is adapted into a Veo request by `video.veo_prompt()`
-        immediately before the backend sees it — the one place in the whole
-        pipeline where Veo's limits apply.
+        Each intent is adapted by the backend's own `adapt()` immediately
+        before it renders — the one moment in the whole pipeline where any
+        backend's limits apply. This method never builds a request itself,
+        which is what lets the same plan run on Veo, on a generative API, or
+        on anything else that implements the interface.
 
-        Chain-aware: a shot that continues a Veo extend-chain is rendered
-        with extend_from set to its predecessor's shot id within that chain;
-        a chain's first shot (or a standalone shot) gets extend_from=None.
-        Every shot in a chain of 2+ (its head or one of its extensions) is
-        passed in_multishot_chain=True so the backend can keep it at a
-        resolution Veo allows to extend.
+        Chain-aware: an editorial chain is kept whole in the plan, and the
+        backend says via `segment()` how much of it can be executed in one
+        piece. Within a run, each shot after the first is rendered with
+        extend_from set to its predecessor's shot id; a run's first shot (or
+        a standalone shot) gets extend_from=None. Every shot in a run of 2+
+        is passed in_multishot_chain=True, since some backends must render a
+        continuable shot differently from a standalone one.
         """
         render_plan = project.render_plan
         if render_plan is None:
@@ -351,10 +355,10 @@ class MovieCrew:
         extend_from_by_shot_id: dict[str, Optional[str]] = {}
         in_multishot_chain_by_shot_id: dict[str, bool] = {}
         for chain in render_plan.chains:
-            # An editorial chain stays whole in the plan; Veo can only carry
-            # so many segments per extend-run, so the split happens here, at
+            # An editorial chain stays whole in the plan; a backend that can
+            # only carry so much of a take in one piece splits it here, at
             # execution, and each run restarts from its own base clip.
-            for run in segment_for_veo(chain):
+            for run in backend.segment(chain):
                 in_run = len(run) >= 2
                 for shot_id in run:
                     in_multishot_chain_by_shot_id[shot_id] = in_run
@@ -369,7 +373,7 @@ class MovieCrew:
                 continue
             results.append(
                 backend.render(
-                    veo_prompt(state.intent, reference_images=state.reference_images),
+                    backend.adapt(state.intent, reference_images=state.reference_images),
                     extend_from=extend_from_by_shot_id.get(shot_id),
                     in_multishot_chain=in_multishot_chain_by_shot_id.get(shot_id, False),
                 )
