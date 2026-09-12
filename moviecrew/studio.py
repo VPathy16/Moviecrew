@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from .image import ImageProvider, NullImageProvider
-from .schema import Project
+from .schema import ContinuityFlag, Project
 
 
 class Stage(str, Enum):
@@ -97,6 +97,24 @@ class StudioSession:
     session_dir: str
     image_provider: ImageProvider = field(repr=False, default_factory=NullImageProvider)
     board: list[StoryboardFrame] = field(default_factory=list)
+
+    # Continuity tracking. The portal returns a project the moment plan
+    # generation finishes and runs continuity afterward, as a separate
+    # request against this same session — these four fields are what makes
+    # that request's result state persist somewhere between one call and
+    # the next, without a database. `backend` is what plan generation used
+    # ("mock" / "openrouter" / "anthropic"), so the continuity endpoint can
+    # build the same kind of LLM client rather than guessing or defaulting.
+    # `base_flags` is the flags computed independently of continuity
+    # (prompter warnings, the consistency-anchor check, the on-screen-text
+    # lint) — captured once, right after plan generation, so continuity can
+    # be re-run any number of times and always recombine its own result
+    # with that fixed baseline rather than layering onto whatever the
+    # previous run left behind.
+    backend: str = "mock"
+    continuity_status: str = "not_started"  # not_started | running | complete | failed
+    continuity_message: Optional[str] = None
+    base_flags: list[ContinuityFlag] = field(default_factory=list)
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
