@@ -3,14 +3,18 @@
 This module owns `VeoPrompt`, and that placement is the point. A shot's
 intent is backend-neutral all the way down the pipeline; Veo's rules — the
 4/6/8-second clip lengths, the cap of three reference images, the two legal
-aspect ratios — are applied by `veo_prompt()` at the moment a request is
-actually built, and nowhere earlier. Another backend adapts the same intent
-its own way (`render.ShotSpec.from_intent` does it for OpenRouter).
+aspect ratios, the 21 segments per extend-run — are applied here, at the
+moment a request is actually built, and nowhere earlier. Another backend
+adapts the same intent its own way (`render.ShotSpec.from_intent` does it
+for OpenRouter).
 
-VideoBackend is the seam between the orchestrator and an actual video API.
+Nothing outside this module needs to know any of that. The orchestrator
+holds a `backend.VideoBackend` and asks it to adapt an intent; these classes
+answer in Veo's terms, and a different backend answers in its own.
+
 StubVideoBackend never touches the network: it only builds and records the
 request payload a real backend would send, so the pipeline stays fully
-testable offline. VeoBackend will talk to the real Veo API once the
+testable offline. VeoBackend talks to the real Veo API when the
 `google-genai` SDK and credentials are available; it imports the SDK
 lazily so this module always imports cleanly without it installed.
 """
@@ -20,11 +24,34 @@ from __future__ import annotations
 import mimetypes
 import os
 import time
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence
 
+from .backend import ChainOutput, RenderResult, VideoBackend
 from .schema import ShotIntent
+
+__all__ = [
+    "DEFAULT_VEO_MODEL",
+    "DEFAULT_VEO_RESOLUTION",
+    "RenderResult",
+    "StubVideoBackend",
+    "VEO_ASPECT_RATIOS",
+    "VEO_LEGAL_DURATIONS_S",
+    "VEO_MAX_CHAIN_SEGMENTS",
+    "VEO_MAX_DURATION_S",
+    "VEO_MAX_EXTENSIONS",
+    "VEO_MAX_REFERENCE_IMAGES",
+    "VEO_MIN_DURATION_S",
+    "ChainOutput",
+    "VeoAdapting",
+    "VeoBackend",
+    "VeoPrompt",
+    "VideoBackend",
+    "build_request",
+    "clamp_duration",
+    "segment_for_veo",
+    "veo_prompt",
+]
 
 # --- Veo's limits ----------------------------------------------------------
 #
@@ -129,15 +156,6 @@ DEFAULT_VEO_RESOLUTION = "720p"
 _VEO_HIGH_RESOLUTIONS = {"1080p", "4k"}
 
 
-@dataclass
-class RenderResult:
-    shot_id: str
-    status: str  # "stubbed" | "succeeded" | "failed" | ...
-    backend: str
-    uri: Optional[str] = None
-    raw: Optional[dict[str, Any]] = None
-
-
 def build_request(
     prompt: VeoPrompt,
     *,
@@ -163,23 +181,29 @@ def build_request(
     }
 
 
-class VideoBackend(ABC):
-    """Renders one VeoPrompt into a clip (or a stand-in result)."""
+class VeoAdapting(VideoBackend[VeoPrompt]):
+    """The Veo half of a backend: how an intent becomes a Veo request.
 
-    name: str = ""
+    Both Veo backends — the real one and the offline stub — adapt a shot
+    identically; they differ only in what they do with the result. Keeping
+    the adaptation in one place means the stub is a faithful rehearsal of
+    the real request rather than a second implementation that can drift.
+    """
 
-    @abstractmethod
-    def render(
-        self,
-        prompt: VeoPrompt,
-        *,
-        extend_from: Optional[str] = None,
-        in_multishot_chain: bool = False,
-    ) -> RenderResult:
-        raise NotImplementedError
+    # Veo extends a clip from its own final frame, so the last shot of a run
+    # carries the whole run. Only that clip belongs in the cut.
+    chain_output = ChainOutput.CUMULATIVE
+
+    def segment(self, chain: Sequence[str]) -> list[list[str]]:
+        return segment_for_veo(chain)
+
+    def adapt(
+        self, intent: ShotIntent, *, reference_images: Sequence[str] = ()
+    ) -> VeoPrompt:
+        return veo_prompt(intent, reference_images=reference_images)
 
 
-class StubVideoBackend(VideoBackend):
+class StubVideoBackend(VeoAdapting):
     """Offline backend: builds the request a real backend would send and
     returns it unsent, so the pipeline can be exercised with no network
     access and no API key.
@@ -209,7 +233,7 @@ class StubVideoBackend(VideoBackend):
         )
 
 
-class VeoBackend(VideoBackend):
+class VeoBackend(VeoAdapting):
     """Renders standalone clips via the real Veo 3.1 API (google-genai SDK).
 
     The SDK is imported lazily inside __init__ so this module always

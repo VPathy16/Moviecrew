@@ -292,7 +292,7 @@ def test_revise_restores_stashed_originals(tmp_path, project):
 
 
 def test_still_prompt_strips_camera_sentences():
-    from moviecrew.studio import _veo_to_still_prompt
+    from moviecrew.studio import _motion_to_still_prompt
 
     veo = (
         "Mara grips a rope rail and hauls herself up the cliff. "
@@ -300,13 +300,13 @@ def test_still_prompt_strips_camera_sentences():
         "Cold storm light rakes in from the horizon. "
         "Wind roars, waves crash."
     )
-    still = _veo_to_still_prompt(veo)
+    still = _motion_to_still_prompt(veo)
     assert "Still frame:" in still
     assert "Camera tracks" not in still
 
 
 def test_still_prompt_keeps_subject_and_light():
-    from moviecrew.studio import _veo_to_still_prompt
+    from moviecrew.studio import _motion_to_still_prompt
 
     veo = (
         "Mara grips a rope rail. "
@@ -314,7 +314,7 @@ def test_still_prompt_keeps_subject_and_light():
         "Cold blue-grey storm light rakes in. "
         "Shot on a 24mm lens."
     )
-    still = _veo_to_still_prompt(veo)
+    still = _motion_to_still_prompt(veo)
     assert "Mara" in still
     assert "storm light" in still
 

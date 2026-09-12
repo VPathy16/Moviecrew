@@ -173,7 +173,7 @@ DETAIL_LEVELS: dict[str, dict[str, Any]] = {
 }
 
 _PROMPTER_LEAD_RULE = (
-    "Veo animates verbs, not adjectives. OPEN every prompt with one continuous physical "
+    "Video models animate verbs, not adjectives. OPEN every prompt with one continuous physical "
     "action that has a beginning and end — concrete micro-movements for the subject AND "
     "the environment. Never a static state like 'stands looking concerned'; write what "
     "the body does. A 4s shot is one beat; an 8s shot is a short arc of 2-3 linked "
@@ -188,14 +188,14 @@ _PROMPTER_LAYERS = (
     "4 LIGHT (source, direction, colour, hardness, effect on surfaces)",
     "5 LENS & DEPTH (focal length + depth behaviour)",
     "6 ATMOSPHERE & TEXTURE (haze, grain, grime)",
-    "7 SOUND (Veo audio — name it)",
+    "7 SOUND (native audio — name it)",
 )
 
 
 def _build_prompter_system_prompt(detail: str) -> str:
     level = DETAIL_LEVELS[detail]
     lines = [
-        "You are the Prompter. Given one shot, write a single dense Veo prompt plus a "
+        "You are the Prompter. Given one shot, write a single dense shot prompt plus a "
         "matching negative prompt.",
         "",
         _PROMPTER_LEAD_RULE,
@@ -221,7 +221,10 @@ def _build_prompter_system_prompt(detail: str) -> str:
 
 
 class PrompterAgent(Agent):
-    """Writes the Veo prompt for one shot, at an injectable detail level.
+    """Writes the shot prompt for one shot, at an injectable detail level.
+
+    What it writes is the `description` of a `ShotIntent` — backend-neutral
+    prose. Whichever backend renders the shot adapts that text itself.
 
     `detail` picks a word-count target and whether the system prompt demands
     the full seven-layer flow (action/subject/camera/light/lens/atmosphere/
@@ -247,7 +250,7 @@ class PrompterAgent(Agent):
 class ContinuityAgent(Agent):
     role = "continuity"
     system_prompt = (
-        "You are Continuity. Given every scene/shot and every Veo prompt, flag anything "
+        "You are Continuity. Given every scene/shot and every shot prompt, flag anything "
         "inconsistent: appearance drift, mismatched locations, repeated mistakes.\n"
         'Respond with JSON only: {"flags": [{"target": str, "kind": '
         '"info"|"warning"|"error", "message": str}]}.'

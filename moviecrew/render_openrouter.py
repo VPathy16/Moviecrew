@@ -261,8 +261,19 @@ class OpenRouterRenderClient(RenderClient):
             supported_aspect_ratios=ratios,
             supports_first_last_frame=bool(frame_images),
             supports_video_reference=max_videos > 0,
+            # A result here is not a reusable input. `fetch` attaches a Bearer
+            # token to download it for exactly that reason, and a URL handed
+            # onward as someone else's `video_urls` entry carries no such
+            # header. Accepting a video reference says nothing about whether
+            # this provider's own output can be one, so it is answered
+            # separately rather than inferred from the line above.
+            produces_reusable_video_reference=False,
             max_video_references=max_videos,
-            max_image_references=int(entry.get("max_image_references") or 0),
+            max_image_references=(
+                int(entry["max_image_references"])
+                if entry.get("max_image_references") is not None
+                else None
+            ),
             supports_audio=bool(entry.get("supports_audio", False)),
             cost_model=CostModel(unit=unit, amount=amount),
         )
@@ -298,8 +309,9 @@ class OpenRouterRenderClient(RenderClient):
                 : max(1, capabilities.max_video_references)
             ]
         if spec.reference_images:
-            limit = capabilities.max_image_references or len(spec.reference_images)
-            options["image_urls"] = list(spec.reference_images)[:limit]
+            capped = capabilities.cap_image_references(spec.reference_images)
+            if capped:
+                options["image_urls"] = capped
         if spec.negative_prompt:
             options["negative_prompt"] = spec.negative_prompt
         if options:
