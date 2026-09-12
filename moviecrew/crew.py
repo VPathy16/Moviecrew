@@ -15,6 +15,7 @@ computed rather than trusted from the LLM.
 from __future__ import annotations
 
 from dataclasses import MISSING, asdict, fields
+from pathlib import Path
 from typing import Optional
 
 from .agents import (
@@ -59,6 +60,23 @@ class PipelineError(RuntimeError):
     recoverable condition — a shot disappearing from the plan without anyone
     noticing is not.
     """
+
+
+def _write_checkpoint(project: Project, path: str) -> None:
+    """Persist *project* to *path* as JSON, tolerating a write failure.
+
+    Reuses exactly the serialization `Project.to_json()` and the CLI's
+    `--out` already do — no new format, no database. Failure to write is
+    swallowed rather than raised: a checkpoint exists to prevent data loss,
+    so a checkpoint that itself crashed plan generation would be worse than
+    no checkpoint at all.
+    """
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(project.to_json(), encoding="utf-8")
+    except OSError:
+        pass
 
 
 # The LLM -> Shot boundary. Computed from Shot's own dataclass fields, never
@@ -239,7 +257,13 @@ class MovieCrew:
         self.continuity = ContinuityAgent(llm)
         self.editor = EditorAgent(llm)
 
-    def make(self, concept: str, *, bible: Optional[Bible] = None) -> Project:
+    def make(
+        self,
+        concept: str,
+        *,
+        bible: Optional[Bible] = None,
+        checkpoint_path: Optional[str] = None,
+    ) -> Project:
         """Run the full pipeline.
 
         With *bible* (assets-first mode): the writer is asked to write FOR the
@@ -248,6 +272,14 @@ class MovieCrew:
         assets are preserved byte-identical.
 
         Without *bible* (story-first, default): behaviour is unchanged.
+
+        *checkpoint_path*, if given, is written with the generated Project as
+        JSON immediately before the continuity check runs — the one agent
+        call whose failure this method no longer lets take the rest of the
+        plan down with it (see the try/except around it below). A best-effort
+        write: a checkpoint that cannot be written (a bad path, a full disk)
+        must not itself fail plan generation, which is exactly the failure
+        this exists to prevent.
         """
         director_out = self.director.run(concept=concept)
         title = director_out["title"]
@@ -325,12 +357,9 @@ class MovieCrew:
                 f"expected one intent per shot ({len(all_shots)}), got {len(intents)}"
             )
 
-        continuity_out = self.continuity.run(
-            scenes=[asdict(scene) for scene in scenes],
-            prompts=[asdict(intent) for intent in intents],
-        )
-        flags.extend(ContinuityFlag(**f) for f in continuity_out["flags"])
-
+        # Independent of continuity's own output, so computed and folded in
+        # before continuity runs: a warning here must not be lost just
+        # because the call after it fails.
         for shot in all_shots:
             if shot.consistency_anchor and not shot.reference_image_ids:
                 flags.append(
@@ -344,13 +373,17 @@ class MovieCrew:
                     )
                 )
 
-        deduped_flags: dict[tuple[str, str, str], ContinuityFlag] = {}
-        for flag in flags:
-            deduped_flags.setdefault((flag.kind, flag.target, flag.message), flag)
-        flags = list(deduped_flags.values())
-
         est_duration_s = sum(shot.duration_s for shot in all_shots)
 
+        # Everything above this line is real, spent generation — up to six
+        # agent calls per scene/shot. The Project built here is already
+        # complete and usable; continuity below is a check *on* it, not a
+        # precondition *of* it, so its failure must never cost what already
+        # exists. `flags` is the same list `render_plan` holds, so appending
+        # to it after this point (on success or on failure) still reaches
+        # the Project already returned to a caller that read render_plan
+        # directly — but the final dedup pass below reassigns the list, so
+        # it is `render_plan.flags` (not `flags`) that gets that update.
         render_plan = RenderPlan(
             intents=intents,
             flags=flags,
@@ -358,8 +391,7 @@ class MovieCrew:
             chains=chains,
             est_duration_s=est_duration_s,
         )
-
-        return Project(
+        project = Project(
             title=title,
             logline=logline,
             bible=bible,
@@ -367,6 +399,42 @@ class MovieCrew:
             scenes=scenes,
             render_plan=render_plan,
         )
+
+        if checkpoint_path:
+            _write_checkpoint(project, checkpoint_path)
+
+        try:
+            continuity_out = self.continuity.run(
+                scenes=[asdict(scene) for scene in scenes],
+                prompts=[asdict(intent) for intent in intents],
+            )
+            flags.extend(ContinuityFlag(**f) for f in continuity_out["flags"])
+        except Exception as exc:
+            # Deliberately broad: a truncated response, malformed JSON, a
+            # missing "flags" key, an API failure, a raised LLMError — every
+            # one of them means the same thing here, that continuity did not
+            # complete, and every one of them must produce a returned
+            # Project rather than a failed request. This is the one place
+            # in the whole pipeline where that trade is made; nowhere else
+            # in make() swallows an exception this broadly.
+            flags.append(
+                ContinuityFlag(
+                    target="project",
+                    kind="warning",
+                    message=(
+                        "Continuity check did not complete "
+                        f"({type(exc).__name__}: {exc}); this plan has not "
+                        "been checked for cross-scene consistency."
+                    ),
+                )
+            )
+
+        deduped_flags: dict[tuple[str, str, str], ContinuityFlag] = {}
+        for flag in flags:
+            deduped_flags.setdefault((flag.kind, flag.target, flag.message), flag)
+        render_plan.flags = list(deduped_flags.values())
+
+        return project
 
     def plan_execution(
         self, project: Project, backend: VideoBackend

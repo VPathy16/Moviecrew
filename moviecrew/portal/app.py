@@ -866,16 +866,23 @@ def plan(req: PlanRequest):
         FileReferenceImageProvider(req.reference_dir) if req.reference_dir else None
     )
 
+    # Minted before generation, not after: crew.make() checkpoints the plan
+    # to this session's own directory partway through, before the one agent
+    # call (continuity) that used to be able to lose the whole request if it
+    # failed — so somewhere to write that checkpoint has to exist before
+    # generation starts, not only once it has fully succeeded.
+    session_id = str(uuid.uuid4())
+    session_dir = str(Path(tempfile.gettempdir()) / "moviecrew-sessions" / session_id)
+
     try:
         crew = MovieCrew(llm, reference_provider=reference_provider, prompt_detail=req.detail)
-        project = crew.make(req.concept)
+        project = crew.make(
+            req.concept,
+            checkpoint_path=str(Path(session_dir) / "project_checkpoint.json"),
+        )
     except Exception as exc:
         return _error(502, f"plan generation failed: {exc}")
 
-    session_id = str(uuid.uuid4())
-    session_dir = str(
-        Path(tempfile.gettempdir()) / "moviecrew-sessions" / session_id
-    )
     session = StudioSession(
         session_id=session_id,
         stage=Stage.SHOT_DEFS,
@@ -889,6 +896,32 @@ def plan(req: PlanRequest):
     result["session_id"] = session_id
     result["stage"] = session.stage.value
     return result
+
+
+@app.post("/api/session/{session_id}/save")
+def save_session(session_id: str):
+    """Persist this session's current project to disk, on demand.
+
+    The manual counterpart to crew.make()'s automatic pre-continuity
+    checkpoint — same mechanism (Project.to_json() to a file in the
+    session's own directory), triggered by a person instead of by the
+    pipeline. Works regardless of whether continuity succeeded: a Project
+    is complete and worth saving the moment crew.make() returns it: its
+    render plan, every scene and shot, and every intent are already real
+    generation, whether or not the continuity flags on it exist yet.
+    """
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+
+    path = Path(session.session_dir) / "project.json"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(session.project.to_json(), encoding="utf-8")
+    except OSError as exc:
+        return _error(502, f"could not save project: {exc}")
+
+    return {"session_id": session_id, "stage": session.stage.value, "saved_to": str(path)}
 
 
 @app.post("/api/storyboard")

@@ -453,6 +453,146 @@ def test_a_missing_required_field_names_the_scene():
         _make(cinematographer=cine)
 
 
+# ---------------------------------------------------------------------- #
+# Continuity failing must never cost the plan already generated           #
+# ---------------------------------------------------------------------- #
+
+
+def _raising(exc: Exception):
+    """A ScriptedLLM answer that raises instead of returning JSON."""
+
+    def _raise(payload):
+        raise exc
+
+    return _raise
+
+
+def test_a_continuity_exception_still_returns_a_project():
+    """The bug report this guards against: a large project generated every
+    scene/shot/prompt, then the continuity call failed and the whole plan
+    was lost. It must not be, regardless of what continuity raises."""
+    project = _make(continuity=_raising(RuntimeError("connection reset")))
+    assert project.title == "Salt"
+    assert len(project.scenes) == 1
+    assert len(project.render_plan.intents) == 2
+
+
+def test_a_continuity_exception_appends_a_project_level_warning():
+    project = _make(continuity=_raising(RuntimeError("connection reset")))
+    warnings = [f for f in project.render_plan.flags if f.target == "project"]
+    assert len(warnings) == 1
+    assert warnings[0].kind == "warning"
+    assert "connection reset" in warnings[0].message
+
+
+def test_a_truncated_continuity_response_still_returns_a_project():
+    """The literal failure reported: finish_reason="length" surfaces as an
+    LLMError from the real client; here it's simulated directly, since the
+    point under test is what crew.make() does with it, not how the
+    OpenRouter client detects it (see llm_openrouter.py for that)."""
+    from moviecrew.llm_openrouter import LLMError
+
+    truncation = LLMError(
+        "anthropic/claude-sonnet-5 output for task 'continuity' was "
+        "truncated (finish_reason='length') before valid JSON completed"
+    )
+    project = _make(continuity=_raising(truncation))
+    assert project.title == "Salt"
+    assert len(project.render_plan.intents) == 2
+    warnings = [f for f in project.render_plan.flags if f.target == "project"]
+    assert "truncated" in warnings[0].message
+
+
+def test_malformed_continuity_output_still_returns_a_project():
+    """A response that parsed as JSON but not into the expected shape — no
+    "flags" key at all — must be treated the same as any other continuity
+    failure, not crash on continuity_out["flags"]."""
+    project = _make(continuity={"oops": "not the expected shape"})
+    assert project.title == "Salt"
+    assert len(project.render_plan.intents) == 2
+    warnings = [f for f in project.render_plan.flags if f.target == "project"]
+    assert len(warnings) == 1
+    assert "KeyError" in warnings[0].message
+
+
+def test_continuity_failure_does_not_lose_other_flags():
+    """A project-level warning is added to the existing flags, not swapped
+    in for them — a warning computed before continuity ever ran (here, the
+    prompter-returned-prompts-for-unrelated-shots flag) must still be
+    there."""
+
+    def noisy(payload):
+        return {
+            "prompts": [
+                {"shot_id": payload["shot"]["id"], "prompt": "mine"},
+                {"shot_id": "somebody-else", "prompt": "theirs"},
+            ]
+        }
+
+    project = _make(prompter=noisy, continuity=_raising(RuntimeError("boom")))
+    assert any(f.target == "project" for f in project.render_plan.flags)
+    assert any("unrelated shots" in f.message for f in project.render_plan.flags)
+
+
+def test_continuity_success_is_unaffected_by_the_failure_handling():
+    """The ordinary path — continuity returns real flags — must look
+    exactly as it did before this change."""
+    project = _make()
+    assert not any(f.target == "project" for f in project.render_plan.flags)
+
+
+def test_checkpoint_is_written_before_continuity_runs(tmp_path):
+    """The other half of the data-loss fix: even if something below this
+    point were to crash in a way no exception handler catches, the plan
+    generated so far already exists on disk."""
+    checkpoint = tmp_path / "session" / "checkpoint.json"
+    crew = MovieCrew(ScriptedLLM(**_base_script(continuity=_raising(RuntimeError("boom")))))
+
+    project = crew.make("A storm.", checkpoint_path=str(checkpoint))
+
+    assert checkpoint.is_file()
+    saved = json.loads(checkpoint.read_text())
+    assert saved["title"] == project.title
+    assert len(saved["scenes"][0]["shots"]) == 2
+    # Written before continuity ran, so it must not carry continuity's
+    # failure warning — that is appended to the in-memory Project only
+    # after the checkpoint was already on disk.
+    assert not any(f["target"] == "project" for f in saved["render_plan"]["flags"])
+
+
+def test_checkpoint_is_written_even_though_continuity_later_fails():
+    """Confirms the write happens regardless of what continuity does next —
+    tested separately from the content check above, on the success path."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        checkpoint = Path(d) / "checkpoint.json"
+        crew = MovieCrew(
+            ScriptedLLM(**_base_script(continuity=_raising(RuntimeError("boom"))))
+        )
+        crew.make("A storm.", checkpoint_path=str(checkpoint))
+        assert checkpoint.is_file()
+
+
+def test_a_bad_checkpoint_path_does_not_fail_plan_generation():
+    """A checkpoint that cannot be written (here: a path through a file,
+    not a directory) must not itself take down plan generation — that would
+    be the exact failure this patch exists to prevent, self-inflicted."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        blocked = Path(d) / "not-a-directory"
+        blocked.write_text("occupying this path")
+        bad_checkpoint = blocked / "checkpoint.json"
+
+        crew = MovieCrew(ScriptedLLM(**_base_script()))
+        project = crew.make("A storm.", checkpoint_path=str(bad_checkpoint))
+
+    assert project.title == "Salt"
+
+
 def test_every_shot_gets_exactly_one_intent():
     project = _make()
     shot_ids = [s.id for sc in project.scenes for s in sc.shots]
