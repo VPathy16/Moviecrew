@@ -13,6 +13,7 @@ Nothing here calls any video-render API — that is the OUTPUT / render step.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -80,6 +81,29 @@ def _motion_to_still_prompt(shot_prompt: str) -> str:
 
 
 @dataclass
+class PlanProgress:
+    """Incremental plan-generation status for a session, polled while
+    MovieCrew.make() is still running in the background.
+
+    Deliberately holds only status/stage/counts/error — never the generated
+    scenes or prompts themselves. Those live directly on the owning
+    StudioSession's own `project`, mutated in place as each milestone
+    lands, so there is exactly one place (the Project) a poller reads
+    actual creative content from, and this dataclass never risks drifting
+    out of sync with it.
+    """
+
+    status: str = "queued"  # queued | running | complete | failed
+    # director | writer | designer | cinematography | editor | prompting | complete
+    stage: str = "director"
+    scene_count: int = 0
+    scenes_completed: int = 0
+    shot_count: int = 0
+    prompts_completed: int = 0
+    error: Optional[str] = None
+
+
+@dataclass
 class StudioSession:
     """Single creative session tracking stage, project, and storyboard state.
 
@@ -115,6 +139,20 @@ class StudioSession:
     continuity_status: str = "not_started"  # not_started | running | complete | failed
     continuity_message: Optional[str] = None
     base_flags: list[ContinuityFlag] = field(default_factory=list)
+
+    # Plan-generation progress (PR #29). Defaults to an already-"complete"
+    # PlanProgress because every *other* caller of StudioSession() — tests,
+    # the storyboard workflow — constructs a session around a Project that
+    # was already fully generated; only the portal's POST /api/plan
+    # constructs a session before generation starts, and it always passes
+    # its own fresh PlanProgress(status="queued") explicitly. plan_lock
+    # guards updates to plan_progress and to project while the background
+    # generation thread is still writing to them, so a concurrent GET
+    # .../plan never reads a half-updated pair of the two.
+    plan_progress: PlanProgress = field(
+        default_factory=lambda: PlanProgress(status="complete", stage="complete")
+    )
+    plan_lock: threading.Lock = field(repr=False, default_factory=threading.Lock)
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #

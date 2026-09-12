@@ -76,10 +76,10 @@ from ..image import ImageProvider, MockImageProvider
 from ..llm import LLMClient
 from ..mock import MockLLMClient
 from ..reference import FileReferenceImageProvider, ReferenceImageProvider
-from ..studio import Stage, StudioSession
+from ..studio import PlanProgress, Stage, StudioSession
 from ..production import UnknownShot, resolve_shot
 from ..render import FakeRenderClient, JobStatus, ShotSpec
-from ..schema import ContinuityFlag
+from ..schema import Bible, ContinuityFlag, Project, RenderPlan
 from ..settings import (
     SettingsError,
     apply_to_environ,
@@ -196,6 +196,101 @@ def _session_or_error(session_id: str):
     if session is None:
         return None, _error(404, f"session {session_id!r} not found")
     return session, None
+
+
+def _apply_plan_progress(
+    session: StudioSession, checkpoint_path: str, event: str, **data
+) -> None:
+    """Called from the background generation thread after each durable
+    milestone crew.make() reports (see MovieCrew.make's on_progress).
+
+    Ordering matters here, per the rule this whole feature exists to
+    satisfy: the project is mutated first, then checkpointed to disk, and
+    only *then* is session.plan_progress updated — the field GET
+    .../plan's caller actually watches — so a poller can never observe a
+    stage or count that outran what was actually retained.
+    """
+    with session.plan_lock:
+        project = session.project
+        if event == "scene_complete":
+            project.scenes.append(data["scene"])
+        elif event == "editor_complete":
+            project.render_plan = RenderPlan(order=data["order"], chains=data["chains"])
+        elif event == "prompt_complete":
+            project.render_plan.intents.append(data["intent"])
+        elif event == "plan_complete":
+            # The authoritative Project crew.make() returns, replacing the
+            # one built up incrementally above — same content, but now with
+            # its final title/logline/bible/flags/est_duration_s exactly as
+            # the ordinary (non-portal) pipeline would have produced them.
+            session.project = project = data["project"]
+            session.base_flags = list(project.render_plan.flags)
+
+        write_checkpoint(project, checkpoint_path)
+
+        progress = session.plan_progress
+        if event == "director_complete":
+            progress.stage = "writer"
+        elif event == "writer_complete":
+            progress.scene_count = data["scene_count"]
+            progress.stage = "designer"
+        elif event == "designer_complete":
+            progress.stage = "cinematography"
+        elif event == "scene_complete":
+            progress.scenes_completed += 1
+            if progress.scenes_completed >= progress.scene_count:
+                # Every scene's shots are in; the editor call is next (it
+                # runs once over every shot, not per scene), so this is the
+                # one point where a distinct "editor" stage exists at all.
+                progress.stage = "editor"
+        elif event == "editor_complete":
+            progress.shot_count = data["shot_count"]
+            progress.stage = "prompting"
+        elif event == "prompt_complete":
+            progress.prompts_completed += 1
+        elif event == "plan_complete":
+            progress.stage = "complete"
+
+
+def _run_plan_job(session: StudioSession, req: PlanRequest, checkpoint_path: str) -> None:
+    """Runs crew.make() to completion on a background thread, publishing
+    progress onto *session* as it goes.
+
+    Started fire-and-forget from POST /api/plan, which has already
+    returned by the time this runs — there is no caller left to raise an
+    exception to, so a failure here is reported the same way progress
+    normally is, through session.plan_progress, never raised.
+
+    No Celery/Redis/database: a plain daemon thread updating this one
+    session's own state, guarded by its own plan_lock, is the simplest
+    mechanism that is still safe for a single-process portal.
+    """
+    with session.plan_lock:
+        session.plan_progress.status = "running"
+
+    def on_progress(event: str, **data) -> None:
+        _apply_plan_progress(session, checkpoint_path, event, **data)
+
+    try:
+        llm = _build_llm(session.backend)
+        reference_provider: Optional[ReferenceImageProvider] = (
+            FileReferenceImageProvider(req.reference_dir) if req.reference_dir else None
+        )
+        crew = MovieCrew(llm, reference_provider=reference_provider, prompt_detail=req.detail)
+        crew.make(
+            req.concept,
+            checkpoint_path=checkpoint_path,
+            run_continuity=False,
+            on_progress=on_progress,
+        )
+    except Exception as exc:
+        with session.plan_lock:
+            session.plan_progress.status = "failed"
+            session.plan_progress.error = str(exc)
+        return
+
+    with session.plan_lock:
+        session.plan_progress.status = "complete"
 
 
 def _frame_to_dict(session_id: str, frame) -> dict:
@@ -858,6 +953,15 @@ def take_video(scene_id: str, shot_id: str, take_number: int):
 
 @app.post("/api/plan")
 def plan(req: PlanRequest):
+    """Start plan generation and return immediately — see GET .../plan.
+
+    Validates the request synchronously (no work has started yet, so a bad
+    backend or detail level is still a fast 400), then mints the session
+    and hands the actual pipeline run to a background thread. The session
+    exists in _sessions, and this returns, before Director has even run:
+    completed creative work must never stay trapped inside one long
+    request, all the way from the first agent call, not just after it.
+    """
     backend = req.backend or _default_backend()
     if backend not in _BACKENDS:
         return _error(400, f"unknown backend: {backend!r} (must be one of {_BACKENDS})")
@@ -866,60 +970,68 @@ def plan(req: PlanRequest):
             400, f"unknown detail level: {req.detail!r} (must be one of {sorted(DETAIL_LEVELS)})"
         )
 
-    try:
-        llm = _build_llm(backend)
-    except Exception as exc:
-        return _error(502, f"could not start the {backend} backend: {exc}")
-
-    reference_provider: Optional[ReferenceImageProvider] = (
-        FileReferenceImageProvider(req.reference_dir) if req.reference_dir else None
-    )
-
-    # Minted before generation, not after: crew.make() checkpoints the plan
-    # to this session's own directory partway through, before the one agent
-    # call (continuity) that used to be able to lose the whole request if it
-    # failed — so somewhere to write that checkpoint has to exist before
-    # generation starts, not only once it has fully succeeded.
     session_id = str(uuid.uuid4())
     session_dir = str(Path(tempfile.gettempdir()) / "moviecrew-sessions" / session_id)
+    checkpoint_path = str(Path(session_dir) / "project_checkpoint.json")
 
-    try:
-        crew = MovieCrew(llm, reference_provider=reference_provider, prompt_detail=req.detail)
-        # Director through Prompter only. Continuity is analysis of what
-        # this call produces, not a precondition of producing it, so it is
-        # never run inside this request — see POST .../continuity below.
-        # run_continuity=False stops make() at exactly the same checkpoint
-        # write it would otherwise stop at on its way to continuity, so the
-        # checkpoint on disk and the Project this call returns agree.
-        project = crew.make(
-            req.concept,
-            checkpoint_path=str(Path(session_dir) / "project_checkpoint.json"),
-            run_continuity=False,
-        )
-    except Exception as exc:
-        return _error(502, f"plan generation failed: {exc}")
+    # A placeholder, mutated in place as generation proceeds and replaced
+    # outright by the real thing once plan_complete fires — see
+    # _apply_plan_progress. Never returned to a caller as-is: GET .../plan
+    # always reports plan_progress.status alongside it, so "" for a title
+    # only ever appears together with status="queued"/"running".
+    placeholder_project = Project(
+        title="", logline="", bible=Bible(style="", palette="", mood="")
+    )
 
     session = StudioSession(
         session_id=session_id,
         stage=Stage.SHOT_DEFS,
-        project=project,
+        project=placeholder_project,
         session_dir=session_dir,
         image_provider=_build_image_provider(),
         backend=backend,
-        # The flags plan generation itself produced (prompter warnings, the
-        # consistency-anchor check, the on-screen-text lint) — continuity
-        # has not run yet, so render_plan.flags right now *is* that
-        # baseline. Captured once here so the continuity endpoint can be
-        # called more than once and always recombine its own latest result
-        # with this fixed baseline, never with a previous run's result.
-        base_flags=list(project.render_plan.flags),
+        plan_progress=PlanProgress(),
     )
     _sessions[session_id] = session
 
-    result = asdict(project)
-    result["session_id"] = session_id
-    result["stage"] = session.stage.value
-    result["continuity_status"] = session.continuity_status
+    thread = threading.Thread(
+        target=_run_plan_job, args=(session, req, checkpoint_path), daemon=True
+    )
+    thread.start()
+
+    return {"session_id": session_id, "status": session.plan_progress.status}
+
+
+@app.get("/api/session/{session_id}/plan")
+def plan_status(session_id: str):
+    """Current plan-generation progress, plus whatever generated data
+    safely exists so far. Meant to be polled roughly once a second while
+    status is "queued"/"running".
+
+    The project's own fields (title, scenes, render_plan, ...) are merged
+    in at the top level — the same shape /api/plan itself used to return
+    before this PR — so the portal's existing plan renderer keeps working
+    against this response unchanged; scenes and render_plan.intents simply
+    grow between polls instead of arriving all at once.
+    """
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+
+    with session.plan_lock:
+        progress = session.plan_progress
+        result = {
+            "session_id": session_id,
+            "status": progress.status,
+            "stage": progress.stage,
+            "scene_count": progress.scene_count,
+            "scenes_completed": progress.scenes_completed,
+            "shot_count": progress.shot_count,
+            "prompts_completed": progress.prompts_completed,
+            "error": progress.error,
+            "continuity_status": session.continuity_status,
+            **asdict(session.project),
+        }
     return result
 
 
@@ -979,6 +1091,14 @@ def run_session_continuity(session_id: str):
     session, err = _session_or_error(session_id)
     if err:
         return err
+
+    if session.plan_progress.status != "complete":
+        return _error(
+            409,
+            "plan generation has not finished yet "
+            f"(status={session.plan_progress.status!r}); continuity analyzes a "
+            "finished plan and cannot run until POST /api/plan's job completes.",
+        )
 
     with _continuity_lock:
         if session.continuity_status == "running":
