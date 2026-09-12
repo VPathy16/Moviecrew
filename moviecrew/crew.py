@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import MISSING, asdict, fields
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .agents import (
     CinematographerAgent,
@@ -314,6 +314,7 @@ class MovieCrew:
         bible: Optional[Bible] = None,
         checkpoint_path: Optional[str] = None,
         run_continuity: bool = True,
+        on_progress: Optional[Callable[..., None]] = None,
     ) -> Project:
         """Run the pipeline: Director through Prompter, then, by default,
         the continuity check.
@@ -343,20 +344,40 @@ class MovieCrew:
         itself afterward, separately, with `run_continuity_check` against
         the returned Project's own `scenes` and `render_plan.intents` —
         exactly what the portal's continuity endpoint does.
+
+        *on_progress*, if given, is called `on_progress(event, **data)` after
+        each durable pipeline milestone — never before an agent call's
+        result has actually landed, so a caller reporting progress from it
+        (the portal's background plan job does exactly this) is always
+        reporting real, retained work, not a guess at where the pipeline is
+        about to be. Events, in the order they can fire: `director_complete`,
+        `writer_complete` (data: `scene_count`), `designer_complete`,
+        `scene_complete` (data: `scene`, a fully-built Scene with its shots)
+        — once per scene, `editor_complete` (data: `order`, `chains`,
+        `shot_count`), `prompt_complete` (data: `shot_id`, `intent`) — once
+        per shot, and finally `plan_complete` (data: `project`, the finished
+        Project, before continuity). Omitted (the default), this is the
+        plain CLI path and nothing about it changes.
         """
         director_out = self.director.run(concept=concept)
         title = director_out["title"]
         logline = director_out["logline"]
         outline = director_out["outline"]
+        if on_progress:
+            on_progress("director_complete")
 
         writer_out = self.writer.run(
             title=title, logline=logline, outline=outline, provided_bible=bible
         )
         raw_scenes = writer_out["scenes"]
+        if on_progress:
+            on_progress("writer_complete", scene_count=len(raw_scenes))
 
         designer_out = self.designer.run(
             title=title, logline=logline, scenes=raw_scenes, provided_bible=bible
         )
+        if on_progress:
+            on_progress("designer_complete")
 
         if bible is not None:
             effective_bible = _merge_bible(bible, designer_out)
@@ -384,6 +405,8 @@ class MovieCrew:
             scene.shots = _shots_for_scene(scene, cine_out.get("shots", []), seen_shot_ids)
             scenes.append(scene)
             all_shots.extend(scene.shots)
+            if on_progress:
+                on_progress("scene_complete", scene=scene)
 
         if not all_shots:
             raise PipelineError("the cinematographer produced no shots for any scene")
@@ -393,6 +416,8 @@ class MovieCrew:
         chains = normalize_chains(all_shots, order, editor_out.get("chains", []))
 
         select_anchors(scenes, chains, bible)
+        if on_progress:
+            on_progress("editor_complete", order=order, chains=chains, shot_count=len(all_shots))
 
         intents: list[ShotIntent] = []
         flags: list[ContinuityFlag] = []
@@ -402,18 +427,19 @@ class MovieCrew:
             flags.extend(extra_flags)
 
             description = raw_prompt["prompt"]
-            intents.append(
-                ShotIntent(
-                    shot_id=shot.id,
-                    description=description,
-                    negative=raw_prompt.get("negative_prompt", ""),
-                    duration_s=shot.duration_s,
-                    aspect_ratio=DEFAULT_ASPECT_RATIO,
-                )
+            intent = ShotIntent(
+                shot_id=shot.id,
+                description=description,
+                negative=raw_prompt.get("negative_prompt", ""),
+                duration_s=shot.duration_s,
+                aspect_ratio=DEFAULT_ASPECT_RATIO,
             )
+            intents.append(intent)
             # A lint, run here so its warnings reach the plan; it reads a
             # shot's text and warns, and never constrains it.
             flags.extend(generative_video_flags(description, shot))
+            if on_progress:
+                on_progress("prompt_complete", shot_id=shot.id, intent=intent)
 
         if len(intents) != len(all_shots):  # pragma: no cover - belt and braces
             raise PipelineError(
@@ -465,6 +491,9 @@ class MovieCrew:
 
         if checkpoint_path:
             write_checkpoint(project, checkpoint_path)
+
+        if on_progress:
+            on_progress("plan_complete", project=project)
 
         if run_continuity:
             continuity_flags, _failed = run_continuity_check(self.continuity, scenes, intents)

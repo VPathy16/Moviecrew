@@ -7,6 +7,8 @@ network call or a cent spent — which is also the production default.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 try:
@@ -263,10 +265,24 @@ def _fake_client():
     return backend
 
 
-def _plan_session(client):
+def _plan_session(client, timeout: float = 5.0):
+    """Start a plan and wait for the background job to finish generating
+    it — /api/plan itself only starts the job (see PR #29); every caller
+    here wants a session whose project is already fully built.
+    """
     res = client.post("/api/plan", json={"concept": "A keeper and a sea spirit."})
     assert res.status_code == 200
-    return res.json()["session_id"]
+    session_id = res.json()["session_id"]
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = client.get(f"/api/session/{session_id}/plan").json()["status"]
+        if status == "complete":
+            return session_id
+        if status == "failed":
+            raise AssertionError(f"plan generation failed for session {session_id!r}")
+        time.sleep(0.01)
+    raise AssertionError(f"plan for session {session_id!r} did not complete within {timeout}s")
 
 
 def test_render_resolves_the_shot_intent_from_the_session(takes_root, monkeypatch):
