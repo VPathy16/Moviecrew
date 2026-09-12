@@ -25,10 +25,23 @@ defaults from mock to live; without it every stage stays offline and free.
 $ANTHROPIC_API_KEY still drives the direct-to-Anthropic backend for anyone
 who prefers it.
 
-Keys are read server-side from the process environment only — no request or
-response here ever carries one. The takes root is likewise server-side
-config ($MOVIECREW_TAKES_ROOT): a browser cannot point this process at an
-arbitrary directory.
+SETTINGS path (GET /api/settings, POST /api/settings): a local settings
+screen for the same environment variables every section above reads via
+os.environ — the OpenRouter key, the R2/S3 credentials, the public URLs.
+POST is the one place in this file that deliberately accepts a secret in a
+request body: the whole point is not re-exporting five values by hand every
+time this process starts. What is saved lives in one file on the machine
+running the portal (~/.moviecrew/settings.json by default), never in a
+database or anywhere reachable from outside this process. GET never echoes
+a secret's value back, only whether it is set and its last four characters.
+See moviecrew.settings for the whitelist, the masking, and the precedence
+between a real deployment env var and a value saved here.
+
+Everywhere else, keys are read server-side from the process environment
+only — no other request or response here ever carries one. The takes root
+is likewise server-side config ($MOVIECREW_TAKES_ROOT): a browser cannot
+point this process at an arbitrary directory outside what /api/settings
+explicitly changes.
 """
 
 from __future__ import annotations
@@ -48,6 +61,15 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..agents import DETAIL_LEVELS
+from ..assets import (
+    BUCKET_ENV,
+    ENDPOINT_ENV,
+    PUBLIC_BASE_ENV,
+    AssetError,
+    S3AssetStore,
+    build_asset_store,
+    is_reachable,
+)
 from ..crew import MovieCrew
 from ..image import ImageProvider, MockImageProvider
 from ..llm import LLMClient
@@ -56,7 +78,21 @@ from ..reference import FileReferenceImageProvider, ReferenceImageProvider
 from ..studio import Stage, StudioSession
 from ..production import UnknownShot, resolve_shot
 from ..render import FakeRenderClient, JobStatus, ShotSpec
+from ..settings import (
+    SettingsError,
+    apply_to_environ,
+    apply_values,
+    describe_settings,
+    settings_path,
+)
 from ..takes import list_takes, resolve_video, save_take, shot_dir
+
+# Fill in anything saved locally, but only where the real process
+# environment does not already have it — a deployment that exported a key
+# itself is never shadowed by a leftover local settings file. Called once,
+# at import, so every env var read below (all of them lazy, none cached at
+# import time) sees the merged result from the very first request.
+apply_to_environ()
 
 _BACKENDS = ("mock", "openrouter", "anthropic")
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -86,6 +122,9 @@ _render_jobs: dict[str, dict] = {}
 # Render clients are stateful and cache their model catalogue, so one is
 # kept per key rather than rebuilt per request.
 _render_clients: dict[str, object] = {}
+
+# Asset stores, keyed by the configuration that produced them.
+_asset_stores: dict[tuple, object] = {}
 
 _DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 
@@ -351,22 +390,73 @@ def _public_base_url() -> str:
     return os.environ.get(_PUBLIC_BASE_URL_ENV, "").rstrip("/")
 
 
-def _public_take_url(take) -> Optional[str]:
-    """A URL a generative backend can fetch this take from.
+def _asset_store():
+    """The configured asset store, cached.
 
-    None when no public base is configured, or when the one configured is a
-    loopback address — a provider resolving `127.0.0.1` would reach its own
-    machine, not this one, and the render would fail confusingly late.
+    A store is stateless but resolving it re-reads the environment, and the
+    S3 variant is the one a render depends on — building it per request would
+    make a misconfiguration show up intermittently rather than at startup.
+    """
+    key = (
+        os.environ.get(BUCKET_ENV, ""),
+        os.environ.get(ENDPOINT_ENV, ""),
+        os.environ.get(PUBLIC_BASE_ENV, ""),
+        _public_base_url(),
+    )
+    cached = _asset_stores.get(key)
+    if cached is None:
+        cached = build_asset_store(
+            local_root=str(_takes_root()), local_base_url=_public_base_url()
+        )
+        _asset_stores[key] = cached
+    return cached
+
+
+def _portal_take_url(take) -> Optional[str]:
+    """The take's URL as served by this portal, if it is publicly addressable.
+
+    The fallback for deployments with no bucket: a tunnel or a LAN address
+    pointed at $MOVIECREW_PUBLIC_BASE_URL. A loopback address is refused —
+    a provider resolving `127.0.0.1` reaches its own machine, not this one,
+    and the render fails confusingly late.
     """
     base = _public_base_url()
-    if not base:
-        return None
-    lowered = base.lower()
-    if any(host in lowered for host in _LOCAL_HOSTS):
+    if not base or not is_reachable(base):
         return None
     return (
         f"{base}/api/takes/{take.scene_id}/{take.shot_id}/{take.take_number}/video"
     )
+
+
+def _reference_url_for_take(take) -> tuple[Optional[str], Optional[str]]:
+    """A URL a render backend can fetch this take from, uploading if needed.
+
+    Prefers the asset store: with a bucket configured the take is uploaded
+    once under a stable key and served from a CDN, which is durable and
+    typed. Falls back to this portal's own address, which is what a tunnelled
+    demo uses.
+
+    Returns `(url, error)` rather than raising, because a failure here is
+    configuration — the caller turns it into a 400 that says which knob is
+    missing, not a traceback.
+    """
+    store = _asset_store()
+    if store.serves_public_urls and isinstance(store, S3AssetStore):
+        source = resolve_video(take, _takes_root())
+        if not source.is_file():
+            return None, f"take {take.take_id} has no video file to upload"
+        key = f"takes/{take.scene_id}/{take.shot_id}/take_{take.take_number:03d}.mp4"
+        existing = store.url(key)
+        try:
+            # Uploading is idempotent for our purposes: the same take always
+            # lands on the same key, so a re-render costs one PUT, not a
+            # duplicate object.
+            asset = store.put(str(source), key)
+        except AssetError as exc:
+            return existing, f"could not upload take to the asset store: {exc}"
+        return asset.url, None
+
+    return _portal_take_url(take), None
 
 
 def _render_client():
@@ -510,6 +600,18 @@ class RegenerateRequest(BaseModel):
     feedback: str = ""
 
 
+class SettingsUpdateRequest(BaseModel):
+    """Only the fields being changed need to be present.
+
+    A secret field absent here means "leave it as it is" — the browser
+    never received its current value to send back unchanged, since
+    /api/settings never echoes one. Send an empty string for a field to
+    clear it instead.
+    """
+
+    values: dict[str, str]
+
+
 # ---------------------------------------------------------------------- #
 # App                                                                     #
 # ---------------------------------------------------------------------- #
@@ -533,7 +635,35 @@ def health() -> dict:
         "detail_levels": sorted(DETAIL_LEVELS),
         "takes_root": str(root),
         "takes_root_exists": root.is_dir(),
+        "asset_store": _asset_store().name,
+        "asset_store_public": _asset_store().serves_public_urls,
     }
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Every known setting's current state — never a secret's full value.
+
+    See moviecrew.settings for the whitelist and the masking rule.
+    """
+    return {"fields": describe_settings(), "settings_path": str(settings_path())}
+
+
+@app.post("/api/settings")
+def update_settings(req: SettingsUpdateRequest):
+    """Save the given values and apply them to this process immediately.
+
+    No cache invalidation needed afterward: every place that reads one of
+    these settings (_render_client, _asset_store, _build_llm, and friends)
+    keys its own cache by the environment variable's current value, so a
+    changed value is simply a cache miss next time it's read, not a stale
+    hit.
+    """
+    try:
+        apply_values(req.values)
+    except SettingsError as exc:
+        return _error(400, str(exc))
+    return {"fields": describe_settings(), "settings_path": str(settings_path())}
 
 
 @app.get("/api/takes")
@@ -636,7 +766,7 @@ def render_take(req: RenderRequest):
     # The request is validated before the deployment is: a request naming a
     # shot this project does not have is wrong however the portal is hosted,
     # and saying so first gives the more useful error.
-    reference_video = _public_take_url(take)
+    reference_video, asset_warning = _reference_url_for_take(take)
     spec, err = _spec_for(req, take, reference_video)
     if err:
         return err
@@ -644,9 +774,11 @@ def render_take(req: RenderRequest):
     if capabilities.supports_video_reference and reference_video is None:
         return _error(
             400,
-            f"{model} drives motion from the take, but this portal has no publicly "
-            f"reachable address. Set {_PUBLIC_BASE_URL_ENV} to where it can be "
-            "fetched from — a provider cannot reach a loopback address.",
+            f"{model} drives motion from the take, but there is nowhere it can be "
+            f"fetched from. Configure a bucket ({BUCKET_ENV}, {ENDPOINT_ENV}, "
+            f"credentials and {PUBLIC_BASE_ENV}) or point {_PUBLIC_BASE_URL_ENV} at "
+            f"a publicly reachable address for this portal. "
+            + (asset_warning or "A provider cannot reach a loopback address."),
         )
 
     if req.estimate_only:
