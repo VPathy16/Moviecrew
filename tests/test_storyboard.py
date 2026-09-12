@@ -447,3 +447,15 @@ def test_storyboard_unknown_session_returns_404():
 def test_storyboard_approve_unknown_session_returns_404():
     res = client.post("/api/storyboard/approve", json={"session_id": "does-not-exist"})
     assert res.status_code == 404
+
+
+def test_revise_uses_edited_prompt_and_preserves_other_frames(session):
+    session.produce()
+    shot_id = session.board[0].shot_id
+    others = session.board[1:].copy()
+    prompt = 'Close-up of the keeper, wearing a red coat in soft morning light.'
+    session.revise(shot_id=shot_id, prompt=prompt)
+    assert session.board[0].prompt_used == prompt
+    assert session.board[0].status == 'ok'
+    assert session.board[1:] == others
+    assert session.stage == Stage.STORYBOARD

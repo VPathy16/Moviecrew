@@ -250,6 +250,7 @@ main{max-width:1440px;padding:44px 4vw;gap:36px}.panel{padding:32px;border-radiu
 
 #sb-empty{margin-bottom:20px}.sb-meta{padding:18px}.sb-frame{display:flex;flex-direction:column}.sb-meta{display:flex;flex-direction:column;flex:1}.sb-prompt{max-height:8rem;overflow:auto;font-size:14px;margin:12px 0 18px}.sb-redo{margin-top:auto;align-self:flex-start}.sb-badges{flex-wrap:wrap}.badge{white-space:normal}.sb-img{flex-shrink:0}.sb-meta .sb-id{font-size:16px}
 @media(max-width:700px){nav{flex-wrap:wrap}nav a{font-size:13px}}
+.sb-prompt-editor{min-height:200px;margin:12px 0}.sb-edit{align-self:flex-start;margin-bottom:10px}
 </style>
 </head>
 <body>
@@ -716,8 +717,10 @@ function renderPlanProgress(progress) {
 // until its own prompt_complete has landed.
 function renderPlanResults(project) {
   _project = project;
-  sbGenerateBtn.disabled = false;
-  document.getElementById("sb-empty").textContent = "Your shot plan is ready. Generate images to explore the look of each shot.";
+  sbGenerateBtn.disabled = project.status !== "complete";
+  document.getElementById("sb-empty").textContent = project.status === "complete"
+    ? "Your shot plan is ready. Generate images to explore the look of each shot."
+    : "Image generation becomes available when the shot plan is complete.";
   clearError();
   results.style.display = "block";
   sbSection.style.display = "block";
@@ -841,8 +844,25 @@ function renderStoryboard(frames) {
         (shot && shot.consistency_anchor ? `<span class="badge anchor">anchor</span>` : "") +
         `<span class="badge${frame.status === "failed" ? ' danger' : ''}">${frame.status}</span>` +
       `</div>` +
-      `<div class="sb-prompt">${frame.prompt_used}</div>`;
+      `<div class="sb-prompt"></div>`;
 
+    meta.querySelector(".sb-prompt").textContent = frame.prompt_used;
+    const editor = document.createElement("textarea");
+    editor.className = "sb-prompt-editor";
+    editor.value = frame.prompt_used;
+    editor.setAttribute("aria-label", `Image prompt for ${frame.shot_id}`);
+    editor.hidden = true;
+    const editBtn = document.createElement("button");
+    editBtn.className = "secondary sb-edit";
+    editBtn.textContent = "Edit prompt";
+    editBtn.onclick = () => {
+      editor.hidden = !editor.hidden;
+      meta.querySelector(".sb-prompt").hidden = !editor.hidden;
+      editBtn.textContent = editor.hidden ? "Edit prompt" : "Cancel edit";
+      if (editor.hidden) editor.value = meta.querySelector(".sb-prompt").textContent;
+      else editor.focus();
+    };
+    meta.append(editor, editBtn);
     const redoBtn = document.createElement("button");
     redoBtn.className = "secondary sb-redo";
     redoBtn.textContent = frame.status === "failed" ? "Retry image" : "Regenerate image";
@@ -1056,12 +1076,18 @@ async function approveBoard() {
 async function redoFrame(shotId, card) {
   if (!_sessionId) return;
   const redoBtn = card.querySelector(".sb-redo");
-  if (redoBtn) { redoBtn.disabled = true; redoBtn.textContent = "Redoing..."; }
+  const editor = card.querySelector(".sb-prompt-editor");
+  const editBtn = card.querySelector(".sb-edit");
+  const prompt = editor.value;
+  if (!prompt.trim()) { showError("Enter an image prompt before regenerating."); editor.focus(); return; }
+  editor.disabled = true;
+  editBtn.disabled = true;
+  if (redoBtn) { redoBtn.disabled = true; redoBtn.textContent = "Regenerating..."; }
   try {
     const res = await fetch("/api/storyboard/regenerate", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({session_id: _sessionId, shot_id: shotId, feedback: ""}),
+      body: JSON.stringify({session_id: _sessionId, shot_id: shotId, prompt}),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -1069,6 +1095,15 @@ async function redoFrame(shotId, card) {
     } else {
       // Re-render just this card
       const frame = data.frame;
+      card.querySelector(".sb-prompt").textContent = frame.prompt_used;
+      editor.value = frame.prompt_used;
+      editor.hidden = true;
+      card.querySelector(".sb-prompt").hidden = false;
+      editBtn.textContent = "Edit prompt";
+      sbApproveBtn.disabled = false;
+      sbStatus.textContent = "Image updated. Review and approve the storyboard again.";
+      const badges = card.querySelector(".sb-badges");
+      if (badges && badges.lastElementChild) badges.lastElementChild.textContent = frame.status;
       const imgBox = card.querySelector(".sb-img");
       if (imgBox) {
         imgBox.innerHTML = "";
@@ -1088,7 +1123,9 @@ async function redoFrame(shotId, card) {
   } catch (err) {
     showError("Redo failed: " + err);
   } finally {
-    if (redoBtn) { redoBtn.disabled = false; redoBtn.textContent = frame.status === "failed" ? "Retry image" : "Regenerate image"; }
+    editor.disabled = false;
+    editBtn.disabled = false;
+    if (redoBtn) { redoBtn.disabled = false; redoBtn.textContent = card.classList.contains("failed") ? "Retry image" : "Regenerate image"; }
   }
 }
 

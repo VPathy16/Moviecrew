@@ -702,6 +702,7 @@ class RegenerateRequest(BaseModel):
     session_id: str
     shot_id: str
     feedback: str = ""
+    prompt: str | None = None
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -1196,7 +1197,9 @@ def regenerate_storyboard(req: RegenerateRequest):
     if err:
         return err
     try:
-        session.revise(feedback=req.feedback, shot_id=req.shot_id)
+        if req.prompt is not None and not req.prompt.strip():
+            return _error(400, "Image prompt cannot be empty")
+        session.revise(feedback=req.feedback, shot_id=req.shot_id, prompt=req.prompt)
     except Exception as exc:
         return _error(502, f"regeneration failed: {exc}")
     frame = next((f for f in session.board if f.shot_id == req.shot_id), None)

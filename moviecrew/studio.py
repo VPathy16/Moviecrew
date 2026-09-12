@@ -213,7 +213,7 @@ class StudioSession:
 
         self.stage = Stage.OUTPUT
 
-    def revise(self, feedback: str = "", shot_id: Optional[str] = None) -> None:
+    def revise(self, feedback: str = "", shot_id: Optional[str] = None, prompt: Optional[str] = None) -> None:
         """Regenerate a single frame or the entire board.
 
         If *shot_id* is given, only that frame is regenerated (keeping the rest
@@ -232,7 +232,7 @@ class StudioSession:
         }
 
         if shot_id:
-            self._revise_one(shot_id, feedback, board_dir, prompts_by_shot_id)
+            self._revise_one(shot_id, feedback, board_dir, prompts_by_shot_id, prompt)
         else:
             old_frames_by_shot_id = {f.shot_id: f for f in self.board}
             new_board = []
@@ -279,6 +279,7 @@ class StudioSession:
         feedback: str,
         board_dir: Path,
         prompts_by_shot_id: dict[str, str],
+        prompt: Optional[str] = None,
     ) -> None:
         old_frame = next((f for f in self.board if f.shot_id == shot_id), None)
 
@@ -291,7 +292,7 @@ class StudioSession:
                     break
 
         shot_prompt = prompts_by_shot_id.get(shot_id, shot_id)
-        still_prompt = _build_still_with_feedback(shot_prompt, feedback)
+        still_prompt = prompt if prompt is not None else _build_still_with_feedback(shot_prompt, feedback)
         new_frame = self._generate_frame(shot_id, still_prompt, board_dir)
 
         # Replace the existing frame for this shot_id, or append if missing.
