@@ -33,6 +33,31 @@ def _build_llm(backend: str) -> LLMClient:
     raise ValueError(f"unknown backend: {backend}")
 
 
+def _asset_publisher(out_dir: str):
+    """The `publish=` a `GenerativeVideoBackend` needs to keep a chain
+    whole, or None when nothing configured here could actually deliver one.
+
+    `build_asset_store` reads the same $MOVIECREW_S3_* variables the portal
+    reads (and the settings screen writes) — R2 credentials opt into a real
+    bucket, and no credentials means the local fallback, whose URLs are
+    never fetchable by an external provider with no server address to give
+    it. `store.serves_public_urls` is exactly that check, so a chain stays
+    correctly disabled with nothing configured, and starts working the
+    moment a bucket does — no change here when that happens.
+    """
+    from .assets import build_asset_store
+
+    store = build_asset_store(local_root=out_dir)
+    if not store.serves_public_urls:
+        return None
+
+    def publish(shot_id: str, local_path: str) -> str:
+        asset = store.put_reachable(local_path, f"renders/{shot_id}.mp4")
+        return asset.url
+
+    return publish
+
+
 def _build_video_backend(
     choice: str, *, model: str, out_dir: str, resolution: str
 ) -> VideoBackend:
@@ -52,6 +77,7 @@ def _build_video_backend(
             model=model,
             out_dir=out_dir,
             resolution=resolution,
+            publish=_asset_publisher(out_dir),
         )
     raise ValueError(f"unknown video backend: {choice}")
 
