@@ -10,7 +10,9 @@ Regression tests for the #23 review:
   2. max_image_references=0 meant both "no cap" and "no references"
   3. a chain was kept whole on video-input support alone, and a paid
      continuation was submitted against a URL the provider may not be able
-     to read — with only a warning recorded after the fact
+     to read — with only a warning recorded after the fact; and, once
+     delivery was gated correctly, the reference was still published and
+     recorded before fetch() had confirmed the clip actually downloaded
   4. a billed generation whose download failed reported success
 """
 
@@ -314,8 +316,15 @@ def test_cap_image_references_is_the_one_rule(cap, expected):
 
 
 def _publisher(published: list[tuple[str, str]]):
-    def publish(shot_id: str, url: str) -> str:
-        published.append((shot_id, url))
+    """A stand-in for an AssetStore: records what it was actually handed.
+
+    Takes `local_path`, not a provider URL — publish() is only ever called
+    with the file `fetch()` wrote to disk, which is what the tests below
+    check for.
+    """
+
+    def publish(shot_id: str, local_path: str) -> str:
+        published.append((shot_id, local_path))
         return f"https://cdn.example/{shot_id}.mp4"
 
     return publish
@@ -408,8 +417,14 @@ def test_a_publisher_makes_the_take_whole_again(tmp_path):
     assert [shot_id for shot_id, _ in published] == ["s0", "s1"]
 
 
-def test_the_republished_url_is_used_and_the_providers_own_is_not(tmp_path):
-    """Specifically: the reference is the rehosted clip, never the raw result."""
+def test_the_publisher_is_handed_the_fetched_file_not_the_providers_url(tmp_path):
+    """publish() rehosts what fetch() actually wrote to disk.
+
+    Not the provider's own result URL: that URL is transient, auth-gated
+    storage (OpenRouter's unsigned_urls) that an external CDN cannot be
+    pointed at. The file already sitting in out_dir is the only artifact
+    this backend owns, and it is what gets published.
+    """
     published: list[tuple[str, str]] = []
     shots = _shots(2)
     project = _project(shots, [[shot.id for shot in shots]])
@@ -421,13 +436,46 @@ def test_the_republished_url_is_used_and_the_providers_own_is_not(tmp_path):
 
     results = MovieCrew(MockLLMClient()).render(project, backend)
     raw_provider_url = results[0].raw["video_url"]
+    fetched_path = results[0].uri
     continuation = [spec for spec, _model in backend.client.submitted][1]
 
     assert raw_provider_url
+    assert fetched_path
     assert continuation.reference_video == "https://cdn.example/s0.mp4"
-    assert continuation.reference_video != raw_provider_url
-    # And what the publisher was handed is the provider's URL, once.
-    assert published[0] == ("s0", raw_provider_url)
+    assert continuation.reference_video not in (raw_provider_url, fetched_path)
+    # What the publisher was handed is the local file, not the provider URL.
+    assert published[0] == ("s0", fetched_path)
+
+
+def test_a_failed_download_is_never_published_or_recorded_as_a_reference(tmp_path):
+    """The bug this reordering fixes: publishing (or recording a reference)
+    before fetch() runs meant a failed download could still leave behind a
+    continuable-looking URL, and the next shot in the chain would submit a
+    paid continuation against a predecessor that was never actually
+    produced."""
+    published: list[tuple[str, str]] = []
+
+    class _FailsToDownload(_Client):
+        def fetch(self, job: RenderJob, out_path: str):
+            return None
+
+    shots = _shots(2)
+    project = _project(shots, [[shot.id for shot in shots]])
+    backend = GenerativeVideoBackend(
+        _FailsToDownload(_capabilities(supports_video_reference=True)),
+        model="m",
+        out_dir=str(tmp_path),
+        publish=_publisher(published),
+        sleep=lambda _: None,
+    )
+
+    results = MovieCrew(MockLLMClient()).render(project, backend)
+
+    assert results[0].status == "failed"
+    assert published == []
+    assert backend.produced_url_by_shot_id == {}
+    # The second shot never even had a predecessor to continue from.
+    assert results[1].raw["error"].startswith("no rendered output for predecessor")
 
 
 def test_a_client_with_reusable_results_chains_without_a_publisher(tmp_path):

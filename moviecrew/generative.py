@@ -29,9 +29,15 @@ They are different capabilities and only the first one is about the model.
 A provider can take a video reference and still return its own results
 behind auth that nothing re-attaches when the URL is passed onward, or
 behind a URL that expires — so "it accepts video input" is not evidence
-that the chain will hold. Delivery comes either from a `publish` callable
-that rehosts each clip, or from a client that declares its own results are
-reusable (`RenderCapabilities.produces_reusable_video_reference`).
+that the chain will hold. Delivery comes either from a client that
+declares its own results are reusable
+(`RenderCapabilities.produces_reusable_video_reference`), or from a
+`publish` callable that rehosts the *downloaded clip* — not the
+provider's URL — somewhere readable. It takes the local file because the
+provider's URL is transient, auth-gated storage that an external CDN
+cannot be pointed at; the file on disk after `fetch()` is the only
+artifact this backend actually owns, and it is what publish is given,
+only once fetching it has actually succeeded.
 
 Without both, `segment()` breaks the chain into single shots. That is the
 conservative answer on purpose: the alternative is submitting a paid
@@ -94,6 +100,9 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
         poll_interval_s: float = 5.0,
         timeout_s: float = 900.0,
         publish: Optional[Callable[[str, str], str]] = None,
+        # publish(shot_id, local_path) -> public_url. Called with the file
+        # fetch() actually wrote to disk, never the provider's own URL, and
+        # only once that fetch has succeeded — see _reference_url.
         sleep: Callable[[float], None] = time.sleep,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -109,28 +118,37 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
         self._monotonic = monotonic
         self.produced_url_by_shot_id: dict[str, str] = {}
 
-    def _reference_url(self, shot_id: str, video_url: str) -> Optional[str]:
+    def _reference_url(
+        self, shot_id: str, *, provider_url: str, local_path: str
+    ) -> Optional[str]:
         """The URL a *later* shot can be given to continue from, or None.
 
-        None means there is no way to hand this clip to the next generation,
-        and a caller must not substitute the raw result URL for it: a
-        finished render's own URL is not necessarily one the provider can
-        fetch. OpenRouter returns results under `unsigned_urls`, which sit
-        behind the same API auth as everything else — `fetch()` attaches a
-        Bearer token for exactly that reason — and a URL handed onward in
-        `provider.options.video_urls` carries no such header.
+        Called only after `fetch()` has written `local_path` to disk — never
+        before, and never when it failed. Recording a reference earlier was
+        the bug this signature exists to prevent: a shot whose download
+        failed would still leave behind a continuable-looking URL, and the
+        next shot in the chain would submit a paid continuation against a
+        predecessor that, as far as this backend can prove, was never
+        actually produced.
 
-        Two things can make a clip deliverable. `publish` is the general
-        one: a callable that puts the clip somewhere readable (an
-        `AssetStore`, a CDN) and returns that URL. The other is a client
-        that says its own results are already reusable — a provider with
-        native asset ids, say — which it declares through
-        `RenderCapabilities.produces_reusable_video_reference`.
+        Two things can make a clip deliverable. A client that says its own
+        results are already reusable — a provider with native asset ids,
+        say — hands back its own `provider_url`, via
+        `RenderCapabilities.produces_reusable_video_reference`; nothing to
+        publish, since the provider is already willing to read its own
+        output back. Otherwise `publish` is the general path: give it a
+        callable that rehosts `local_path` — the file just fetched, not the
+        provider's URL — somewhere readable (an `AssetStore`, a CDN), and
+        use the URL it returns. The provider's own URL is not publishable
+        as a reference in the general case: OpenRouter's `unsigned_urls`
+        sit behind the same API auth as everything else — `fetch()`
+        attaches a Bearer token for exactly that reason — and a URL handed
+        onward in `provider.options.video_urls` carries no such header.
         """
-        if self._publish is not None:
-            return self._publish(shot_id, video_url)
         if self._capabilities().produces_reusable_video_reference:
-            return video_url
+            return provider_url
+        if self._publish is not None:
+            return self._publish(shot_id, local_path)
         return None
 
     # -- can this backend carry a take? --------------------------------- #
@@ -289,12 +307,6 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
 
             if job.video_url:
                 raw["video_url"] = job.video_url
-                reference = self._reference_url(spec.shot_id, job.video_url)
-                if reference is not None:
-                    # Only a clip a later render could actually read is
-                    # recorded as continuable. The raw URL stays in `raw`
-                    # either way, so nothing is lost for inspection or retry.
-                    self.produced_url_by_shot_id[spec.shot_id] = reference
 
             os.makedirs(self.out_dir, exist_ok=True)
             out_path = self.client.fetch(
@@ -306,7 +318,9 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
                 # not retrieve it. `fetch` is documented to return None, and
                 # calling that a success would put a shot with no clip into
                 # the cut. The URL and cost stay in `raw` so the spend is
-                # recorded and the download can be retried.
+                # recorded and the download can be retried. Crucially,
+                # nothing below this point has run yet: no reference is
+                # published or recorded for a clip that was never fetched.
                 return self._failure(
                     spec,
                     "generation succeeded but the clip could not be downloaded "
@@ -315,6 +329,17 @@ class GenerativeVideoBackend(VideoBackend[ShotSpec]):
                     in_multishot_chain=in_multishot_chain,
                     raw=raw,
                 )
+
+            if job.video_url:
+                # Only reachable once fetch() has actually produced a file,
+                # so publish (when used) is always handed a clip that
+                # exists, and the next shot in a chain never inherits a
+                # reference to a download that failed.
+                reference = self._reference_url(
+                    spec.shot_id, provider_url=job.video_url, local_path=out_path
+                )
+                if reference is not None:
+                    self.produced_url_by_shot_id[spec.shot_id] = reference
 
             return RenderResult(
                 shot_id=spec.shot_id,

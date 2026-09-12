@@ -400,7 +400,7 @@ def test_a_model_with_a_video_reference_keeps_the_take_whole(tmp_path):
     backend = _backend(
         _capabilities(supports_video_reference=True, max_video_references=1),
         out_dir=str(tmp_path),
-        publish=lambda shot_id, url: f"https://cdn.example/{shot_id}.mp4",
+        publish=lambda shot_id, local_path: f"https://cdn.example/{shot_id}.mp4",
     )
 
     MovieCrew(MockLLMClient()).render(_project(shots, chains=[chain]), backend)
@@ -421,7 +421,7 @@ def test_a_broken_take_is_reported_not_papered_over(tmp_path):
     backend = _backend(
         _capabilities(supports_video_reference=True),
         out_dir=str(tmp_path),
-        publish=lambda shot_id, url: f"https://cdn.example/{shot_id}.mp4",
+        publish=lambda shot_id, local_path: f"https://cdn.example/{shot_id}.mp4",
     )
     spec = backend.adapt(ShotIntent(shot_id="s2", description="d"))
 
