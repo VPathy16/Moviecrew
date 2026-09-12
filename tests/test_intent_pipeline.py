@@ -396,6 +396,63 @@ def test_a_scene_with_no_shots_raises():
         _make(cinematographer={"shots": []})
 
 
+# ---------------------------------------------------------------------- #
+# Extra fields the cinematographer adds beyond the schema are ignored     #
+# ---------------------------------------------------------------------- #
+
+
+def test_a_shot_with_an_extra_note_field_succeeds():
+    """The bug report this guards against: Shot.__init__() got an
+    unexpected keyword argument 'note', from a shot that was otherwise
+    perfectly valid."""
+    cine = _base_script()["cinematographer"]
+    cine["shots"][0]["note"] = "consider a handheld feel here"
+    project = _make(cinematographer=cine)
+    assert len(project.render_plan.intents) == 2
+
+
+def test_several_extra_fields_together_succeed():
+    cine = _base_script()["cinematographer"]
+    cine["shots"][0]["note"] = "a note"
+    cine["shots"][0]["rationale"] = "why this shot exists"
+    cine["shots"][1]["transition"] = "hard cut"
+    cine["shots"][1]["comments"] = "reviewer feedback"
+    project = _make(cinematographer=cine)
+    assert len(project.render_plan.intents) == 2
+
+
+def test_an_extra_field_does_not_get_added_to_the_built_shot():
+    """Dropped, not carried through as an attribute on the domain object —
+    the fix filters at the boundary, it does not widen Shot."""
+    cine = _base_script()["cinematographer"]
+    cine["shots"][0]["note"] = "should not survive"
+    project = _make(cinematographer=cine)
+    shot = next(
+        s for scene in project.scenes for s in scene.shots if s.id == "sc1-sh1"
+    )
+    assert not hasattr(shot, "note")
+
+
+@pytest.mark.parametrize("missing_field", ["id", "scene_id", "description", "duration_s"])
+def test_a_shot_missing_a_required_field_raises_a_useful_pipeline_error(missing_field):
+    cine = _base_script()["cinematographer"]
+    del cine["shots"][0][missing_field]
+    with pytest.raises(PipelineError) as excinfo:
+        _make(cinematographer=cine)
+    message = str(excinfo.value)
+    assert "missing required field" in message
+    assert missing_field in message
+    # Never a bare TypeError escaping from Shot(**shot_data).
+    assert excinfo.type is PipelineError
+
+
+def test_a_missing_required_field_names_the_scene():
+    cine = _base_script()["cinematographer"]
+    del cine["shots"][0]["duration_s"]
+    with pytest.raises(PipelineError, match="sc1"):
+        _make(cinematographer=cine)
+
+
 def test_every_shot_gets_exactly_one_intent():
     project = _make()
     shot_ids = [s.id for sc in project.scenes for s in sc.shots]

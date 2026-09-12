@@ -14,7 +14,7 @@ computed rather than trusted from the LLM.
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import MISSING, asdict, fields
 from typing import Optional
 
 from .agents import (
@@ -61,6 +61,35 @@ class PipelineError(RuntimeError):
     """
 
 
+# The LLM -> Shot boundary. Computed from Shot's own dataclass fields, never
+# duplicated as a hardcoded list, so it can never drift out of sync with the
+# schema: _SHOT_FIELD_NAMES is every field Shot(**...) will accept,
+# _SHOT_REQUIRED_FIELD_NAMES is the subset with no default that must be
+# present or the call raises a bare TypeError.
+_SHOT_FIELD_NAMES = {f.name for f in fields(Shot)}
+_SHOT_REQUIRED_FIELD_NAMES = {
+    f.name for f in fields(Shot) if f.default is MISSING and f.default_factory is MISSING
+}
+
+
+def _shot_from_raw(raw: dict) -> Shot:
+    """Build a Shot from the cinematographer's raw dict for it, keeping only
+    the fields Shot actually declares.
+
+    The agent is a language model, and its output routinely carries harmless
+    metadata no schema asked for — "note", "rationale", and "transition"
+    have all shown up in practice. `Shot(**raw)` made the whole pipeline
+    brittle to any such field: a shot otherwise perfectly valid would crash
+    the run with `Shot.__init__() got an unexpected keyword argument`.
+    Filtering to Shot's own declared fields here means new metadata is
+    silently ignored rather than either crashing or being added to the
+    schema on one model's say-so. Caller (_shots_for_scene) is expected to
+    have already checked every field in _SHOT_REQUIRED_FIELD_NAMES is
+    present, so construction here should never itself raise.
+    """
+    return Shot(**{k: v for k, v in raw.items() if k in _SHOT_FIELD_NAMES})
+
+
 def _shots_for_scene(
     scene: Scene, raw_shots: list[dict], seen_shot_ids: set[str]
 ) -> list[Shot]:
@@ -70,12 +99,22 @@ def _shots_for_scene(
     Shots belonging to another scene are rejected rather than dropped on the
     floor, because a shot filtered out here would never appear in the plan,
     never be rendered, and never be missed. Duplicate ids are rejected for
-    the same reason: the second one would overwrite or shadow the first.
+    the same reason: the second one would overwrite or shadow the first. A
+    shot missing a required field is rejected the same way — with the
+    shot/scene context a bare TypeError from Shot(**shot_data) would not
+    have carried — rather than let one collapse the whole run confusingly.
     """
     shots: list[Shot] = []
     for raw in raw_shots:
         shot_id = raw.get("id")
         scene_id = raw.get("scene_id")
+
+        missing = sorted(_SHOT_REQUIRED_FIELD_NAMES - raw.keys())
+        if missing:
+            raise PipelineError(
+                f"cinematographer shot {shot_id!r} for scene {scene.id!r} is "
+                f"missing required field(s) {missing}: {raw!r}"
+            )
         if scene_id != scene.id:
             raise PipelineError(
                 f"cinematographer returned shot {shot_id!r} with scene_id "
@@ -84,7 +123,7 @@ def _shots_for_scene(
         if shot_id in seen_shot_ids:
             raise PipelineError(f"duplicate shot id {shot_id!r}")
         seen_shot_ids.add(shot_id)
-        shots.append(Shot(**raw))
+        shots.append(_shot_from_raw(raw))
 
     if not shots:
         raise PipelineError(f"cinematographer returned no shots for scene {scene.id!r}")
