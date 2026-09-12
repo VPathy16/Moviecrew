@@ -25,10 +25,23 @@ defaults from mock to live; without it every stage stays offline and free.
 $ANTHROPIC_API_KEY still drives the direct-to-Anthropic backend for anyone
 who prefers it.
 
-Keys are read server-side from the process environment only — no request or
-response here ever carries one. The takes root is likewise server-side
-config ($MOVIECREW_TAKES_ROOT): a browser cannot point this process at an
-arbitrary directory.
+SETTINGS path (GET /api/settings, POST /api/settings): a local settings
+screen for the same environment variables every section above reads via
+os.environ — the OpenRouter key, the R2/S3 credentials, the public URLs.
+POST is the one place in this file that deliberately accepts a secret in a
+request body: the whole point is not re-exporting five values by hand every
+time this process starts. What is saved lives in one file on the machine
+running the portal (~/.moviecrew/settings.json by default), never in a
+database or anywhere reachable from outside this process. GET never echoes
+a secret's value back, only whether it is set and its last four characters.
+See moviecrew.settings for the whitelist, the masking, and the precedence
+between a real deployment env var and a value saved here.
+
+Everywhere else, keys are read server-side from the process environment
+only — no other request or response here ever carries one. The takes root
+is likewise server-side config ($MOVIECREW_TAKES_ROOT): a browser cannot
+point this process at an arbitrary directory outside what /api/settings
+explicitly changes.
 """
 
 from __future__ import annotations
@@ -65,7 +78,21 @@ from ..reference import FileReferenceImageProvider, ReferenceImageProvider
 from ..studio import Stage, StudioSession
 from ..production import UnknownShot, resolve_shot
 from ..render import FakeRenderClient, JobStatus, ShotSpec
+from ..settings import (
+    SettingsError,
+    apply_to_environ,
+    apply_values,
+    describe_settings,
+    settings_path,
+)
 from ..takes import list_takes, resolve_video, save_take, shot_dir
+
+# Fill in anything saved locally, but only where the real process
+# environment does not already have it — a deployment that exported a key
+# itself is never shadowed by a leftover local settings file. Called once,
+# at import, so every env var read below (all of them lazy, none cached at
+# import time) sees the merged result from the very first request.
+apply_to_environ()
 
 _BACKENDS = ("mock", "openrouter", "anthropic")
 _STATIC_DIR = Path(__file__).parent / "static"
@@ -573,6 +600,18 @@ class RegenerateRequest(BaseModel):
     feedback: str = ""
 
 
+class SettingsUpdateRequest(BaseModel):
+    """Only the fields being changed need to be present.
+
+    A secret field absent here means "leave it as it is" — the browser
+    never received its current value to send back unchanged, since
+    /api/settings never echoes one. Send an empty string for a field to
+    clear it instead.
+    """
+
+    values: dict[str, str]
+
+
 # ---------------------------------------------------------------------- #
 # App                                                                     #
 # ---------------------------------------------------------------------- #
@@ -599,6 +638,32 @@ def health() -> dict:
         "asset_store": _asset_store().name,
         "asset_store_public": _asset_store().serves_public_urls,
     }
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Every known setting's current state — never a secret's full value.
+
+    See moviecrew.settings for the whitelist and the masking rule.
+    """
+    return {"fields": describe_settings(), "settings_path": str(settings_path())}
+
+
+@app.post("/api/settings")
+def update_settings(req: SettingsUpdateRequest):
+    """Save the given values and apply them to this process immediately.
+
+    No cache invalidation needed afterward: every place that reads one of
+    these settings (_render_client, _asset_store, _build_llm, and friends)
+    keys its own cache by the environment variable's current value, so a
+    changed value is simply a cache miss next time it's read, not a stale
+    hit.
+    """
+    try:
+        apply_values(req.values)
+    except SettingsError as exc:
+        return _error(400, str(exc))
+    return {"fields": describe_settings(), "settings_path": str(settings_path())}
 
 
 @app.get("/api/takes")
