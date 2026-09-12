@@ -18,6 +18,20 @@ Every task runs on one model by default. The Anthropic path routes per task
 (Opus for the director, Haiku for the editor); here the whole crew runs on
 Sonnet 5 unless a caller says otherwise, because a single model keeps the
 voice of a project consistent across agents and the price predictable.
+
+`complete_json` distinguishes four ways a completion can fail rather than
+reporting all of them as "did not return JSON": the request itself failing
+(transport, auth, rate limit — surfaced immediately, never retried here),
+the model being cut off by its own token limit (`finish_reason == "length"`
+— a truncation error naming the limit, since retrying would just spend the
+same budget on the same failure), a complete but malformed response (parsed
+with `llm.parse_json_response`'s real JSON-aware extraction, not a greedy
+brace-matching regex — retried exactly once with a short correction
+instruction), and MovieCrew's own parser rejecting an ambiguous response.
+See `llm.JSONParseError` and its subclasses for the diagnostics — an exact
+line/column/character position and a bounded excerpt around the break, not
+a blind first-300-characters truncation of what might be a very long
+response.
 """
 
 from __future__ import annotations
@@ -28,7 +42,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable, Optional
 
-from .llm import LLMClient, parse_json_response
+from .llm import JSONParseError, LLMClient, parse_json_response
 
 API_ROOT = "https://openrouter.ai/api/v1"
 API_KEY_ENV = "OPENROUTER_API_KEY"
@@ -42,6 +56,20 @@ DEFAULT_MODEL = "anthropic/claude-sonnet-5"
 TASK_MODEL_ROUTING: dict[str, str] = {}
 
 DEFAULT_MAX_TOKENS = 8192
+
+# Sent back as the user turn's own trailer on the one retry a malformed
+# structured output gets. Deliberately says nothing about *why* parsing
+# failed — the point is a clean second attempt, not a debugging session the
+# model cannot actually have with itself.
+_CORRECTION_INSTRUCTION = (
+    "Your previous response could not be parsed. Return ONLY one valid JSON "
+    "object matching the requested schema. No markdown fence, commentary, "
+    "or trailing text."
+)
+
+# OpenRouter's own name for "the response was cut off by a token limit",
+# passed through from whichever provider actually served the request.
+_TRUNCATED_FINISH_REASON = "length"
 
 
 class LLMError(RuntimeError):
@@ -63,22 +91,27 @@ def _urllib_transport(
         raise LLMError(f"{method} {url} unreachable: {exc.reason}") from exc
 
 
-def _text_of(payload: dict[str, Any]) -> str:
-    """The assistant's message text, whichever shape it came back in.
+def _text_and_finish_reason(payload: dict[str, Any]) -> tuple[str, Optional[str]]:
+    """The assistant's message text and why the model stopped, together.
 
-    OpenRouter normalises most providers to a plain string, but some return
-    the Anthropic-style list of content blocks. Both are handled rather than
-    assumed, because the difference only shows up against a live provider.
+    They come from the same `choices[0]` and are always needed together: a
+    parse failure is a different problem depending on whether `finish_reason`
+    says the response is even complete. OpenRouter normalises most providers'
+    text to a plain string, but some return the Anthropic-style list of
+    content blocks; both are handled rather than assumed, because the
+    difference only shows up against a live provider.
     """
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices:
         raise LLMError(f"no choices in response: {json.dumps(payload)[:300]}")
 
-    message = choices[0].get("message") or {}
+    choice = choices[0]
+    finish_reason = choice.get("finish_reason")
+    message = choice.get("message") or {}
     content = message.get("content")
 
     if isinstance(content, str):
-        return content
+        return content, finish_reason
     if isinstance(content, list):
         parts = [
             block.get("text", "")
@@ -86,7 +119,7 @@ def _text_of(payload: dict[str, Any]) -> str:
             if isinstance(block, dict) and block.get("type") in (None, "text")
         ]
         if parts:
-            return "".join(parts)
+            return "".join(parts), finish_reason
 
     raise LLMError(f"no text content in response: {json.dumps(payload)[:300]}")
 
@@ -151,7 +184,13 @@ class OpenRouterLLMClient(LLMClient):
             "response_format": {"type": "json_object"},
         }
 
-    def complete_json(self, *, task: str, system: str, user: str) -> dict[str, Any]:
+    def _call(self, *, task: str, system: str, user: str) -> tuple[str, Optional[str]]:
+        """One request to the provider: build it, send it, surface an
+        API-level error immediately, and return the raw text plus why the
+        model stopped. Never touches JSON parsing — a transport failure or
+        an `error` payload is not something a correction retry can fix, so
+        neither is caught by the retry logic in `complete_json`.
+        """
         body = self.build_request(task=task, system=system, user=user)
         payload = self._transport(
             "POST", f"{self.api_root}/chat/completions", self._headers(), body
@@ -159,14 +198,66 @@ class OpenRouterLLMClient(LLMClient):
         if isinstance(payload.get("error"), dict):
             message = payload["error"].get("message", "unknown error")
             raise LLMError(f"{self.model_for_task(task)} failed: {message}")
+        return _text_and_finish_reason(payload)
 
-        text = _text_of(payload)
+    def _truncation_error(
+        self, *, task: str, text: str, finish_reason: str, attempt: int
+    ) -> LLMError:
+        tail = text[-200:]
+        return LLMError(
+            f"{self.model_for_task(task)} output for task {task!r} was truncated "
+            f"(finish_reason={finish_reason!r}) before valid JSON completed, on "
+            f"attempt {attempt}/2; increase max_tokens (currently "
+            f"{self._max_tokens}) or ask for a smaller response. Response was "
+            f"{len(text)} chars; tail: {tail!r}"
+        )
+
+    def complete_json(self, *, task: str, system: str, user: str) -> dict[str, Any]:
+        """Run one completion for `task`, correcting exactly one kind of
+        failure: a response that reached us, is not obviously truncated, and
+        still failed to parse. MovieCrew distinguishes four failures rather
+        than collapsing them into "did not return JSON":
+
+          - the request itself failed (`_call` raises `LLMError` directly —
+            transport/auth/rate-limit, never retried here)
+          - the model was cut off by its token limit (`finish_reason ==
+            "length"` — reported as a truncation error, retry would just
+            spend the same budget on the same failure)
+          - the model returned complete but malformed structured output
+            (parsing failed, not truncated — the one case retried, once,
+            with a correction instruction)
+          - MovieCrew's own parser rejected the response (ambiguous JSON —
+            `parse_json_response` raising `MultipleJSONObjectsError` is this
+            case, and is retried the same way: it is still "malformed
+            structured output" from the caller's point of view)
+        """
+        text, finish_reason = self._call(task=task, system=system, user=user)
         try:
             return parse_json_response(text)
-        except json.JSONDecodeError as exc:
-            # The agents all expect JSON. Failing with the model's actual
-            # words is far more useful mid-pipeline than a bare decode error.
-            raise LLMError(
-                f"{self.model_for_task(task)} did not return JSON for task "
-                f"{task!r}: {text[:300]}"
-            ) from exc
+        except JSONParseError as first_error:
+            if finish_reason == _TRUNCATED_FINISH_REASON:
+                raise self._truncation_error(
+                    task=task, text=text, finish_reason=finish_reason, attempt=1
+                ) from first_error
+
+            retry_text, retry_finish_reason = self._call(
+                task=task, system=system, user=f"{user}\n\n{_CORRECTION_INSTRUCTION}"
+            )
+            try:
+                return parse_json_response(retry_text)
+            except JSONParseError as retry_error:
+                if retry_finish_reason == _TRUNCATED_FINISH_REASON:
+                    raise self._truncation_error(
+                        task=task,
+                        text=retry_text,
+                        finish_reason=retry_finish_reason,
+                        attempt=2,
+                    ) from retry_error
+                # The agents all expect JSON. Both attempts' own diagnostics
+                # (line/column/excerpt) beat a bare decode error mid-pipeline.
+                raise LLMError(
+                    f"{self.model_for_task(task)} did not return parseable JSON "
+                    f"for task {task!r} after 1 correction retry.\n"
+                    f"First attempt: {first_error}\n"
+                    f"Retry attempt: {retry_error}"
+                ) from retry_error
