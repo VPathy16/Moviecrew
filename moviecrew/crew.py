@@ -62,7 +62,7 @@ class PipelineError(RuntimeError):
     """
 
 
-def _write_checkpoint(project: Project, path: str) -> None:
+def write_checkpoint(project: Project, path: str) -> None:
     """Persist *project* to *path* as JSON, tolerating a write failure.
 
     Reuses exactly the serialization `Project.to_json()` and the CLI's
@@ -70,6 +70,11 @@ def _write_checkpoint(project: Project, path: str) -> None:
     swallowed rather than raised: a checkpoint exists to prevent data loss,
     so a checkpoint that itself crashed plan generation would be worse than
     no checkpoint at all.
+
+    Public (not `_write_checkpoint`) because two callers need it: `make()`
+    writes the pre-continuity checkpoint below, and the portal's on-demand
+    continuity endpoint calls it again afterward to persist the updated
+    result — same file, same format, no second mechanism.
     """
     try:
         p = Path(path)
@@ -77,6 +82,51 @@ def _write_checkpoint(project: Project, path: str) -> None:
         p.write_text(project.to_json(), encoding="utf-8")
     except OSError:
         pass
+
+
+def run_continuity_check(
+    continuity: ContinuityAgent, scenes: list[Scene], intents: list[ShotIntent]
+) -> tuple[list[ContinuityFlag], bool]:
+    """Run one continuity check, never letting its failure propagate.
+
+    Returns `(flags, failed)`. On success, `flags` is exactly what
+    continuity reported and `failed` is False. On any failure — an
+    exception, a truncated response, JSON that parsed into the wrong shape
+    — `flags` is a single project-level warning flag naming what went
+    wrong and `failed` is True. This is the one place in the pipeline where
+    a broad `except Exception` is deliberate: whatever continuity does
+    wrong, the plan it is checking about must survive it.
+
+    Used two ways: inline by `MovieCrew.make()` when `run_continuity=True`
+    (the CLI's path — one call does everything), and separately by the
+    portal, which runs plan generation and the continuity check as two
+    independent requests so the second can never block the first. Same
+    function either way, so the failure handling cannot drift between the
+    two callers.
+    """
+    try:
+        continuity_out = continuity.run(
+            scenes=[asdict(scene) for scene in scenes],
+            prompts=[asdict(intent) for intent in intents],
+        )
+        return [ContinuityFlag(**f) for f in continuity_out["flags"]], False
+    except Exception as exc:
+        # Deliberately broad: a truncated response, malformed JSON, a
+        # missing "flags" key, an API failure, a raised LLMError — every one
+        # of them means the same thing here, that continuity did not
+        # complete, and every one of them must produce a usable result
+        # rather than propagate.
+        return [
+            ContinuityFlag(
+                target="project",
+                kind="warning",
+                message=(
+                    "Continuity check did not complete "
+                    f"({type(exc).__name__}: {exc}); this plan has not "
+                    "been checked for cross-scene consistency."
+                ),
+            )
+        ], True
 
 
 # The LLM -> Shot boundary. Computed from Shot's own dataclass fields, never
@@ -263,8 +313,10 @@ class MovieCrew:
         *,
         bible: Optional[Bible] = None,
         checkpoint_path: Optional[str] = None,
+        run_continuity: bool = True,
     ) -> Project:
-        """Run the full pipeline.
+        """Run the pipeline: Director through Prompter, then, by default,
+        the continuity check.
 
         With *bible* (assets-first mode): the writer is asked to write FOR the
         provided cast and world; the designer only fills gaps (new locations or
@@ -274,12 +326,23 @@ class MovieCrew:
         Without *bible* (story-first, default): behaviour is unchanged.
 
         *checkpoint_path*, if given, is written with the generated Project as
-        JSON immediately before the continuity check runs — the one agent
-        call whose failure this method no longer lets take the rest of the
-        plan down with it (see the try/except around it below). A best-effort
-        write: a checkpoint that cannot be written (a bad path, a full disk)
-        must not itself fail plan generation, which is exactly the failure
-        this exists to prevent.
+        JSON immediately before the continuity check runs (or, if
+        *run_continuity* is False, is simply the last thing written — see
+        below). A best-effort write: a checkpoint that cannot be written (a
+        bad path, a full disk) must not itself fail plan generation, which
+        is exactly the failure this exists to prevent.
+
+        *run_continuity* (default True) is the CLI's path — one call does
+        everything, continuity included, non-fatally
+        (`run_continuity_check` never lets it raise). Set False to stop
+        `make()` at the checkpoint and skip continuity entirely: this is
+        the portal's path, so that generation — real, spent work across up
+        to six agents per scene/shot — is never held up by, or lost to, the
+        one call that is analysis of that work rather than part of
+        producing it. A caller doing this is expected to run continuity
+        itself afterward, separately, with `run_continuity_check` against
+        the returned Project's own `scenes` and `render_plan.intents` —
+        exactly what the portal's continuity endpoint does.
         """
         director_out = self.director.run(concept=concept)
         title = director_out["title"]
@@ -401,38 +464,16 @@ class MovieCrew:
         )
 
         if checkpoint_path:
-            _write_checkpoint(project, checkpoint_path)
+            write_checkpoint(project, checkpoint_path)
 
-        try:
-            continuity_out = self.continuity.run(
-                scenes=[asdict(scene) for scene in scenes],
-                prompts=[asdict(intent) for intent in intents],
-            )
-            flags.extend(ContinuityFlag(**f) for f in continuity_out["flags"])
-        except Exception as exc:
-            # Deliberately broad: a truncated response, malformed JSON, a
-            # missing "flags" key, an API failure, a raised LLMError — every
-            # one of them means the same thing here, that continuity did not
-            # complete, and every one of them must produce a returned
-            # Project rather than a failed request. This is the one place
-            # in the whole pipeline where that trade is made; nowhere else
-            # in make() swallows an exception this broadly.
-            flags.append(
-                ContinuityFlag(
-                    target="project",
-                    kind="warning",
-                    message=(
-                        "Continuity check did not complete "
-                        f"({type(exc).__name__}: {exc}); this plan has not "
-                        "been checked for cross-scene consistency."
-                    ),
-                )
-            )
+        if run_continuity:
+            continuity_flags, _failed = run_continuity_check(self.continuity, scenes, intents)
+            flags.extend(continuity_flags)
 
-        deduped_flags: dict[tuple[str, str, str], ContinuityFlag] = {}
-        for flag in flags:
-            deduped_flags.setdefault((flag.kind, flag.target, flag.message), flag)
-        render_plan.flags = list(deduped_flags.values())
+            deduped_flags: dict[tuple[str, str, str], ContinuityFlag] = {}
+            for flag in flags:
+                deduped_flags.setdefault((flag.kind, flag.target, flag.message), flag)
+            render_plan.flags = list(deduped_flags.values())
 
         return project
 

@@ -49,6 +49,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+import threading
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -60,7 +61,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from ..agents import DETAIL_LEVELS
+from ..agents import DETAIL_LEVELS, ContinuityAgent
 from ..assets import (
     BUCKET_ENV,
     ENDPOINT_ENV,
@@ -70,7 +71,7 @@ from ..assets import (
     build_asset_store,
     is_reachable,
 )
-from ..crew import MovieCrew
+from ..crew import MovieCrew, run_continuity_check, write_checkpoint
 from ..image import ImageProvider, MockImageProvider
 from ..llm import LLMClient
 from ..mock import MockLLMClient
@@ -78,6 +79,7 @@ from ..reference import FileReferenceImageProvider, ReferenceImageProvider
 from ..studio import Stage, StudioSession
 from ..production import UnknownShot, resolve_shot
 from ..render import FakeRenderClient, JobStatus, ShotSpec
+from ..schema import ContinuityFlag
 from ..settings import (
     SettingsError,
     apply_to_environ,
@@ -130,6 +132,13 @@ _DEFAULT_IMAGE_MODEL = "google/gemini-2.5-flash-image"
 
 # In-memory session store keyed by session_id.
 _sessions: dict[str, StudioSession] = {}
+
+# Guards only the check-and-set of session.continuity_status to "running" —
+# a few lines, not the continuity call itself, so one session's continuity
+# check never blocks another's from starting. Sufficient for a single-
+# process portal; not a substitute for a real job queue, which this app
+# does not need.
+_continuity_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------- #
@@ -876,9 +885,16 @@ def plan(req: PlanRequest):
 
     try:
         crew = MovieCrew(llm, reference_provider=reference_provider, prompt_detail=req.detail)
+        # Director through Prompter only. Continuity is analysis of what
+        # this call produces, not a precondition of producing it, so it is
+        # never run inside this request — see POST .../continuity below.
+        # run_continuity=False stops make() at exactly the same checkpoint
+        # write it would otherwise stop at on its way to continuity, so the
+        # checkpoint on disk and the Project this call returns agree.
         project = crew.make(
             req.concept,
             checkpoint_path=str(Path(session_dir) / "project_checkpoint.json"),
+            run_continuity=False,
         )
     except Exception as exc:
         return _error(502, f"plan generation failed: {exc}")
@@ -889,12 +905,21 @@ def plan(req: PlanRequest):
         project=project,
         session_dir=session_dir,
         image_provider=_build_image_provider(),
+        backend=backend,
+        # The flags plan generation itself produced (prompter warnings, the
+        # consistency-anchor check, the on-screen-text lint) — continuity
+        # has not run yet, so render_plan.flags right now *is* that
+        # baseline. Captured once here so the continuity endpoint can be
+        # called more than once and always recombine its own latest result
+        # with this fixed baseline, never with a previous run's result.
+        base_flags=list(project.render_plan.flags),
     )
     _sessions[session_id] = session
 
     result = asdict(project)
     result["session_id"] = session_id
     result["stage"] = session.stage.value
+    result["continuity_status"] = session.continuity_status
     return result
 
 
@@ -921,7 +946,98 @@ def save_session(session_id: str):
     except OSError as exc:
         return _error(502, f"could not save project: {exc}")
 
-    return {"session_id": session_id, "stage": session.stage.value, "saved_to": str(path)}
+    return {
+        "session_id": session_id,
+        "stage": session.stage.value,
+        "saved_to": str(path),
+        "continuity_status": session.continuity_status,
+    }
+
+
+@app.post("/api/session/{session_id}/continuity")
+def run_session_continuity(session_id: str):
+    """Run the continuity check against this session's existing Project.
+
+    Analysis of what plan generation already produced, not a rerun of any
+    part of producing it: only session.project's own scenes and
+    render_plan.intents are read, and Director/Writer/Designer/
+    Cinematographer/Editor/Prompter are never touched. Safe to call more
+    than once — each call recombines a fresh continuity result with the
+    session's fixed base_flags, so results from an earlier call are
+    replaced, never accumulated alongside the new ones.
+
+    Guarded against a second run starting while one is already in flight
+    for this session (not against other sessions', which are independent):
+    the check-and-set of continuity_status to "running" is the only part
+    under _continuity_lock, so the lock is held only for that, never for
+    the continuity call itself.
+
+    Non-fatal by construction — run_continuity_check() never raises — so
+    this always returns a normal 200 response; "failed" is a field in that
+    response; it is not this endpoint's own success/failure.
+    """
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+
+    with _continuity_lock:
+        if session.continuity_status == "running":
+            return {
+                "session_id": session_id,
+                "continuity_status": "running",
+                "message": "continuity is already running for this session",
+                "flags": [asdict(f) for f in session.project.render_plan.flags],
+            }
+        session.continuity_status = "running"
+        session.continuity_message = None
+
+    # Building the client can fail the same way the continuity call itself
+    # can (a missing key, a backend that cannot start) — treated the same
+    # way here: a project-level warning and failed=True, never a raised
+    # exception out of this endpoint.
+    try:
+        llm = _build_llm(session.backend)
+    except Exception as exc:
+        new_flags = [
+            ContinuityFlag(
+                target="project",
+                kind="warning",
+                message=(
+                    f"Continuity check did not complete ({type(exc).__name__}: {exc}); "
+                    "this plan has not been checked for cross-scene consistency."
+                ),
+            )
+        ]
+        failed = True
+    else:
+        continuity_agent = ContinuityAgent(llm)
+        new_flags, failed = run_continuity_check(
+            continuity_agent,
+            session.project.scenes,
+            session.project.render_plan.intents,
+        )
+
+    deduped: dict[tuple[str, str, str], ContinuityFlag] = {}
+    for flag in session.base_flags + new_flags:
+        deduped.setdefault((flag.kind, flag.target, flag.message), flag)
+    session.project.render_plan.flags = list(deduped.values())
+
+    session.continuity_status = "failed" if failed else "complete"
+    session.continuity_message = new_flags[0].message if failed else None
+
+    # Persist the outcome the same way the pre-continuity checkpoint was
+    # written — same file, same format, now updated with continuity's
+    # result (or the record of its failure) instead of missing it.
+    write_checkpoint(
+        session.project, str(Path(session.session_dir) / "project_checkpoint.json")
+    )
+
+    return {
+        "session_id": session_id,
+        "continuity_status": session.continuity_status,
+        "message": session.continuity_message,
+        "flags": [asdict(f) for f in session.project.render_plan.flags],
+    }
 
 
 @app.post("/api/storyboard")
