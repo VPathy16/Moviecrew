@@ -54,14 +54,45 @@ class RenderCapabilities:
     supported_aspect_ratios: tuple[str, ...] = ()
     supports_first_last_frame: bool = False
     supports_video_reference: bool = False
+    #: Whether a finished render's own result artifact can be handed back to
+    #: this provider as the input of a *later* generation, as-is.
+    #:
+    #: Not the same question as `supports_video_reference`, and conflating
+    #: the two spends money: a provider can accept a video reference and
+    #: still return results behind its own auth (OpenRouter's `unsigned_urls`
+    #: need a Bearer token, which nothing attaches when the URL is passed
+    #: onward as a reference), or behind a URL that expires. A backend that
+    #: answers False here can still chain — by republishing each clip
+    #: somewhere readable first — but it cannot chain on its own results.
+    #:
+    #: False is the default because the honest answer for an unknown
+    #: provider is "not proven", and the cost of being wrong is a paid
+    #: render that silently ignores its reference.
+    produces_reusable_video_reference: bool = False
     max_video_references: int = 0
-    max_image_references: int = 0
+    #: None means the catalogue did not say — not that the model refuses
+    #: images. 0 means it refuses them. Conflating the two is how every
+    #: character reference on a model with a silent catalogue gets dropped
+    #: while the render still bills; use `cap_image_references`.
+    max_image_references: Optional[int] = None
     supports_audio: bool = False
     cost_model: CostModel = CostModel(unit="usd")
 
     def clamp_duration(self, seconds: float) -> int:
         """The nearest duration this backend will actually accept."""
         return max(1, min(int(round(seconds)), self.max_duration_s))
+
+    def cap_image_references(self, references: Sequence[str]) -> list[str]:
+        """Apply the image-reference cap, if this backend stated one.
+
+        An unknown cap sends everything and lets the backend object; a
+        stated cap of zero sends nothing. Silently dropping references
+        because a catalogue was silent would cost character consistency on
+        a render the user still pays for.
+        """
+        if self.max_image_references is None:
+            return list(references)
+        return list(references)[: self.max_image_references]
 
 
 @dataclass

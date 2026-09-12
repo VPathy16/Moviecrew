@@ -77,7 +77,7 @@ def test_assemble_film_skips_chain_with_missing_final_clip(capsys):
     command = run.calls[0]
     clips = [command[i + 1] for i, arg in enumerate(command) if arg == "-i"]
     assert clips == ["renders/sc1-sh1.mp4"]
-    assert "skipping chain ending in 'sc2-sh2'" in capsys.readouterr().err
+    assert "skipping 'sc2-sh2'" in capsys.readouterr().err
 
 
 def test_assemble_film_returns_none_when_no_usable_clips():

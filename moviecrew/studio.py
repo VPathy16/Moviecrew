@@ -4,8 +4,8 @@ Stages:  CONCEPT → SHOT_DEFS → STORYBOARD → OUTPUT
 
 At STORYBOARD, one still image is generated per shot (via an ImageProvider),
 presented for human review, and on approval the anchored shots' board images
-are promoted to their reference_image_ids so the eventual Veo render can anchor
-character consistency off the approved frame.
+are promoted to their reference_image_ids so the eventual render can anchor
+character consistency off the approved frame, whichever backend performs it.
 
 Nothing here calls any video-render API — that is the OUTPUT / render step.
 """
@@ -39,7 +39,7 @@ class StoryboardFrame:
     prior_reference_image_ids: Optional[list[str]] = None
 
 
-# Sentence-level prefixes that signal camera-motion intent in a Veo prompt.
+# Sentence-level prefixes that signal camera-motion intent in a shot prompt.
 _CAMERA_STARTS = (
     "camera ", "shot on ", "cut to ", "cut from ", "pan ", "tilt ", "dolly ",
     "zoom ", "push ", "pull ", "crane ", "fly ", "slow dolly", "fast dolly",
@@ -56,14 +56,14 @@ _SOUND_ONLY_RE = re.compile(
 )
 
 
-def _veo_to_still_prompt(veo_prompt: str) -> str:
-    """Distil a motion-first Veo prompt to a composed still-frame description.
+def _motion_to_still_prompt(shot_prompt: str) -> str:
+    """Distil a motion-first shot prompt to a composed still-frame description.
 
     Keeps subject, wardrobe, setting, light, and lens cues; strips camera-
     motion sentences and pure-sound sentences so the image model receives a
     static composition rather than an action sequence.
     """
-    parts = re.split(r"(?<=[.!?;])\s+", veo_prompt)
+    parts = re.split(r"(?<=[.!?;])\s+", shot_prompt)
     kept = []
     for part in parts:
         p = part.strip()
@@ -75,7 +75,7 @@ def _veo_to_still_prompt(veo_prompt: str) -> str:
         if _SOUND_ONLY_RE.match(p):
             continue
         kept.append(p)
-    result = " ".join(kept) if kept else veo_prompt
+    result = " ".join(kept) if kept else shot_prompt
     return f"Still frame: {result}"
 
 
@@ -122,7 +122,7 @@ class StudioSession:
         for scene in self.project.scenes:
             for shot in scene.shots:
                 shot_text = prompts_by_shot_id.get(shot.id, shot.description)
-                still_prompt = _veo_to_still_prompt(shot_text)
+                still_prompt = _motion_to_still_prompt(shot_text)
                 frame = self._generate_frame(shot.id, still_prompt, board_dir)
                 self.board.append(frame)
 
@@ -185,8 +185,8 @@ class StudioSession:
                     old_frame = old_frames_by_shot_id.get(shot.id)
                     if old_frame and old_frame.prior_reference_image_ids is not None:
                         shot.reference_image_ids = old_frame.prior_reference_image_ids
-                    veo_prompt = prompts_by_shot_id.get(shot.id, shot.description)
-                    still_prompt = _build_still_with_feedback(veo_prompt, feedback)
+                    shot_prompt = prompts_by_shot_id.get(shot.id, shot.description)
+                    still_prompt = _build_still_with_feedback(shot_prompt, feedback)
                     new_board.append(self._generate_frame(shot.id, still_prompt, board_dir))
             self.board = new_board
 
@@ -234,8 +234,8 @@ class StudioSession:
                         shot.reference_image_ids = old_frame.prior_reference_image_ids
                     break
 
-        veo_prompt = prompts_by_shot_id.get(shot_id, shot_id)
-        still_prompt = _build_still_with_feedback(veo_prompt, feedback)
+        shot_prompt = prompts_by_shot_id.get(shot_id, shot_id)
+        still_prompt = _build_still_with_feedback(shot_prompt, feedback)
         new_frame = self._generate_frame(shot_id, still_prompt, board_dir)
 
         # Replace the existing frame for this shot_id, or append if missing.
@@ -246,6 +246,6 @@ class StudioSession:
         self.board.append(new_frame)
 
 
-def _build_still_with_feedback(veo_prompt: str, feedback: str) -> str:
-    base = _veo_to_still_prompt(veo_prompt)
+def _build_still_with_feedback(shot_prompt: str, feedback: str) -> str:
+    base = _motion_to_still_prompt(shot_prompt)
     return f"{base} Revision note: {feedback}" if feedback else base
