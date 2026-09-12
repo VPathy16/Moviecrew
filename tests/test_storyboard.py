@@ -8,6 +8,8 @@ installed.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from moviecrew.crew import MovieCrew
@@ -339,21 +341,48 @@ client = TestClient(app)
 
 
 def _fresh_session_id() -> str:
-    """POST /api/plan with the mock backend and return the session_id."""
+    """POST /api/plan with the mock backend, wait for the background job
+    to finish, and return the session_id.
+
+    /api/plan itself only starts the job (see PR #29's async plan
+    generation) — every caller here wants a session whose project is
+    already fully built, since they immediately drive the storyboard off
+    it.
+    """
     res = client.post("/api/plan", json={"concept": "A lighthouse and a sea spirit."})
     assert res.status_code == 200
     sid = res.json().get("session_id")
     assert sid, "plan response must include session_id"
-    return sid
+
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        status = client.get(f"/api/session/{sid}/plan").json()["status"]
+        if status == "complete":
+            return sid
+        if status == "failed":
+            raise AssertionError(f"plan generation failed for session {sid!r}")
+        time.sleep(0.01)
+    raise AssertionError(f"plan for session {sid!r} did not complete in time")
 
 
-def test_plan_includes_session_id_and_stage():
+def test_plan_includes_session_id_and_status():
     res = client.post("/api/plan", json={"concept": "test concept"})
     assert res.status_code == 200
     data = res.json()
     assert "session_id" in data
-    assert data["stage"] == "shot_defs"
-    assert data["title"]
+    assert data["status"] in ("queued", "running")
+
+    sid = data["session_id"]
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        progress = client.get(f"/api/session/{sid}/plan").json()
+        if progress["status"] == "complete":
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("plan did not complete in time")
+    assert progress["stage"] == "complete"
+    assert progress["title"]
 
 
 def test_storyboard_generate_returns_one_frame_per_shot():

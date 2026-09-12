@@ -171,6 +171,7 @@
   .sb-approve-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
   .sb-approve-row button { margin-top: 0; }
   .sb-status { font-size: 0.82rem; color: var(--muted); }
+  .plan-progress { font-size: 0.82rem; color: var(--muted); margin: 0.4rem 0 0.8rem; display: flex; flex-direction: column; gap: 0.15rem; }
   /* ---- Takes gallery ---- */
   .tk-shot { margin-bottom: 1.4rem; }
   .tk-shot-id { font-weight: 600; color: var(--accent); font-size: 0.9rem; margin-bottom: 0.5rem; }
@@ -279,6 +280,7 @@ main{max-width:1440px;padding:44px 4vw;gap:36px}.panel{padding:32px;border-radiu
   <!-- Plan results -->
   <section id="results">
     <div id="summary"></div>
+    <div id="plan-progress" class="plan-progress"></div>
     <div id="chains"></div>
     <div class="panel">
       <label>Continuity &amp; constraint flags</label>
@@ -680,6 +682,38 @@ function shotChainLabel(chain) {
   return chain.length >= 2 ? "Continuous take (chain)" : "Hard cut / standalone shot";
 }
 
+function renderPlanProgress(progress) {
+  const el = document.getElementById("plan-progress");
+  el.innerHTML = "";
+  if (progress.status === "complete" || progress.status === "failed") { el.style.display = "none"; return; }
+  el.style.display = "flex";
+
+  const order = ["director", "writer", "designer", "cinematography", "editor", "prompting", "complete"];
+  const at = order.indexOf(progress.stage);
+  const mark = stage => (at > order.indexOf(stage) ? "✓" : (progress.stage === stage ? "…" : ""));
+
+  const lines = [
+    `Director ${mark("director")}`,
+    `Writer ${mark("writer")}`,
+    `Designer ${mark("designer")}`,
+    `Cinematography: ${progress.scenes_completed} / ${progress.scene_count || "?"} scenes`,
+    `Prompts: ${progress.prompts_completed} / ${progress.shot_count || "?"}`,
+  ];
+  for (const line of lines) {
+    const div = document.createElement("div");
+    div.textContent = line;
+    el.appendChild(div);
+  }
+}
+
+// project here is whatever GET /api/session/{id}/plan last returned: plan
+// -progress fields (status, stage, scene_count, ...) merged with the
+// Project's own fields (title, scenes, render_plan, ...) at the top level.
+// Called on every poll, so scenes/shots/prompts simply grow between calls
+// instead of arriving all at once — render_plan itself is null until the
+// editor stage completes, so shots are grouped by scene (not yet by
+// editorial chain) until then, and a shot's prompt box shows a placeholder
+// until its own prompt_complete has landed.
 function renderPlanResults(project) {
   _project = project;
   sbGenerateBtn.disabled = false;
@@ -693,28 +727,36 @@ function renderPlanResults(project) {
   sbStatus.textContent = "";
 
   const shotCount = project.scenes.reduce((n, s) => n + s.shots.length, 0);
-  const plan = project.render_plan || {};
+  const plan = project.render_plan;
+  const sceneTotal = project.scene_count || project.scenes.length;
+  const shotTotal = project.shot_count || shotCount;
+  const titlePlaceholder = project.status === "failed" ? "(plan incomplete)" : "Generating…";
   document.getElementById("summary").textContent =
-    `${project.title} — ${project.scenes.length} scene(s), ${shotCount} shot(s), est. duration ${plan.est_duration_s || 0}s`;
+    `${project.title || titlePlaceholder} — ${project.scenes.length}/${sceneTotal} scene(s), ` +
+    `${shotCount}/${shotTotal} shot(s)` +
+    (plan ? `, est. duration ${plan.est_duration_s || 0}s` : "");
 
   const shotsById = {};
   for (const scene of project.scenes) for (const shot of scene.shots) shotsById[shot.id] = shot;
   const intentsByShotId = {};
-  for (const intent of plan.intents || []) intentsByShotId[intent.shot_id] = intent;
+  for (const intent of (plan && plan.intents) || []) intentsByShotId[intent.shot_id] = intent;
+
+  const haveChains = !!(plan && plan.chains && plan.chains.length);
+  const groups = haveChains ? plan.chains : project.scenes.map(scene => scene.shots.map(s => s.id));
 
   const chainsEl = document.getElementById("chains");
   chainsEl.innerHTML = "";
-  for (const chain of plan.chains || []) {
+  for (const group of groups) {
     const chainDiv = document.createElement("div");
     chainDiv.className = "chain";
     const head = document.createElement("div");
     head.className = "chain-head";
-    head.textContent = `${shotChainLabel(chain)} — ${chain.join(" -> ")}`;
+    head.textContent = haveChains ? `${shotChainLabel(group)} — ${group.join(" -> ")}` : "Shots";
     chainDiv.appendChild(head);
-    for (const shotId of chain) {
+    for (const shotId of group) {
       const shot = shotsById[shotId];
+      if (!shot) continue;
       const intent = intentsByShotId[shotId];
-      if (!shot || !intent) continue;
       const shotDiv = document.createElement("div");
       shotDiv.className = "shot";
       const shotHead = document.createElement("div");
@@ -727,20 +769,21 @@ function renderPlanResults(project) {
       shotDiv.appendChild(shotHead);
       const promptBox = document.createElement("div");
       promptBox.className = "prompt-box";
-      promptBox.textContent = intent.description;
+      promptBox.textContent = intent ? intent.description : "Generating prompt…";
       shotDiv.appendChild(promptBox);
-      const copyBtn = document.createElement("button");
-      copyBtn.className = "copy-btn";
-      copyBtn.textContent = "Copy prompt";
-      copyBtn.onclick = () => navigator.clipboard.writeText(intent.description);
-      shotDiv.appendChild(copyBtn);
+      if (intent) {
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "copy-btn";
+        copyBtn.textContent = "Copy prompt";
+        copyBtn.onclick = () => navigator.clipboard.writeText(intent.description);
+        shotDiv.appendChild(copyBtn);
+      }
       chainDiv.appendChild(shotDiv);
     }
     chainsEl.appendChild(chainDiv);
   }
 
-  renderFlags(plan.flags || []);
-  continuityStatus.textContent = "";
+  renderFlags((plan && plan.flags) || []);
 }
 
 // Rebuilds only the flags panel, so continuity's result can be shown once
@@ -812,6 +855,61 @@ function renderStoryboard(frames) {
   }
 }
 
+let _pollTimer = null;
+
+function stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+function finishGenerating() {
+  stopPolling();
+  generateBtn.disabled = false;
+  generateBtn.textContent = "Build shot plan";
+}
+
+// Polled roughly once a second while a plan is being built. Renders
+// whatever scenes/shots/prompts exist so far on every call — completed
+// creative work is shown the moment it exists, never held back until the
+// whole plan (or, previously, the whole HTTP request) finishes.
+async function pollPlan(sessionId) {
+  let data;
+  try {
+    const res = await fetch(`/api/session/${sessionId}/plan`);
+    if (!res.ok) { finishGenerating(); showError(`polling failed (${res.status})`); return; }
+    data = await res.json();
+  } catch (err) {
+    finishGenerating();
+    showError("Polling failed: " + err);
+    return;
+  }
+  // A newer generate() call superseded this one; let its own polling own
+  // the view from here.
+  if (sessionId !== _sessionId) return;
+
+  renderPlanProgress(data);
+  renderPlanResults(data);
+
+  if (data.status === "complete") {
+    finishGenerating();
+    saveProjectBtn.disabled = false;
+    sbGenerateBtn.disabled = false;
+    // Fire-and-forget: the plan is already complete and usable. Continuity
+    // is a follow-up analysis request, not a precondition of showing it —
+    // and per PR #29 it must not even start until status is "complete" —
+    // so it is kicked off here, not awaited.
+    runContinuityCheck(sessionId);
+  } else if (data.status === "failed") {
+    // Generation failed partway through, but everything rendered above
+    // (checkpointed as it completed) stays on screen — only the error is
+    // new. Save is enabled so that partial work can still be kept; the
+    // storyboard step stays off a plan that never finished (no render
+    // plan, possibly no prompts at all).
+    finishGenerating();
+    saveProjectBtn.disabled = false;
+    showError(`Plan generation failed: ${data.error || "unknown error"} — showing partial work below.`);
+  }
+}
+
 async function generate() {
   clearError();
   results.style.display = "none";
@@ -823,8 +921,12 @@ async function generate() {
   document.getElementById("sb-empty").textContent = "Building your shot plan. Image generation follows next.";
   generateBtn.disabled = true;
   generateBtn.textContent = "Generating...";
-  _sessionId = null;
+  saveProjectBtn.disabled = true;
+  sbGenerateBtn.disabled = true;
   saveProjectStatus.textContent = "";
+  continuityStatus.textContent = "";
+  stopPolling();
+  _sessionId = null;
 
   const body = {
     concept: document.getElementById("concept").value,
@@ -843,19 +945,15 @@ async function generate() {
     const data = await res.json();
     if (!res.ok) {
       showError(data.error || `request failed (${res.status})`);
-    } else {
-      _sessionId = data.session_id || null;
-      renderPlanResults(data);
-      // Fire-and-forget: the plan above is already complete and usable.
-      // Continuity is a follow-up analysis request, not a precondition of
-      // showing it, so it is not awaited here.
-      if (_sessionId) runContinuityCheck(_sessionId);
+      finishGenerating();
+      return;
     }
+    _sessionId = data.session_id;
+    pollPlan(_sessionId);
+    _pollTimer = setInterval(() => pollPlan(_sessionId), 1000);
   } catch (err) {
     showError("Request failed: " + err);
-  } finally {
-    generateBtn.disabled = false;
-    generateBtn.textContent = "Build shot plan";
+    finishGenerating();
   }
 }
 

@@ -599,3 +599,116 @@ def test_every_shot_gets_exactly_one_intent():
     intent_ids = [i.shot_id for i in project.render_plan.intents]
     assert sorted(intent_ids) == sorted(shot_ids)
     assert len(intent_ids) == len(set(intent_ids))
+
+
+# ---------------------------------------------------------------------- #
+# on_progress: pipeline progress callbacks (PR #29)                       #
+# ---------------------------------------------------------------------- #
+
+
+def _recorder():
+    """An on_progress callback that just remembers every call it got."""
+    events: list[tuple[str, dict]] = []
+
+    def on_progress(event, **data):
+        events.append((event, data))
+
+    on_progress.events = events
+    return on_progress
+
+
+def _make_with_progress(on_progress, **script_overrides):
+    """Like _make(), but on_progress goes to .make() itself rather than
+    into the scripted LLM's by-task responses."""
+    crew = MovieCrew(ScriptedLLM(**_base_script(**script_overrides)))
+    return crew.make("A storm.", on_progress=on_progress)
+
+
+def test_on_progress_events_fire_in_a_fixed_order():
+    """The base script is one scene with two shots, so the shape of the
+    event sequence is fully determined: one scene_complete, then two
+    prompt_complete (one per shot), around the fixed single-shot events."""
+    on_progress = _recorder()
+    _make_with_progress(on_progress)
+
+    assert [event for event, _ in on_progress.events] == [
+        "director_complete",
+        "writer_complete",
+        "designer_complete",
+        "scene_complete",
+        "editor_complete",
+        "prompt_complete",
+        "prompt_complete",
+        "plan_complete",
+    ]
+
+
+def test_writer_complete_reports_the_scene_count():
+    on_progress = _recorder()
+    _make_with_progress(on_progress)
+    events = dict(on_progress.events)
+    assert events["writer_complete"] == {"scene_count": 1}
+
+
+def test_scene_complete_carries_the_built_scene_with_its_shots():
+    on_progress = _recorder()
+    _make_with_progress(on_progress)
+    events = dict(on_progress.events)
+    scene = events["scene_complete"]["scene"]
+    assert scene.id == "sc1"
+    assert [s.id for s in scene.shots] == ["sc1-sh1", "sc1-sh2"]
+
+
+def test_editor_complete_reports_order_chains_and_shot_count():
+    on_progress = _recorder()
+    _make_with_progress(on_progress)
+    events = dict(on_progress.events)
+    data = events["editor_complete"]
+    assert data["shot_count"] == 2
+    assert data["order"] == ["sc1-sh1", "sc1-sh2"]
+    assert data["chains"] == [["sc1-sh1", "sc1-sh2"]]
+
+
+def test_prompt_complete_carries_the_shot_id_and_its_intent():
+    on_progress = _recorder()
+    _make_with_progress(on_progress)
+    prompt_events = [data for event, data in on_progress.events if event == "prompt_complete"]
+
+    assert [e["shot_id"] for e in prompt_events] == ["sc1-sh1", "sc1-sh2"]
+    for e in prompt_events:
+        assert e["intent"].shot_id == e["shot_id"]
+        assert e["intent"].description
+
+
+def test_plan_complete_carries_the_same_project_make_returns():
+    on_progress = _recorder()
+    project = _make_with_progress(on_progress)
+    events = dict(on_progress.events)
+    assert events["plan_complete"]["project"] is project
+
+
+def test_scene_complete_still_fires_even_if_a_later_stage_fails():
+    """Completed creative work is reported through on_progress the moment
+    it exists, regardless of what happens afterward — a caller watching
+    progress (the portal) must not lose scenes it already saw complete
+    just because the pipeline goes on to fail."""
+    on_progress = _recorder()
+    with pytest.raises(RuntimeError, match="boom"):
+        _make_with_progress(on_progress, editor=_raising(RuntimeError("boom")))
+
+    fired = [event for event, _ in on_progress.events]
+    assert fired == [
+        "director_complete",
+        "writer_complete",
+        "designer_complete",
+        "scene_complete",
+    ]
+
+
+def test_make_without_a_callback_is_the_plain_cli_path():
+    """The ordinary (non-portal) call, exactly as every other test in this
+    file makes it, must keep working unchanged: on_progress is optional and
+    defaults to doing nothing."""
+    project = _make()
+    assert project.title == "Salt"
+    assert len(project.render_plan.intents) == 2
