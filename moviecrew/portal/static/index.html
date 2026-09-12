@@ -257,7 +257,7 @@ main{max-width:1440px;padding:44px 4vw;gap:36px}.panel{padding:32px;border-radiu
 <header>
   <a class="brand" href="#concept-section">MOVIE<span>CREW</span><small>DIRECTOR’S WORKSPACE</small></a>
   <nav aria-label="Workspace"><a href="#concept-section">01 &nbsp; Story</a><a href="#storyboard-section">02 &nbsp; Images</a><a href="#takes-section">03 &nbsp; Takes</a><a href="#renders-section">04 &nbsp; Renders</a></nav>
-  <a class="settings-link" href="#settings-panel">Settings</a>
+  <a class="settings-link" href="/studio">Project workspace</a><a class="settings-link" href="#settings-panel">Settings</a>
 </header>
 <main>
   <!-- Input panel -->
@@ -1471,6 +1471,21 @@ loadHealth();
 loadTakes();
 loadRenders();
 loadRenderModels();
+const reopenId = new URLSearchParams(location.search).get("project");
+if (reopenId) {
+  fetch('/api/projects/' + encodeURIComponent(reopenId)).then(r => {
+    if (!r.ok) throw new Error('Could not reopen project');
+    return r.json();
+  }).then(data => {
+    _sessionId = data.id;
+    renderPlanResults({...data.project, status: data.status});
+    if (data.frames.length) renderStoryboard(data.frames);
+    if (data.status === 'running' || data.status === 'queued') {
+      pollPlan(_sessionId);
+      _pollTimer = setInterval(() => pollPlan(_sessionId), 1000);
+    }
+  }).catch(err => showError(err.message));
+}
 </script>
 </body>
 </html>

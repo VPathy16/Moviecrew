@@ -13,9 +13,11 @@ Nothing here calls any video-render API — that is the OUTPUT / render step.
 from __future__ import annotations
 
 import re
+import uuid
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +40,12 @@ class StoryboardFrame:
     image_path: Optional[str] = None
     # Stashed by approve() when promotes_references is True; restored by revise().
     prior_reference_image_ids: Optional[list[str]] = None
+    version_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    model: str = ""
+    settings: dict = field(default_factory=dict)
+    reference_ids: list[str] = field(default_factory=list)
+    cost_usd: Optional[float] = None
 
 
 # Sentence-level prefixes that signal camera-motion intent in a shot prompt.
@@ -121,6 +129,13 @@ class StudioSession:
     session_dir: str
     image_provider: ImageProvider = field(repr=False, default_factory=NullImageProvider)
     board: list[StoryboardFrame] = field(default_factory=list)
+    versions: list[StoryboardFrame] = field(default_factory=list)
+    creative_brief: dict = field(default_factory=dict)
+    world_sheets: dict = field(default_factory=dict)
+    shot_sheet_versions: dict = field(default_factory=dict)
+    draft_prompts: dict[str, str] = field(default_factory=dict)
+    image_settings: dict[str, dict] = field(default_factory=dict)
+    image_references: list[dict] = field(default_factory=list)
 
     # Continuity tracking. The portal returns a project the moment plan
     # generation finishes and runs continuity afterward, as a separate
@@ -153,6 +168,7 @@ class StudioSession:
         default_factory=lambda: PlanProgress(status="complete", stage="complete")
     )
     plan_lock: threading.Lock = field(repr=False, default_factory=threading.Lock)
+    image_lock: threading.Lock = field(repr=False, default_factory=threading.Lock)
 
     # ------------------------------------------------------------------ #
     # Public API                                                           #
@@ -206,6 +222,8 @@ class StudioSession:
                 frame = frames_by_shot_id.get(shot.id)
                 if not (shot.consistency_anchor and frame and frame.status == "ok"):
                     continue
+                if frame.model in ("offline", "MockImageProvider", "NullImageProvider"):
+                    continue
                 if not self.image_provider.promotes_references:
                     continue
                 frame.prior_reference_image_ids = list(shot.reference_image_ids)
@@ -252,12 +270,21 @@ class StudioSession:
     # Internals                                                            #
     # ------------------------------------------------------------------ #
 
-    def _generate_frame(
+    def _generate_frame(self, shot_id: str, still_prompt: str, board_dir: Path) -> StoryboardFrame:
+        frame = self._generate_frame_result(shot_id, still_prompt, board_dir)
+        frame.model = getattr(self.image_provider, "model", type(self.image_provider).__name__)
+        frame.settings = dict(getattr(self.image_provider, "options", {}))
+        frame.reference_ids = [r["id"] for r in getattr(self.image_provider, "references", [])]
+        frame.cost_usd = getattr(self.image_provider, "last_cost", None)
+        self.versions.append(frame)
+        return frame
+
+    def _generate_frame_result(
         self, shot_id: str, still_prompt: str, board_dir: Path
     ) -> StoryboardFrame:
         try:
             image_bytes = self.image_provider.generate(still_prompt, shot_id)
-            image_path = str(board_dir / f"{shot_id}.png")
+            image_path = str(board_dir / f"{uuid.uuid4().hex}.png")
             Path(image_path).write_bytes(image_bytes)
             return StoryboardFrame(
                 shot_id=shot_id,

@@ -13,6 +13,7 @@ four paid renders before anyone checked a header.
 from __future__ import annotations
 
 import pytest
+from pathlib import Path
 
 from moviecrew.assets import (
     Asset,
@@ -292,10 +293,18 @@ def test_s3_url_uses_the_public_base(clip):
     assert store.serves_public_urls is True
 
 
-def test_s3_private_bucket_cannot_serve_a_reference(clip):
-    """The correct answer for a bucket with no public address."""
-    with pytest.raises(AssetError, match="reachable"):
-        _s3(_Transport()).put_reachable(clip, "a.mp4")
+def test_s3_private_bucket_serves_verified_expiring_reference(clip):
+    t = _Transport(payload=Path(clip).read_bytes())
+    asset = _s3(t).put_reference(clip, "a.mp4")
+    assert "X-Amz-Expires=3600" in asset.url
+    assert "X-Amz-Signature=" in asset.url
+    assert t.calls[-1]["method"] == "GET"
+    assert t.calls[-1]["headers"] == {}
+
+
+def test_s3_reference_must_match_original(clip):
+    with pytest.raises(AssetError, match="did not match"):
+        _s3(_Transport(payload=b"wrong media")).put_reference(clip, "a.mp4")
 
 
 def test_s3_get_writes_the_body(tmp_path):

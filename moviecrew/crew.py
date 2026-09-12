@@ -312,6 +312,8 @@ class MovieCrew:
         concept: str,
         *,
         bible: Optional[Bible] = None,
+        stop_after_design: bool = False,
+        approved_project: Optional[Project] = None,
         checkpoint_path: Optional[str] = None,
         run_continuity: bool = True,
         on_progress: Optional[Callable[..., None]] = None,
@@ -359,38 +361,50 @@ class MovieCrew:
         Project, before continuity). Omitted (the default), this is the
         plain CLI path and nothing about it changes.
         """
-        director_out = self.director.run(concept=concept)
-        title = director_out["title"]
-        logline = director_out["logline"]
-        outline = director_out["outline"]
-        if on_progress:
-            on_progress("director_complete")
-
-        writer_out = self.writer.run(
-            title=title, logline=logline, outline=outline, provided_bible=bible
-        )
-        raw_scenes = writer_out["scenes"]
-        if on_progress:
-            on_progress("writer_complete", scene_count=len(raw_scenes))
-
-        designer_out = self.designer.run(
-            title=title, logline=logline, scenes=raw_scenes, provided_bible=bible
-        )
-        if on_progress:
-            on_progress("designer_complete")
-
-        if bible is not None:
-            effective_bible = _merge_bible(bible, designer_out)
+        if approved_project is not None:
+            title, logline, outline = approved_project.title, approved_project.logline, approved_project.outline
+            bible = approved_project.bible
+            raw_scenes = [{**asdict(scene), 'shots': []} for scene in approved_project.scenes]
         else:
-            effective_bible = Bible(
-                style=designer_out["style"],
-                palette=designer_out["palette"],
-                mood=designer_out["mood"],
-                characters=[Character(**c) for c in designer_out["characters"]],
-                locations=[Location(**l) for l in designer_out["locations"]],
-                props=[Prop(**p) for p in designer_out.get("props", [])],
+            director_out = self.director.run(concept=concept)
+            title = director_out["title"]
+            logline = director_out["logline"]
+            outline = director_out["outline"]
+            if on_progress:
+                on_progress("director_complete")
+
+            writer_out = self.writer.run(
+                title=title, logline=logline, outline=outline, provided_bible=bible
             )
-        bible = effective_bible
+            raw_scenes = writer_out["scenes"]
+            if on_progress:
+                on_progress("writer_complete", scene_count=len(raw_scenes))
+
+            designer_out = self.designer.run(
+                title=title, logline=logline, scenes=raw_scenes, provided_bible=bible
+            )
+            if on_progress:
+                on_progress("designer_complete")
+
+            if bible is not None:
+                effective_bible = _merge_bible(bible, designer_out)
+            else:
+                effective_bible = Bible(
+                    style=designer_out["style"],
+                    palette=designer_out["palette"],
+                    mood=designer_out["mood"],
+                    characters=[Character(**c) for c in designer_out["characters"]],
+                    locations=[Location(**l) for l in designer_out["locations"]],
+                    props=[Prop(**p) for p in designer_out.get("props", [])],
+                )
+            bible = effective_bible
+
+        if stop_after_design:
+            draft = Project(title=title, logline=logline, outline=outline, bible=bible,
+                            scenes=[Scene(**{**scene, 'shots': []}) for scene in raw_scenes])
+            if checkpoint_path:
+                write_checkpoint(draft, checkpoint_path)
+            return draft
 
         populate_reference_stills(
             bible, self.reference_provider, out_dir=self.reference_out_dir

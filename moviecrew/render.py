@@ -76,6 +76,7 @@ class RenderCapabilities:
     #: while the render still bills; use `cap_image_references`.
     max_image_references: Optional[int] = None
     supports_audio: bool = False
+    supported_durations: tuple[int, ...] = ()
     cost_model: CostModel = CostModel(unit="usd")
 
     def clamp_duration(self, seconds: float) -> int:
