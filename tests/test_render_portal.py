@@ -359,3 +359,96 @@ def test_a_session_that_lacks_the_shot_is_an_error_not_a_silent_fallback(takes_r
     )
     assert res.status_code == 404
     assert "disagree" in res.json()["error"]
+
+
+# ---------------------------------------------------------------------- #
+# Asset store: where a driving take is fetched from                       #
+# ---------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def no_bucket(monkeypatch):
+    from moviecrew.portal.app import _asset_stores
+
+    for var in ("MOVIECREW_S3_BUCKET", "MOVIECREW_S3_ENDPOINT",
+                "MOVIECREW_S3_ACCESS_KEY", "MOVIECREW_S3_SECRET_KEY",
+                "MOVIECREW_ASSET_BASE_URL"):
+        monkeypatch.delenv(var, raising=False)
+    _asset_stores.clear()
+    yield
+    _asset_stores.clear()
+
+
+def test_health_reports_the_asset_store(takes_root, no_bucket):
+    body = client.get("/api/health").json()
+    assert body["asset_store"] == "local"
+    assert body["asset_store_public"] is False
+
+
+def test_health_reports_a_public_bucket(takes_root, monkeypatch):
+    from moviecrew.portal.app import _asset_stores
+
+    _asset_stores.clear()
+    monkeypatch.setenv("MOVIECREW_S3_BUCKET", "moviecrew")
+    monkeypatch.setenv("MOVIECREW_S3_ENDPOINT", "https://acct.r2.cloudflarestorage.com")
+    monkeypatch.setenv("MOVIECREW_S3_ACCESS_KEY", "AK")
+    monkeypatch.setenv("MOVIECREW_S3_SECRET_KEY", "SK")
+    monkeypatch.setenv("MOVIECREW_ASSET_BASE_URL", "https://pub-abc.r2.dev")
+
+    body = client.get("/api/health").json()
+    assert body["asset_store"] == "s3"
+    assert body["asset_store_public"] is True
+    _asset_stores.clear()
+
+
+def test_a_take_is_uploaded_and_its_cdn_url_drives_the_render(takes_root, take, monkeypatch):
+    """With a bucket configured the take is PUT once under a stable key and
+    the render is pointed at the CDN, not at this process."""
+    from moviecrew.assets import S3AssetStore
+    from moviecrew.portal.app import _asset_stores
+
+    calls = []
+
+    def transport(method, url, headers, body):
+        calls.append({"method": method, "url": url, "headers": headers})
+        return b""
+
+    store = S3AssetStore(
+        bucket="moviecrew",
+        endpoint="https://acct.r2.cloudflarestorage.com",
+        access_key="AK",
+        secret_key="SK",
+        public_base="https://pub-abc.r2.dev",
+        transport=transport,
+    )
+    _asset_stores.clear()
+    monkeypatch.setattr("moviecrew.portal.app._asset_store", lambda: store)
+
+    res = _render(prompt="Mara hauls herself up the cliff.")
+    assert res.status_code == 200, res.json()
+
+    assert calls and calls[0]["method"] == "PUT"
+    assert calls[0]["url"].endswith("/moviecrew/takes/sc1/sc1-sh1/take_001.mp4")
+    assert calls[0]["headers"]["content-type"] == "video/mp4"
+
+    spec, _model = _fake_client().submitted[-1]
+    assert spec.reference_video == "https://pub-abc.r2.dev/takes/sc1/sc1-sh1/take_001.mp4"
+    _asset_stores.clear()
+
+
+def test_without_a_bucket_the_portal_address_is_used(takes_root, take, monkeypatch, no_bucket):
+    monkeypatch.setenv(_PUBLIC_BASE_URL_ENV, "https://previz.example.test")
+    res = _render(prompt="x")
+    assert res.status_code == 200
+
+    spec, _model = _fake_client().submitted[-1]
+    assert spec.reference_video.startswith("https://previz.example.test/api/takes/")
+
+
+def test_with_nowhere_to_serve_from_the_error_names_the_knobs(takes_root, take, monkeypatch, no_bucket):
+    monkeypatch.delenv(_PUBLIC_BASE_URL_ENV, raising=False)
+    res = _render(prompt="x")
+    assert res.status_code == 400
+    message = res.json()["error"]
+    assert "MOVIECREW_S3_BUCKET" in message
+    assert _PUBLIC_BASE_URL_ENV in message

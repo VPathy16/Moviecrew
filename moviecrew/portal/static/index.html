@@ -221,6 +221,21 @@
   }
   .rn-actions a:hover { border-color: var(--accent); }
   .rn-orphan { color: var(--warn); }
+  /* ---- Settings ---- */
+  .settings-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+  .settings-head button { margin-top: 0; }
+  .settings-sub { font-size: 0.78rem; color: var(--muted); margin-top: 0.2rem; max-width: 46rem; line-height: 1.45; }
+  .settings-body { margin-top: 1rem; }
+  .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+  .settings-field label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.3rem; }
+  .settings-clear { text-transform: none; letter-spacing: 0; font-size: 0.72rem; color: var(--accent); cursor: pointer; background: none; border: none; padding: 0; margin: 0; font-weight: 600; }
+  .settings-help { font-size: 0.72rem; color: var(--muted); margin-top: 0.3rem; line-height: 1.4; }
+  .settings-state { font-size: 0.72rem; margin-top: 0.3rem; }
+  .settings-state.set { color: var(--ok); }
+  .settings-state.unset { color: var(--muted); }
+  .settings-state.clearing { color: var(--err); }
+  .settings-actions { display: flex; align-items: center; gap: 1rem; margin-top: 1.1rem; }
+  .settings-actions button { margin-top: 0; }
 </style>
 </head>
 <body>
@@ -229,6 +244,28 @@
   <p>Concept in, shot-by-shot intent out — then previz, generate, review.</p>
 </header>
 <main>
+  <!-- Settings panel -->
+  <section class="panel" id="settings-panel">
+    <div class="settings-head">
+      <div>
+        <label style="margin-bottom:0">Settings</label>
+        <div class="settings-sub">
+          Saved locally on the machine running this portal — never sent anywhere
+          else. Leave a key field blank to keep its current value; use Clear to
+          remove it.
+        </div>
+      </div>
+      <button id="settings-toggle" class="secondary" type="button">Show</button>
+    </div>
+    <div class="settings-body" id="settings-body" style="display:none">
+      <div class="settings-grid" id="settings-fields"></div>
+      <div class="settings-actions">
+        <button id="settings-save-btn">Save Settings</button>
+        <span class="sb-status" id="settings-status"></span>
+      </div>
+    </div>
+  </section>
+
   <!-- Input panel -->
   <section class="panel">
     <label for="concept">Concept</label>
@@ -326,6 +363,12 @@ const tkRefreshBtn = document.getElementById("tk-refresh-btn");
 const rnList = document.getElementById("rn-list");
 const rnStatus = document.getElementById("rn-status");
 const rnRefreshBtn = document.getElementById("rn-refresh-btn");
+
+const settingsToggle = document.getElementById("settings-toggle");
+const settingsBody = document.getElementById("settings-body");
+const settingsFieldsEl = document.getElementById("settings-fields");
+const settingsSaveBtn = document.getElementById("settings-save-btn");
+const settingsStatus = document.getElementById("settings-status");
 
 let _sessionId = null;
 let _project = null;
@@ -1029,6 +1072,154 @@ async function pollRender(jobId) {
   }
 }
 
+// ---- Settings ----
+//
+// A secret field never receives its own current value from the server —
+// /api/settings only ever reports whether one is set and its last four
+// characters — so its input starts blank every render. Blank at save time
+// means "unchanged"; the field is simply left out of the request. Clearing
+// a secret is a separate, explicit action (the Clear link) so an untouched
+// blank box can never be mistaken for "remove this".
+let _settingsFields = [];
+const _settingsPendingClear = new Set();
+
+settingsToggle.addEventListener("click", () => {
+  const showing = settingsBody.style.display !== "none";
+  settingsBody.style.display = showing ? "none" : "block";
+  settingsToggle.textContent = showing ? "Show" : "Hide";
+});
+
+function settingsFieldCard(field) {
+  const card = document.createElement("div");
+  card.className = "settings-field";
+  card.dataset.key = field.key;
+
+  const label = document.createElement("label");
+  const name = document.createElement("span");
+  name.textContent = field.label;
+  label.appendChild(name);
+  if (field.configured) {
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "settings-clear";
+    clear.textContent = "Clear";
+    clear.addEventListener("click", () => {
+      _settingsPendingClear.add(field.key);
+      renderSettingsFields();
+    });
+    label.appendChild(clear);
+  }
+  card.appendChild(label);
+
+  const input = document.createElement("input");
+  input.type = field.secret ? "password" : "text";
+  input.autocomplete = "off";
+  input.dataset.key = field.key;
+  input.value = field.secret ? "" : field.value;
+  input.placeholder = field.secret
+    ? (field.configured ? `set, ends ${field.preview}` : "not set")
+    : "";
+  card.appendChild(input);
+
+  if (field.help) {
+    const help = document.createElement("div");
+    help.className = "settings-help";
+    help.textContent = field.help;
+    card.appendChild(help);
+  }
+
+  const state = document.createElement("div");
+  state.className = "settings-state";
+  card.appendChild(state);
+  refreshSettingsState(card, field);
+
+  input.addEventListener("input", () => {
+    if (input.value !== "") _settingsPendingClear.delete(field.key);
+    refreshSettingsState(card, field);
+  });
+
+  return card;
+}
+
+function refreshSettingsState(card, field) {
+  const state = card.querySelector(".settings-state");
+  const input = card.querySelector("input");
+  if (_settingsPendingClear.has(field.key)) {
+    state.className = "settings-state clearing";
+    state.textContent = "will be cleared on save";
+  } else if (input.value !== "") {
+    state.className = "settings-state set";
+    state.textContent = "will be saved";
+  } else if (field.configured) {
+    state.className = "settings-state set";
+    state.textContent = field.secret ? `set (ends ${field.preview})` : "set";
+  } else {
+    state.className = "settings-state unset";
+    state.textContent = "not set";
+  }
+}
+
+function renderSettingsFields() {
+  settingsFieldsEl.innerHTML = "";
+  for (const field of _settingsFields) {
+    settingsFieldsEl.appendChild(settingsFieldCard(field));
+  }
+}
+
+async function loadSettings() {
+  try {
+    const res = await fetch("/api/settings");
+    const data = await res.json();
+    _settingsFields = data.fields || [];
+    _settingsPendingClear.clear();
+    renderSettingsFields();
+  } catch (err) {
+    settingsFieldsEl.textContent = `Could not load settings: ${err}`;
+  }
+}
+
+async function saveSettings() {
+  const values = {};
+  settingsFieldsEl.querySelectorAll("input[data-key]").forEach((input) => {
+    if (input.value !== "") values[input.dataset.key] = input.value;
+  });
+  for (const key of _settingsPendingClear) values[key] = "";
+
+  if (Object.keys(values).length === 0) {
+    settingsStatus.textContent = "Nothing changed.";
+    return;
+  }
+
+  settingsSaveBtn.disabled = true;
+  settingsStatus.textContent = "Saving…";
+  try {
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ values }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      settingsStatus.textContent = data.error || "Could not save settings.";
+      return;
+    }
+    _settingsFields = data.fields || [];
+    _settingsPendingClear.clear();
+    renderSettingsFields();
+    settingsStatus.textContent = "Saved.";
+    // Whether a backend or the asset store defaults to live vs. mock
+    // depends on exactly what was just changed here.
+    loadHealth();
+    loadRenderModels();
+  } catch (err) {
+    settingsStatus.textContent = `Could not save settings: ${err}`;
+  } finally {
+    settingsSaveBtn.disabled = false;
+  }
+}
+
+settingsSaveBtn.addEventListener("click", saveSettings);
+
 tkRefreshBtn.addEventListener("click", loadTakes);
 rnRefreshBtn.addEventListener("click", loadRenders);
 tkEstimateBtn.addEventListener("click", () => submitRender(true));
@@ -1037,6 +1228,7 @@ tkModel.addEventListener("change", refreshGenState);
 generateBtn.addEventListener("click", generate);
 sbGenerateBtn.addEventListener("click", generateStoryboard);
 sbApproveBtn.addEventListener("click", approveBoard);
+loadSettings();
 loadHealth();
 loadTakes();
 loadRenders();
