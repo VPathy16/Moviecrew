@@ -263,7 +263,7 @@ def work(project, item_id):
         output = dest / (item_id + '.mp4')
         if item['status'] in TERMINAL:
             return
-        if item.get('backend') == 'fal-enhance':
+        if item.get('backend') in ('fal-enhance', 'openrouter-enhance'):
             from .film_enhance import process
             if not process(item, output):
                 return

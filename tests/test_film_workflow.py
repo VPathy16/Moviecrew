@@ -232,6 +232,15 @@ def test_enhancement_ownership_payload_resume_and_original_audio(setup, monkeypa
         return {'video':{'url':'https://v3.fal.media/output.mp4'}}
     monkeypatch.setattr(enhance,'queue_request',queue)
     monkeypatch.setattr(enhance,'download',lambda url,path:shutil.copyfile(source,path))
+    monkeypatch.setenv('OPENROUTER_API_KEY','test-key-not-real')
+    from moviecrew.render_openrouter import OpenRouterRenderClient
+    from moviecrew.render import RenderJob, JobStatus
+    def flux_call(self, method, path, body=None):
+        calls.append((path,body))
+        return {'id':'flux-1'}
+    monkeypatch.setattr(OpenRouterRenderClient,'_call',flux_call)
+    monkeypatch.setattr(OpenRouterRenderClient,'poll',lambda self,job_id:RenderJob(job_id=job_id,shot_id='',status=JobStatus.SUCCEEDED))
+    monkeypatch.setattr(OpenRouterRenderClient,'fetch',lambda self,job,path:shutil.copyfile(source,path))
     req={'request_id':str(uuid.uuid4()),'video_id':original['id'],'operation':'upscale','start':0,'end':.5,'factor':2}
     assert client.post('/api/projects/film-b/enhancements',json=req).status_code==404
     res=client.post('/api/projects/film-a/enhancements',json=req)
@@ -241,7 +250,8 @@ def test_enhancement_ownership_payload_resume_and_original_audio(setup, monkeypa
     flow.work('film-a',req['request_id'])
     done=flow.get('film-a',req['request_id'])
     assert done['status']=='complete',done.get('error')
-    assert calls[0][1]=={'video_url':'https://v3.fal.media/source.mp4','model':'Proteus','upscale_factor':2,'H264_output':True}
+    assert calls[0][1]=={'model':'black-forest-labs/flux-video-upscale','upscale_factor':2,'creativity':0,'input_references':[{'type':'video_url','video_url':{'url':'https://v3.fal.media/source.mp4'}}]}
+    assert client.post('/api/projects/film-a/enhancements',json={**req,'request_id':str(uuid.uuid4()),'factor':4}).status_code==422
     assert flow.probe(done['path'])[1]
     assert flow.get('film-a',original['id'])==original
     assert 'fal_status_url' not in flow.public(done)
