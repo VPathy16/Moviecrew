@@ -63,7 +63,8 @@ class EnhanceRequest(BaseModel):
     start: float = Field(default=0, ge=0, allow_inf_nan=False)
     end: float = Field(gt=0, allow_inf_nan=False)
     aspect_ratio: Literal['16:9', '9:16', '1:1'] = '16:9'
-    factor: Literal[2, 4] = 2
+    factor: Literal[1.5, 2, 2.5, 3] = 2
+    creativity: Literal[0, 1] = 0
     prompt: str = Field(default='Extend the surrounding scene with matching lighting, perspective and motion.', max_length=4000)
     preserve_center: bool = True
 
@@ -75,7 +76,8 @@ def options(project: str):
     store = _asset_store()
     return {'configured': bool(os.environ.get('FAL_KEY')),
             'storage_ready': store.serves_public_urls or store.name == 's3',
-            'upscale_model': 'Topaz Proteus', 'expand_model': 'Luma Ray 2 Flash',
+            'upscale_configured': bool(os.environ.get('OPENROUTER_API_KEY')),
+            'upscale_model': 'FLUX Video Upscale', 'expand_model': 'Luma Ray 2 Flash',
             'expand_max_seconds': 30, 'upscale_max_seconds': 300}
 
 
@@ -101,15 +103,15 @@ def create(project: str, req: EnhanceRequest):
         if req.end - req.start > limit:
             raise HTTPException(400, f'Trim this selection to {limit} seconds or less')
         status = options(project)
-        if not status['configured']:
-            raise HTTPException(400, 'Connect a fal API key in Settings for Topaz and AI expand')
+        if not status['upscale_configured' if req.operation == 'upscale' else 'configured']:
+            raise HTTPException(400, 'Connect OpenRouter in Settings for upscaling' if req.operation == 'upscale' else 'Connect fal in Settings for AI expand')
         if not status['storage_ready']:
             raise HTTPException(400, 'Connect media storage in Settings first')
         data = req.model_dump(mode='json')
         item = dict(id=data.pop('request_id'), project=project, kind='video', status='queued',
-                    backend='fal-enhance', operation=req.operation, enhancement=data,
+                    backend='openrouter-enhance' if req.operation == 'upscale' else 'fal-enhance', operation=req.operation, enhancement=data,
                     shot_id=source.get('shot_id', ''), source_id=source['id'],
-                    model='Topaz Proteus' if req.operation == 'upscale' else 'Luma Ray 2 Flash · expand',
+                    model='black-forest-labs/flux-video-upscale' if req.operation == 'upscale' else 'Luma Ray 2 Flash · expand',
                     duration_s=req.end-req.start, created=time.time(), offline=False)
         with f.db() as conn:
             try:
@@ -122,8 +124,9 @@ def create(project: str, req: EnhanceRequest):
 
 def process(item, output):
     """Resume known jobs; an ambiguous submit is never automatically repeated."""
-    if not os.environ.get('FAL_KEY'):
-        item.update(status='waiting', error='Reconnect fal in Settings, then resume.')
+    is_flux = item.get('backend') == 'openrouter-enhance'
+    if not os.environ.get('OPENROUTER_API_KEY' if is_flux else 'FAL_KEY'):
+        item.update(status='waiting', error='Reconnect '+('OpenRouter' if is_flux else 'fal')+' in Settings, then resume.')
         f.put(item)
         return False
     spec = item['enhancement']
@@ -133,46 +136,51 @@ def process(item, output):
         f.run_ffmpeg(['-ss', str(spec['start']), '-i', source['path'], '-t', str(spec['end']-spec['start']),
                       '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-crf', '18', '-pix_fmt', 'yuv420p',
                       '-c:a', 'aac', '-movflags', '+faststart', str(trimmed)])
-    if not item.get('provider_id'):
-        if item['status'] in ('submitting', 'uncertain'):
-            item.update(status='uncertain', error='Check fal history before submitting again.')
+    raw = output.with_suffix('.processed.mp4')
+    if is_flux:
+        if not process_flux(item, trimmed, raw):
+            return False
+    else:
+        if not item.get('provider_id'):
+            if item['status'] in ('submitting', 'uncertain'):
+                item.update(status='uncertain', error='Check fal history before submitting again.')
+                f.put(item)
+                return False
+            if spec['operation'] == 'expand' and trimmed.stat().st_size > 100 * 1024**2:
+                raise ValueError('Trim the selection further: AI expand accepts videos up to 100 MB')
+            from .app import _asset_store
+            asset = _asset_store().put_reference(str(trimmed), f"films/{item['project']}/enhance/{item['id']}.mp4")
+            body = {'video_url': asset.url}
+            if spec['operation'] == 'expand':
+                body.update(aspect_ratio=spec['aspect_ratio'], prompt=spec['prompt'])
+            else:
+                body.update(model='Proteus', upscale_factor=spec['factor'], H264_output=True)
+            item['status'] = 'submitting'
+            f.put(item)
+            result = queue_request('https://queue.fal.run/' + ENDPOINTS[spec['operation']], body)
+            # Save the ID before validating convenience URLs: a billed job stays recoverable.
+            item.update(provider_id=result['request_id'], fal_status_url=result['status_url'],
+                        fal_response_url=result['response_url'], status='running')
+            f.put(item)
+        deadline = time.monotonic() + 1800
+        while time.monotonic() < deadline:
+            status = queue_request(item['fal_status_url'])
+            if status['status'] == 'COMPLETED':
+                break
+            if status['status'] in ('FAILED', 'CANCELLED'):
+                item['status'] = 'failed'
+                raise ValueError('Processing did not complete. Your original video is unchanged.')
+            time.sleep(4)
+        else:
+            item.update(status='waiting', error='Still processing. Resume to check this same job.')
             f.put(item)
             return False
-        if spec['operation'] == 'expand' and trimmed.stat().st_size > 100 * 1024**2:
-            raise ValueError('Trim the selection further: AI expand accepts videos up to 100 MB')
-        from .app import _asset_store
-        asset = _asset_store().put_reference(str(trimmed), f"films/{item['project']}/enhance/{item['id']}.mp4")
-        body = {'video_url': asset.url}
-        if spec['operation'] == 'expand':
-            body.update(aspect_ratio=spec['aspect_ratio'], prompt=spec['prompt'])
-        else:
-            body.update(model='Proteus', upscale_factor=spec['factor'], H264_output=True)
-        item['status'] = 'submitting'
-        f.put(item)
-        result = queue_request('https://queue.fal.run/' + ENDPOINTS[spec['operation']], body)
-        # Save the ID before validating convenience URLs: a billed job stays recoverable.
-        item.update(provider_id=result['request_id'], fal_status_url=result['status_url'],
-                    fal_response_url=result['response_url'], status='running')
-        f.put(item)
-    deadline = time.monotonic() + 1800
-    while time.monotonic() < deadline:
-        status = queue_request(item['fal_status_url'])
-        if status['status'] == 'COMPLETED':
-            break
-        if status['status'] in ('FAILED', 'CANCELLED'):
+        result = queue_request(item['fal_response_url'])
+        if not result.get('video', {}).get('url'):
             item['status'] = 'failed'
-            raise ValueError('Processing did not complete. Your original video is unchanged.')
-        time.sleep(4)
-    else:
-        item.update(status='waiting', error='Still processing. Resume to check this same job.')
-        f.put(item)
-        return False
-    result = queue_request(item['fal_response_url'])
-    if not result.get('video', {}).get('url'):
-        item['status'] = 'failed'
-        raise ValueError('The provider returned no processed video')
-    raw = output.with_suffix('.processed.mp4')
-    download(result['video']['url'], raw)
+            raise ValueError('The provider returned no processed video')
+        raw = output.with_suffix('.processed.mp4')
+        download(result['video']['url'], raw)
     actual, _ = f.probe(raw)
     expected, has_audio = f.probe(trimmed)
     if abs(actual - expected) > .25:
@@ -192,6 +200,50 @@ def process(item, output):
     args += ['-t', str(expected), '-movflags', '+faststart', str(output)]
     f.run_ffmpeg(args)
     return True
+
+
+def process_flux(item, trimmed, raw):
+    """Submit once, persist the remote ID, and resume polling without rebilling."""
+    from ..render_openrouter import OpenRouterRenderClient
+    from ..render import JobStatus
+    from .app import _asset_store
+    client = OpenRouterRenderClient(model=item['model'])
+    if not item.get('provider_id'):
+        if item['status'] in ('submitting', 'uncertain'):
+            item.update(status='uncertain', error='Check OpenRouter history before submitting again.')
+            f.put(item)
+            return False
+        asset = _asset_store().put_reference(str(trimmed), f"films/{item['project']}/enhance/{item['id']}.mp4")
+        spec = item['enhancement']
+        body = {'model': item['model'], 'upscale_factor': spec['factor'],
+                'creativity': spec.get('creativity', 0),
+                'input_references': [{'type': 'video_url', 'video_url': {'url': asset.url}}]}
+        item['status'] = 'submitting'
+        f.put(item)
+        result = client._call('POST', '/videos', body)
+        if not result.get('id'):
+            raise ValueError('No job ID returned. Check OpenRouter history before retrying.')
+        item.update(provider_id=result['id'], status='running')
+        f.put(item)
+    deadline = time.monotonic() + 1800
+    while time.monotonic() < deadline:
+        job = client.poll(item['provider_id'])
+        if job.status == JobStatus.SUCCEEDED:
+            # Download through the authenticated, fixed OpenRouter content endpoint.
+            from urllib.parse import quote
+            job.video_url = client.api_root + '/videos/' + quote(item['provider_id'], safe='') + '/content'
+            if not client.fetch(job, str(raw)):
+                raise ValueError('Could not download the upscaled video; resume to retry.')
+            item['cost'] = job.cost
+            return True
+        if job.status == JobStatus.FAILED:
+            if job.raw is not None:
+                item['status'] = 'failed'
+            raise ValueError('OpenRouter upscaling failed. Your original is unchanged.')
+        time.sleep(4)
+    item.update(status='waiting', error='Still processing. Resume to check the same job.')
+    f.put(item)
+    return False
 
 
 class FrameRequest(BaseModel):

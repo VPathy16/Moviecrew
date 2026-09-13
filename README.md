@@ -173,8 +173,7 @@ python -m uvicorn moviecrew.portal.app:app --host 127.0.0.1 --port 8000 --reload
 
 ### Try the offline workflow
 
-Without configured provider credentials, the default planning backend is mock and
-the application supports offline previews. Stub images and preview outputs are not
+Without configured provider credentials, the portal asks you to connect a story provider or explicitly select **Demo example**. Demo mode returns a fixed sample story, not an interpretation of your concept. The application also supports offline image previews. Stub images and preview outputs are not
 AI-generated footage. Saved settings can restore credentials at startup, so absence
 of a key in the current shell alone does not establish offline mode.
 

@@ -101,7 +101,7 @@ def test_character_views_use_identity_and_preserve_versions(tmp_path, monkeypatc
     face=generate('face')
     body=generate('full_body')
     assert calls[-1]['refs'][0]==face
-    assert 'Head-to-toe' in calls[-1]['prompt']
+    assert 'Full-subject views' in calls[-1]['prompt']
     accessories=generate('accessories')
     costume=generate('costume')
     assert calls[-1]['refs'][:3]==[face,body,accessories]
@@ -118,3 +118,114 @@ def test_character_views_use_identity_and_preserve_versions(tmp_path, monkeypatc
     other=next(s for s in client.get(url).json()['sheets'] if s['kind']=='locations')
     assert client.post(url+'/'+other['key']+'/generate-image',json={'version':other['version'],'view':'face'}).status_code==400
     assert client.post(url+'/'+sheet['key']+'/generate-image',json={'version':sheet['version'],'view':'unknown'}).status_code==422
+
+
+def test_world_failure_is_visible_and_retry_clears_error(monkeypatch,tmp_path):
+    from moviecrew.portal.world import finish
+    from copy import deepcopy
+    monkeypatch.setenv('MOVIECREW_PROJECTS_ROOT',str(tmp_path))
+    monkeypatch.setattr(portal,'_build_llm',lambda _:MockLLMClient())
+    client=TestClient(portal.app)
+    sid=client.post('/api/plan',json={'concept':'A keeper','backend':'mock','review_world':True}).json()['session_id']
+    for _ in range(100):
+        if client.get('/api/projects/'+sid).json()['status']=='awaiting_approval':break
+        time.sleep(.01)
+    session=portal._sessions[sid]
+    for sheet in client.get(f'/api/projects/{sid}/world').json()['sheets']:
+        client.post(f"/api/projects/{sid}/world/{sheet['key']}/approve",json={'version':sheet['version']})
+    def fail(_):raise ValueError('Key limit exceeded (total limit) https://provider/private-key-id')
+    monkeypatch.setattr(portal,'_build_llm',fail)
+    finish(session,deepcopy(session.project))
+    state=client.get(f'/api/projects/{sid}/world').json()
+    assert state['ready'] and state['status']=='awaiting_approval'
+    assert 'spending limit' in state['error'] and 'private-key-id' not in state['error']
+    monkeypatch.setattr(portal,'_build_llm',lambda _:MockLLMClient())
+    assert client.post(f'/api/projects/{sid}/world/build-shots').status_code==200
+    for _ in range(100):
+        state=client.get(f'/api/projects/{sid}/world').json()
+        if state['status']!='running':break
+        time.sleep(.01)
+    assert state['status']=='complete' and state['has_shots'] and not state['error']
+
+
+def test_completed_cinematography_is_reused():
+    from dataclasses import asdict
+    calls=[]
+    class Recorder(MockLLMClient):
+        def complete_json(self, **kwargs):
+            calls.append(kwargs['task'])
+            return super().complete_json(**kwargs)
+    crew=MovieCrew(Recorder())
+    draft=crew.make('A keeper',stop_after_design=True)
+    result=crew.make('',approved_project=draft,run_continuity=False)
+    cache={scene.id:asdict(scene) for scene in result.scenes}
+    calls.clear()
+    resumed=crew.make('',approved_project=draft,completed_scenes=cache,run_continuity=False)
+    assert 'cinematographer' not in calls
+    assert [s.id for scene in resumed.scenes for s in scene.shots]==[s.id for scene in result.scenes for s in scene.shots]
+
+
+def test_review_mode_keeps_state_conflicts_visible():
+    from moviecrew.schema import Shot
+    from moviecrew.story_direction import check_sequence
+    a=Shot(id='a',scene_id='s',description='Dial',duration_s=2,story_contract_version=1,action='Dial phone',purpose='Connect the call',entry_state={'phone':'idle'},exit_state={'phone':'dialing'})
+    b=Shot(id='b',scene_id='s',description='Talk',duration_s=2,story_contract_version=1,action='Talk',purpose='Make the demand',exit_state={'phone':'at ear'},entry_state={'phone':'at ear'})
+    flags=check_sequence([a,b],['a','b'],strict=False)
+    assert len(flags)==1 and flags[0].kind=='warning'
+    assert 'phone' in flags[0].message
+
+
+def test_planning_responses_reuse_exact_requests(tmp_path):
+    from moviecrew.portal.world import SavedPlanningResponses
+    calls=[]
+    class Provider:
+        def complete_json(self,**kwargs):
+            calls.append(kwargs)
+            return {'prompts':[{'prompt':'A scene'}]}
+    for _ in range(2):
+        cache=SavedPlanningResponses(Provider(),tmp_path,'test')
+        assert cache.complete_json(task='prompter',system='system',user='one')['prompts']
+    assert len(calls)==1
+    cache.complete_json(task='prompter',system='system',user='changed')
+    assert len(calls)==2
+
+
+def test_missing_outer_brace_recovery_is_narrow():
+    import pytest
+    from moviecrew.llm_openrouter import _parse_completed_response
+    from moviecrew.llm import JSONParseError
+    assert _parse_completed_response('{"prompts":[{"prompt":"complete"}]','stop')=={'prompts':[{'prompt':'complete'}]}
+    for text, reason in [('{"prompts":[{"prompt":"cut', 'stop'), ('{"prompts":', 'stop'), ('{"prompts":[]','length')]:
+        with pytest.raises(JSONParseError):_parse_completed_response(text,reason)
+
+
+def test_shot_membership_and_combined_sheet():
+    from types import SimpleNamespace
+    from moviecrew.portal.world import shot_sheets, sheet_reference_ids
+    sheets={}
+    for kind,id,name in [('characters','alice','Alice Wood'),('characters','bob','Bob Lane'),('props','lamp','Lamp'),('locations','room','Room')]:
+        sheets[id]={'key':kind+':'+id,'kind':kind,'entity_id':id,'name':name,'reference_ids':[id]}
+    session=SimpleNamespace(world_sheets=sheets)
+    scene=SimpleNamespace(location_id='room',character_ids=['alice','bob'])
+    shot=SimpleNamespace(description='Alice alone beside a lamp',action='',visible_character_ids=None,visible_prop_ids=None)
+    assert {x['entity_id'] for x in shot_sheets(session,scene,shot)}=={'alice','lamp','room'}
+    shot.visible_character_ids=[];shot.visible_prop_ids=[]
+    assert {x['entity_id'] for x in shot_sheets(session,scene,shot)}=={'room'}
+    assert sheet_reference_ids({'reference_ids':['face','body','combined'],'character_views':{'sheet':'combined'}})==['combined']
+
+
+def test_incomplete_plan_exposes_finished_scenes(tmp_path,monkeypatch):
+    from dataclasses import asdict
+    from moviecrew.studio import StudioSession, Stage
+    from moviecrew.image import MockImageProvider
+    monkeypatch.setenv('MOVIECREW_PROJECTS_ROOT',str(tmp_path))
+    crew=MovieCrew(MockLLMClient())
+    draft=crew.make('A keeper',stop_after_design=True)
+    finished=crew.make('',approved_project=draft,run_continuity=False)
+    session=StudioSession('progress-test',Stage.SHOT_DEFS,draft,str(tmp_path),MockImageProvider())
+    session.planning_scenes={finished.scenes[0].id:asdict(finished.scenes[0])}
+    portal._sessions[session.session_id]=session
+    data=TestClient(portal.app).get('/api/projects/progress-test').json()
+    assert data['project']['scenes'][0]['shots']
+    assert not session.project.scenes[0].shots
+    portal._sessions.pop(session.session_id)

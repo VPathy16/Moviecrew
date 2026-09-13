@@ -107,6 +107,7 @@ def test_image_models_receive_pinned_character_images(tmp_path, monkeypatch, mod
     def provider(s,req):
         return StudioImageProvider(model=req.model,options={},references=[next(r for r in s.image_references if r['id']==ref) for ref in req.reference_ids],endpoint={'provider_tag':'test'},transport=transport)
     monkeypatch.setattr(portal,'validate_image_settings',provider)
+    monkeypatch.setattr(portal,'image_reference_limit',lambda *args:4)
     client=TestClient(portal.app)
     url=f'/api/projects/{session.session_id}/shots/{shot}/images'
     result=client.post(url,json={'model':model,'prompt':'Keeper climbs the cliff','reference_ids':[]})
@@ -134,3 +135,19 @@ def test_model_catalog_visible_without_credentials(monkeypatch):
     result=portal.image_models()
     assert not result['configured']
     assert [m['id'] for m in result['models']]==['offline','provider/model-a','provider/model-b']
+
+
+def test_reference_limits_follow_provider_metadata(monkeypatch):
+    import importlib
+    portal=importlib.import_module('moviecrew.portal.app')
+    monkeypatch.setattr(portal.image_studio,'endpoints',lambda model:[{'provider_tag':'test','supported_parameters':{'input_references':{'type':'range','max':16 if model=='large' else 3}}}])
+    assert portal.image_reference_limit('large')==16
+    assert portal.image_reference_limit('small')==3
+    from types import SimpleNamespace
+    session=SimpleNamespace(image_references=[{'id':str(i)} for i in range(5)])
+    monkeypatch.setenv('OPENROUTER_API_KEY','test-placeholder')
+    request=portal.ImageSettingsRequest(model='large',reference_ids=[str(i) for i in range(5)])
+    provider=portal.validate_image_settings(session,request)
+    assert len(provider.references)==5
+    with pytest.raises(ValueError,match='at most 3'):
+        portal.validate_image_settings(session,request.model_copy(update={'model':'small'}))

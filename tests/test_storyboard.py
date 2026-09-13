@@ -349,7 +349,7 @@ def _fresh_session_id() -> str:
     already fully built, since they immediately drive the storyboard off
     it.
     """
-    res = client.post("/api/plan", json={"concept": "A lighthouse and a sea spirit."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A lighthouse and a sea spirit."})
     assert res.status_code == 200
     sid = res.json().get("session_id")
     assert sid, "plan response must include session_id"
@@ -366,7 +366,7 @@ def _fresh_session_id() -> str:
 
 
 def test_plan_includes_session_id_and_status():
-    res = client.post("/api/plan", json={"concept": "test concept"})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "test concept"})
     assert res.status_code == 200
     data = res.json()
     assert "session_id" in data

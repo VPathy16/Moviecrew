@@ -270,7 +270,7 @@ def _plan_session(client, timeout: float = 5.0):
     it — /api/plan itself only starts the job (see PR #29); every caller
     here wants a session whose project is already fully built.
     """
-    res = client.post("/api/plan", json={"concept": "A keeper and a sea spirit."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A keeper and a sea spirit."})
     assert res.status_code == 200
     session_id = res.json()["session_id"]
 

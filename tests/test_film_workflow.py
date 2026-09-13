@@ -232,6 +232,15 @@ def test_enhancement_ownership_payload_resume_and_original_audio(setup, monkeypa
         return {'video':{'url':'https://v3.fal.media/output.mp4'}}
     monkeypatch.setattr(enhance,'queue_request',queue)
     monkeypatch.setattr(enhance,'download',lambda url,path:shutil.copyfile(source,path))
+    monkeypatch.setenv('OPENROUTER_API_KEY','test-key-not-real')
+    from moviecrew.render_openrouter import OpenRouterRenderClient
+    from moviecrew.render import RenderJob, JobStatus
+    def flux_call(self, method, path, body=None):
+        calls.append((path,body))
+        return {'id':'flux-1'}
+    monkeypatch.setattr(OpenRouterRenderClient,'_call',flux_call)
+    monkeypatch.setattr(OpenRouterRenderClient,'poll',lambda self,job_id:RenderJob(job_id=job_id,shot_id='',status=JobStatus.SUCCEEDED))
+    monkeypatch.setattr(OpenRouterRenderClient,'fetch',lambda self,job,path:shutil.copyfile(source,path))
     req={'request_id':str(uuid.uuid4()),'video_id':original['id'],'operation':'upscale','start':0,'end':.5,'factor':2}
     assert client.post('/api/projects/film-b/enhancements',json=req).status_code==404
     res=client.post('/api/projects/film-a/enhancements',json=req)
@@ -241,7 +250,8 @@ def test_enhancement_ownership_payload_resume_and_original_audio(setup, monkeypa
     flow.work('film-a',req['request_id'])
     done=flow.get('film-a',req['request_id'])
     assert done['status']=='complete',done.get('error')
-    assert calls[0][1]=={'video_url':'https://v3.fal.media/source.mp4','model':'Proteus','upscale_factor':2,'H264_output':True}
+    assert calls[0][1]=={'model':'black-forest-labs/flux-video-upscale','upscale_factor':2,'creativity':0,'input_references':[{'type':'video_url','video_url':{'url':'https://v3.fal.media/source.mp4'}}]}
+    assert client.post('/api/projects/film-a/enhancements',json={**req,'request_id':str(uuid.uuid4()),'factor':4}).status_code==422
     assert flow.probe(done['path'])[1]
     assert flow.get('film-a',original['id'])==original
     assert 'fal_status_url' not in flow.public(done)
@@ -332,3 +342,36 @@ def test_extensions_use_trimmed_boundaries_and_correct_anchor_positions(setup, m
         calls.clear()
     assert client.post('/api/projects/film-b/extension-boundary',json=trim).status_code==404
     assert client.post('/api/projects/film-a/extension-boundary',json={**trim,'end':2}).status_code==400
+
+
+def test_text_only_video_has_no_image_inputs(setup, monkeypatch):
+    client, fake, s, _ = setup
+    monkeypatch.setattr(fake, 'name', 'test-live')
+    monkeypatch.setattr(flow, 'launch', lambda *args: None)
+    req = {**request_for(s), 'reference_mode':'text', 'frame_id':'', 'reference_ids':[]}
+    _, frame, spec = flow.prepare('film-a', flow.VideoRequest(**req))
+    assert frame is None and not spec.reference_images and not spec.first_frame and not spec.last_frame
+    assert client.post('/api/projects/film-a/video-estimate',json=req).status_code == 200
+    assert client.post('/api/projects/film-a/videos',json=req).status_code == 200
+    bad={**req,'frame_id':s.board[0].version_id}
+    assert client.post('/api/projects/film-a/video-estimate',json=bad).status_code == 400
+    assert not fake.submitted
+
+
+def test_character_guided_extension_preserves_metadata_without_anchor(setup, monkeypatch):
+    client,fake,s,root=setup
+    monkeypatch.setattr(fake,'name','test-live')
+    monkeypatch.setattr(flow,'CHARACTER_VIDEO_MODELS',{'fake/model'})
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    frame=s.versions[0]
+    frame.settings['extension']={'direction':'after','video_id':'source','start':0,'end':1}
+    path=root/'sheet.png';path.write_bytes(MockImageProvider._BYTES)
+    s.image_references.append({'id':'sheet','path':str(path),'media_type':'image/png','name':'Character'})
+    req={**request_for(s),'frame_id':frame.version_id,'reference_mode':'character','reference_ids':['sheet']}
+    _,_,spec=flow.prepare('film-a',flow.VideoRequest(**req))
+    assert not spec.first_frame and not spec.last_frame
+    result=client.post('/api/projects/film-a/videos',json=req)
+    assert result.status_code==200,result.text
+    item=flow.get('film-a',req['request_id'])
+    assert item['extension']['direction']=='after'
+    assert item['reference_ids']==['sheet'] and item['source_path']==''

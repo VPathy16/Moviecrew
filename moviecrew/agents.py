@@ -150,6 +150,16 @@ class DesignerAgent(Agent):
             title=title, logline=logline, scenes=scenes, provided_bible=provided_bible
         )
         system = self._GAP_FILL_SYSTEM_PROMPT if provided_bible is not None else self.system_prompt
+        system += (
+            '\nAlso return a top-level "sheet_notes" object keyed by "characters:<id>". '
+            'For EVERY character, including provided characters, supply these exact keys: '
+            'Appearance, Personality, Wardrobe, Expressions & poses, Voice & language, Continuity notes. '
+            'Write concise production-ready details grounded in the story and provided identity. '
+            'Preserve species, established appearance, references, language and wardrobe. '
+            'Do not invent injuries, accessories or costumes unrelated to the story. '
+            'Use "Not specified" where the story gives no basis. These are separate reviewable '
+            'design notes; do not alter provided assets.'
+        )
         return self.llm.complete_json(task=self.role, system=system, user=user)
 
 
@@ -160,6 +170,7 @@ class CinematographerAgent(Agent):
         "shot the duration the cut actually wants, in seconds — 2.5, 5, 11.5 and 18 "
         "are all legitimate; do not round to fit any particular renderer, which will "
         "clamp or split later if it must. Durations must be positive. "
+        "For every shot provide visible_character_ids and visible_prop_ids containing only IDs actually visible in this framing (empty arrays for none). Also provide image_prompt describing ONE opening still frame, its composition, visible subjects, lighting and lens; exclude movement over time, dialogue and sound. "
         "Plan cause and consequence. Each shot has story_contract_version=1, purpose, one observable "
         "action, entry_state and exit_state (non-empty dictionaries of stable entity/property keys to "
         "concise state labels), screen_direction, audio_intent and transition (cut, continuous, ellipsis). "
@@ -167,7 +178,7 @@ class CinematographerAgent(Agent):
         "exit/entry keys unless an explicit ellipsis advances time. A cut changes framing, not physical "
         "facts. Vary shot size with a story reason; carry prop ownership and physical condition.\n"
         'Respond with JSON only: {"shots": [{"id": str, "scene_id": str, '
-        '"description": str, "duration_s": number, "camera_move": str, "lens": str, '
+        '"description": str, "image_prompt": str, "visible_character_ids": [str], "visible_prop_ids": [str], "duration_s": number, "camera_move": str, "lens": str, '
         '"framing": str, "story_contract_version": 1, "purpose": str, "action": str, '
         '"entry_state": {str: str}, "exit_state": {str: str}, "screen_direction": str, '
         '"audio_intent": str, "transition": "cut"|"continuous"|"ellipsis"}]}.'
@@ -189,7 +200,9 @@ _PROMPTER_LEAD_RULE = (
     "the environment. Never a static state like 'stands looking concerned'; write what "
     "the body does. A 4s shot is one beat; an 8s shot is a short arc of 2-3 linked "
     "movements. Put camera move, lens, lighting and style AFTER the action, never before "
-    "it. Never request readable on-screen text — convey it through imagery."
+    "it. Include readable in-scene text only when the shot explicitly requires it; "
+    "preserve requested wording instead of substituting invented text. Otherwise avoid "
+    "unrequested lettering. Rendering accuracy depends on the selected model and must be reviewed."
 )
 
 _PROMPTER_LAYERS = (

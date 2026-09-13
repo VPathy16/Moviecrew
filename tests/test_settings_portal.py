@@ -118,16 +118,16 @@ def test_settings_survive_a_simulated_restart():
 
 
 def test_saving_the_key_flips_the_default_backend_reported_by_health():
-    assert client.get("/api/health").json()["default_backend"] == "mock"
+    assert client.get("/api/health").json()["default_backend"] == ""
     client.post("/api/settings", json={"values": {"OPENROUTER_API_KEY": "sk-abc123"}})
     assert client.get("/api/health").json()["default_backend"] == "openrouter"
 
 
-def test_clearing_the_key_flips_it_back_to_mock():
+def test_clearing_the_key_requires_provider_selection():
     client.post("/api/settings", json={"values": {"OPENROUTER_API_KEY": "sk-abc123"}})
     assert client.get("/api/health").json()["default_backend"] == "openrouter"
     client.post("/api/settings", json={"values": {"OPENROUTER_API_KEY": ""}})
-    assert client.get("/api/health").json()["default_backend"] == "mock"
+    assert client.get("/api/health").json()["default_backend"] == ""
 
 
 def test_saving_the_takes_root_changes_what_health_reports(tmp_path):
