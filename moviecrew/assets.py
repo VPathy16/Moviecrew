@@ -121,6 +121,10 @@ class AssetStore(ABC):
     #: True when `url()` returns something a third party can fetch.
     serves_public_urls: bool = False
 
+    def put_reference(self, local_path: str, key: str) -> Asset:
+        """Publish a provider input; stores may supply temporary read access."""
+        return self.put_reachable(local_path, key)
+
     @abstractmethod
     def put(self, local_path: str, key: str, *, content_type: Optional[str] = None) -> Asset:
         """Store a local file under `key`. Returns the stored asset."""
@@ -302,11 +306,8 @@ def sigv4_headers(
 class S3AssetStore(AssetStore):
     """Any S3-compatible bucket: Cloudflare R2, AWS S3, B2, MinIO.
 
-    `public_base` is what makes a stored object addressable to a render
-    backend — an R2 custom domain or `r2.dev` address, an S3 website
-    endpoint, a CDN in front of either. Without it the store still works for
-    put/get, but `url()` returns None and `put_reachable` refuses, which is
-    the correct answer: a private bucket cannot serve a reference.
+    `public_base` supplies durable public URLs when configured. Render inputs
+    use verified, expiring signed GET URLs so private buckets work too.
     """
 
     name = "s3"
@@ -341,6 +342,44 @@ class S3AssetStore(AssetStore):
         if not self.public_base:
             return None
         return f"{self.public_base}/{urllib.parse.quote(key, safe='/~')}"
+
+    def signed_read_url(self, key: str, *, expires: int = 3600,
+                        now: Optional[datetime] = None) -> str:
+        """Grant temporary GET access to one object, without bucket publication."""
+        if not 1 <= expires <= 604800:
+            raise ValueError("signed URL expiry must be between 1 and 604800 seconds")
+        now = now or datetime.now(timezone.utc)
+        stamp, date = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
+        url = self._object_url(key)
+        parts = urllib.parse.urlsplit(url)
+        scope = f"{date}/{self.region}/s3/aws4_request"
+        params = {
+            "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+            "X-Amz-Credential": f"{self._access_key}/{scope}",
+            "X-Amz-Date": stamp,
+            "X-Amz-Expires": str(expires),
+            "X-Amz-SignedHeaders": "host",
+        }
+        query = urllib.parse.urlencode(sorted(params.items()), quote_via=urllib.parse.quote)
+        canonical = "\n".join(["GET", parts.path, query,
+                                f"host:{parts.netloc}\n", "host", "UNSIGNED-PAYLOAD"])
+        to_sign = "\n".join(["AWS4-HMAC-SHA256", stamp, scope,
+                              _sha256(canonical.encode())])
+        signature = hmac.new(signing_key(self._secret_key, date, self.region, "s3"),
+                             to_sign.encode(), hashlib.sha256).hexdigest()
+        return f"{url}?{query}&X-Amz-Signature={signature}"
+
+    def put_reference(self, local_path: str, key: str) -> Asset:
+        asset = self.put(local_path, key)
+        url = self.signed_read_url(key)
+        try:
+            received = self._transport("GET", url, {}, None)
+        except AssetError:
+            raise AssetError("Stored reference could not be downloaded. Check bucket read permissions.") from None
+        if received != Path(local_path).read_bytes():
+            raise AssetError("Stored reference download did not match the original media.")
+        return Asset(key=key, content_type=asset.content_type,
+                     size_bytes=asset.size_bytes, url=url)
 
     def put(self, local_path: str, key: str, *, content_type: Optional[str] = None) -> Asset:
         ctype = content_type or content_type_for(local_path)

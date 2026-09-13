@@ -48,19 +48,22 @@ from __future__ import annotations
 
 import os
 import re
-import tempfile
 import threading
+import urllib.parse
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from .. import projects as project_store
+from .. import image_studio
+from ..brief import BriefedLLM
 from ..agents import DETAIL_LEVELS, ContinuityAgent
 from ..assets import (
     BUCKET_ENV,
@@ -194,6 +197,10 @@ def _error(status_code: int, message: str) -> JSONResponse:
 def _session_or_error(session_id: str):
     session = _sessions.get(session_id)
     if session is None:
+        session = project_store.load(session_id, _build_image_provider())
+        if session is not None:
+            _sessions[session_id] = session
+    if session is None:
         return None, _error(404, f"session {session_id!r} not found")
     return session, None
 
@@ -250,6 +257,7 @@ def _apply_plan_progress(
             progress.prompts_completed += 1
         elif event == "plan_complete":
             progress.stage = "complete"
+        project_store.save(session)
 
 
 def _run_plan_job(session: StudioSession, req: PlanRequest, checkpoint_path: str) -> None:
@@ -273,12 +281,15 @@ def _run_plan_job(session: StudioSession, req: PlanRequest, checkpoint_path: str
 
     try:
         llm = _build_llm(session.backend)
+        if session.creative_brief:
+            llm = BriefedLLM(llm, session.creative_brief)
         reference_provider: Optional[ReferenceImageProvider] = (
             FileReferenceImageProvider(req.reference_dir) if req.reference_dir else None
         )
         crew = MovieCrew(llm, reference_provider=reference_provider, prompt_detail=req.detail)
-        crew.make(
+        result = crew.make(
             req.concept,
+            stop_after_design=req.review_world,
             checkpoint_path=checkpoint_path,
             run_continuity=False,
             on_progress=on_progress,
@@ -287,17 +298,32 @@ def _run_plan_job(session: StudioSession, req: PlanRequest, checkpoint_path: str
         with session.plan_lock:
             session.plan_progress.status = "failed"
             session.plan_progress.error = str(exc)
+            project_store.save(session)
         return
 
     with session.plan_lock:
-        session.plan_progress.status = "complete"
+        if req.review_world:
+            from .world import initialize_sheets
+            session.project = result
+            initialize_sheets(session)
+            session.plan_progress.status = 'awaiting_approval'
+            session.plan_progress.stage = 'world_review'
+        else:
+            session.plan_progress.status = "complete"
+        project_store.save(session)
 
 
 def _frame_to_dict(session_id: str, frame) -> dict:
     return {
+        "version_id": frame.version_id,
+        "created_at": frame.created_at,
+        "model": frame.model,
+        "settings": frame.settings,
+        "reference_ids": frame.reference_ids,
+        "cost_usd": frame.cost_usd,
         "shot_id": frame.shot_id,
         "image_url": (
-            f"/api/storyboard/{session_id}/{frame.shot_id}"
+            f"/api/projects/{session_id}/versions/{frame.version_id}/image"
             if frame.image_path
             else None
         ),
@@ -663,6 +689,12 @@ def _find_take(scene_id: str, shot_id: str, take_number: int):
 
 class PlanRequest(BaseModel):
     concept: str
+    review_world: bool = False  # legacy clients retain the one-pass API
+    film_type: str = Field(default="Short film", max_length=100)
+    genre: str = Field(default="", max_length=160)
+    language: str = Field(default="English", min_length=1, max_length=100)
+    movie_references: list[str] = Field(default_factory=list, max_length=10)
+    reference_notes: str = Field(default="", max_length=2000)
     backend: str = ""
     detail: str = "cinematic"
     reference_dir: Optional[str] = None
@@ -702,6 +734,7 @@ class RegenerateRequest(BaseModel):
     session_id: str
     shot_id: str
     feedback: str = ""
+    prompt: str | None = None
 
 
 class SettingsUpdateRequest(BaseModel):
@@ -720,7 +753,15 @@ class SettingsUpdateRequest(BaseModel):
 # App                                                                     #
 # ---------------------------------------------------------------------- #
 
-app = FastAPI(title="MovieCrew Portal")
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def film_lifespan(app):
+    from .film_workflow import recover
+    recover()
+    yield
+
+app = FastAPI(title="MovieCrew Portal", lifespan=film_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origin_regex=r"http://(localhost|127\.0\.0\.1)(:\d+)?",
@@ -971,7 +1012,7 @@ def plan(req: PlanRequest):
         )
 
     session_id = str(uuid.uuid4())
-    session_dir = str(Path(tempfile.gettempdir()) / "moviecrew-sessions" / session_id)
+    session_dir = str(project_store.root() / session_id)
     checkpoint_path = str(Path(session_dir) / "project_checkpoint.json")
 
     # A placeholder, mutated in place as generation proceeds and replaced
@@ -990,9 +1031,14 @@ def plan(req: PlanRequest):
         session_dir=session_dir,
         image_provider=_build_image_provider(),
         backend=backend,
+        creative_brief={'concept': req.concept, 'film_type': req.film_type.strip(),
+                        'genre': req.genre.strip(), 'language': req.language.strip(),
+                        'movie_references': [r.strip()[:300] for r in req.movie_references if r.strip()],
+                        'reference_notes': req.reference_notes.strip()},
         plan_progress=PlanProgress(),
     )
     _sessions[session_id] = session
+    project_store.save(session)
 
     thread = threading.Thread(
         target=_run_plan_job, args=(session, req, checkpoint_path), daemon=True
@@ -1117,6 +1163,8 @@ def run_session_continuity(session_id: str):
     # exception out of this endpoint.
     try:
         llm = _build_llm(session.backend)
+        if session.creative_brief:
+            llm = BriefedLLM(llm, session.creative_brief)
     except Exception as exc:
         new_flags = [
             ContinuityFlag(
@@ -1152,6 +1200,7 @@ def run_session_continuity(session_id: str):
         session.project, str(Path(session.session_dir) / "project_checkpoint.json")
     )
 
+    project_store.save(session)
     return {
         "session_id": session_id,
         "continuity_status": session.continuity_status,
@@ -1165,10 +1214,17 @@ def storyboard(req: StoryboardRequest):
     session, err = _session_or_error(req.session_id)
     if err:
         return err
+    if session.plan_progress.status != 'complete':
+        return _error(409, 'Complete the shot plan before generating images')
+    if not session.image_lock.acquire(blocking=False):
+        return _error(409, 'An image operation is already running for this project')
     try:
         session.produce()
+        project_store.save(session)
     except Exception as exc:
         return _error(502, f"storyboard generation failed: {exc}")
+    finally:
+        session.image_lock.release()
     return {
         "session_id": req.session_id,
         "stage": session.stage.value,
@@ -1183,10 +1239,17 @@ def approve_storyboard(req: StoryboardRequest):
         return err
     if session.stage not in (Stage.STORYBOARD, Stage.OUTPUT):
         return _error(400, f"cannot approve from stage {session.stage.value!r}")
+    if session.plan_progress.status != 'complete':
+        return _error(409, 'Complete the shot plan before generating images')
+    if not session.image_lock.acquire(blocking=False):
+        return _error(409, 'An image operation is already running for this project')
     try:
         session.approve()
+        project_store.save(session)
     except Exception as exc:
         return _error(502, f"approve failed: {exc}")
+    finally:
+        session.image_lock.release()
     return {"session_id": req.session_id, "stage": session.stage.value}
 
 
@@ -1195,10 +1258,21 @@ def regenerate_storyboard(req: RegenerateRequest):
     session, err = _session_or_error(req.session_id)
     if err:
         return err
+    if session.plan_progress.status != 'complete':
+        return _error(409, 'Complete the shot plan before generating images')
+    if not session.image_lock.acquire(blocking=False):
+        return _error(409, 'An image operation is already running for this project')
     try:
-        session.revise(feedback=req.feedback, shot_id=req.shot_id)
+        if req.prompt is not None and not req.prompt.strip():
+            return _error(400, "Image prompt cannot be empty")
+        if not any(shot.id == req.shot_id for scene in session.project.scenes for shot in scene.shots):
+            return _error(404, "Shot not found")
+        session.revise(feedback=req.feedback, shot_id=req.shot_id, prompt=req.prompt)
+        project_store.save(session)
     except Exception as exc:
         return _error(502, f"regeneration failed: {exc}")
+    finally:
+        session.image_lock.release()
     frame = next((f for f in session.board if f.shot_id == req.shot_id), None)
     if frame is None:
         return _error(404, f"shot {req.shot_id!r} not found in board")
@@ -1222,4 +1296,341 @@ def storyboard_image(session_id: str, shot_id: str):
 
 @app.get("/")
 def index() -> FileResponse:
+    return FileResponse(_STATIC_DIR / "studio.html")
+
+
+@app.get("/legacy")
+def legacy_portal() -> FileResponse:
+    """Compatibility access for the earlier production tools."""
     return FileResponse(_STATIC_DIR / "index.html")
+
+
+class ProjectEditRequest(BaseModel):
+    title: str | None = None
+    shot_id: str | None = None
+    prompt: str | None = None
+    version_id: str | None = None
+    reference_image_ids: list[str] | None = None
+
+
+@app.get('/api/projects')
+def project_library():
+    return {'projects': project_store.listing()}
+
+
+@app.get('/api/projects/{session_id}')
+def open_project(session_id: str):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    with session.plan_lock:
+        return {'id': session_id, 'project': asdict(session.project),
+                'status': session.plan_progress.status, 'error': session.plan_progress.error,
+                'stage': session.stage.value, 'backend': session.backend,
+                'plan_progress': asdict(session.plan_progress),
+                'continuity_status': session.continuity_status,
+                'image_model': getattr(session.image_provider, 'model', type(session.image_provider).__name__),
+                'world_sheets': session.world_sheets,
+                'shot_sheet_versions': session.shot_sheet_versions,
+                'creative_brief': session.creative_brief,
+                'draft_prompts': session.draft_prompts,
+                'image_settings': session.image_settings,
+                'image_references': [{k:v for k,v in r.items() if k != 'path'} for r in session.image_references],
+                'frames': [_frame_to_dict(session_id, f) for f in session.board],
+                'versions': [_frame_to_dict(session_id, f) for f in session.versions]}
+
+
+@app.patch('/api/projects/{session_id}')
+def edit_project(session_id: str, req: ProjectEditRequest):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    with session.plan_lock:
+        if session.image_lock.locked():
+            return _error(409, 'Wait for the image generation to finish')
+        if session.plan_progress.status in ('queued', 'running'):
+            return _error(409, 'Wait for planning to finish before editing this project')
+        if req.title is not None:
+            if not req.title.strip():
+                return _error(400, 'Enter a project title')
+            session.project.title = req.title.strip()
+        if req.shot_id is not None:
+            shot = next((s for scene in session.project.scenes for s in scene.shots if s.id == req.shot_id), None)
+            if shot is None:
+                return _error(404, 'Shot not found')
+            if req.reference_image_ids is not None:
+                allowed = {ref for scene in session.project.scenes for candidate in scene.shots for ref in candidate.reference_image_ids}
+                allowed.update(f.image_path for f in session.versions if f.image_path)
+                if any(ref not in allowed for ref in req.reference_image_ids):
+                    return _error(400, 'Choose references already attached to this project')
+                shot.reference_image_ids = list(dict.fromkeys(req.reference_image_ids))
+            if req.prompt is not None:
+                session.draft_prompts[req.shot_id] = req.prompt
+            if req.version_id is not None:
+                frame = next((f for f in session.versions if f.version_id == req.version_id and f.shot_id == req.shot_id and f.status == 'ok'), None)
+                if frame is None:
+                    return _error(404, 'Image version not found')
+                old = next((f for f in session.board if f.shot_id == req.shot_id), None)
+                if old and old.prior_reference_image_ids is not None:
+                    shot.reference_image_ids = old.prior_reference_image_ids.copy()
+                session.board = [f for f in session.board if f.shot_id != req.shot_id] + [frame]
+                session.stage = Stage.STORYBOARD
+        project_store.save(session)
+    return open_project(session_id)
+
+
+@app.post('/api/projects/{session_id}/duplicate')
+def duplicate_project(session_id: str):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    if session.plan_progress.status in ('queued', 'running'):
+        return _error(409, 'Wait for planning to finish before duplicating')
+    project_store.save(session)
+    copy = project_store.load(session_id, _build_image_provider())
+    copy.session_id = str(uuid.uuid4())
+    copy.session_dir = str(project_store.root() / copy.session_id)
+    copy.project.title += ' (copy)'
+    # Existing immutable media is shared; future generations write to the copy.
+    _sessions[copy.session_id] = copy
+    project_store.save(copy)
+    return {'id': copy.session_id}
+
+
+@app.get('/api/projects/{session_id}/versions/{version_id}/image')
+def version_image(session_id: str, version_id: str):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    frame = next((f for f in session.versions + session.board if f.version_id == version_id), None)
+    if frame is None or not frame.image_path or not Path(frame.image_path).is_file():
+        return _error(404, 'Image unavailable')
+    return FileResponse(frame.image_path, media_type=image_studio.media_type(Path(frame.image_path).read_bytes()[:16]))
+
+
+@app.get('/studio')
+def studio_workspace():
+    return FileResponse(_STATIC_DIR / 'studio.html')
+
+
+@app.get('/api/image-models')
+def image_models():
+    offline = {'id':'offline', 'name':'Offline preview — no cost', 'supported_parameters':{}, 'architecture':{'input_modalities':['text','image']}}
+    configured = bool(os.environ.get(_OPENROUTER_KEY_ENV))
+    try:
+        return {'models':[offline] + image_studio.models(), 'configured':configured}
+    except Exception:
+        return {'models':[offline], 'configured':configured, 'error':'Could not load live image models. Retry later; offline preview is available.'}
+
+
+@app.get('/api/image-models/{model:path}/capabilities')
+def image_model_capabilities(model: str):
+    if model == 'offline':
+        return {'parameters':{}, 'references':True}
+    try:
+        records = image_studio.endpoints(model)
+        parameters = {}
+        for field in image_studio.FIELDS:
+            values = sorted({v for endpoint in records for v in endpoint.get('supported_parameters', {}).get(field, {}).get('values', []) if isinstance(v, str)})
+            if values:
+                parameters[field] = values
+        return {'parameters':parameters, 'references':any('input_references' in e.get('supported_parameters', {}) for e in records)}
+    except Exception:
+        return _error(502, 'Could not load model capabilities')
+
+
+@app.post('/api/projects/{session_id}/references')
+async def upload_image_reference(session_id: str, request: Request):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw.extend(chunk)
+        if len(raw) > 5 * 1024 * 1024:
+            return _error(413, 'Reference images must be 5 MB or smaller')
+    try:
+        mime = image_studio.media_type(raw)
+    except ValueError as exc:
+        return _error(400, str(exc))
+    if len(session.image_references) >= 40:
+        return _error(400, 'This project already has 40 reference images')
+    ref_id = uuid.uuid4().hex
+    directory = Path(session.session_dir) / 'references'
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / ref_id
+    path.write_bytes(raw)
+    name = urllib.parse.unquote(request.headers.get('x-image-name', 'Reference image'))[:120]
+    record = {'id':ref_id, 'name':name, 'path':str(path), 'media_type':mime}
+    with session.plan_lock:
+        session.image_references.append(record)
+        project_store.save(session)
+    return {'id':ref_id, 'name':name}
+
+
+@app.get('/api/projects/{session_id}/references/{ref_id}')
+def reference_image(session_id: str, ref_id: str):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    ref = next((r for r in session.image_references if r['id'] == ref_id), None)
+    if not ref:
+        return _error(404, 'Reference image not found')
+    return FileResponse(ref['path'], media_type=ref['media_type'])
+
+
+class ImageSettingsRequest(BaseModel):
+    model: str = 'offline'
+    options: dict[str, str] = {}
+    reference_ids: list[str] = []
+    variations: int = 1
+    prompt: str | None = None
+    shot_id: str | None = None
+
+
+def bind_shot_references(session, shot_id, req):
+    """Use the approved sheet versions assigned to this shot, never a draft."""
+    scene=next((scene for scene in session.project.scenes if any(shot.id==shot_id for shot in scene.shots)),None)
+    if scene is None:
+        raise ValueError('Shot not found')
+    assigned=session.shot_sheet_versions.get(shot_id,{})
+    refs=[]
+    labels=[]
+    for sheet in session.world_sheets.values():
+        if assigned:
+            if sheet['key'] not in assigned: continue
+            version=assigned[sheet['key']]
+            approved=next((item for item in [sheet,*sheet.get('history',[])] if item['version']==version and item.get('approved_version')==version),None)
+            if approved is None: raise ValueError('An approved reference sheet is missing. Reapply your approved cast and world.')
+        else:
+            if sheet['kind']!='props' and sheet['entity_id'] not in scene.character_ids and sheet['entity_id']!=scene.location_id: continue
+            approved=sheet if sheet['version']==sheet['approved_version'] else None
+            if approved is None: continue
+        views=approved.get('character_views',{})
+        for ref in approved['reference_ids']:
+            if ref not in refs:
+                refs.append(ref)
+                view=next((key.replace('_',' ') for key,value in views.items() if value==ref),'reference')
+                labels.append(f"Reference {len(refs)}: {approved['name']} — {view}")
+    merged=list(dict.fromkeys(refs+req.reference_ids))
+    if len(merged)>4:
+        raise ValueError('This shot needs more than four reference images. Select a smaller approved reference set in Cast & world and apply it to this shot; no images were generated.')
+    req=req.model_copy(update={'reference_ids':merged})
+    guidance=''
+    if labels:
+        guidance='\n\nApproved visual references:\n'+'\n'.join(labels)+'\nUse these images to preserve each character’s face, body, accessories and costume. Follow the shot prompt for action, framing and environment. Do not reproduce the reference-sheet layout.'
+    return req,guidance
+
+
+def validate_image_settings(session, req):
+    if not 1 <= req.variations <= 4:
+        raise ValueError('Choose between 1 and 4 variations')
+    if len(req.reference_ids) > 4:
+        raise ValueError('Choose at most four reference images')
+    if any(key not in image_studio.FIELDS for key in req.options):
+        raise ValueError('Unsupported image setting')
+    by_id = {r['id']: r for r in session.image_references}
+    refs = [by_id[r] for r in dict.fromkeys(req.reference_ids) if r in by_id]
+    if len(refs) != len(set(req.reference_ids)):
+        raise ValueError('Reference image does not belong to this project')
+    if req.model == 'offline':
+        if req.options:
+            raise ValueError('Offline preview does not support output settings')
+        return image_studio.OfflineStudioProvider({}, refs)
+    if not os.environ.get(_OPENROUTER_KEY_ENV):
+        raise ValueError('Configure OpenRouter before generating live images')
+    endpoint = image_studio.choose_endpoint(image_studio.endpoints(req.model), req.options, bool(refs))
+    return image_studio.StudioImageProvider(model=req.model, options=req.options, references=refs, endpoint=endpoint)
+
+
+@app.put('/api/projects/{session_id}/shots/{shot_id}/image-settings')
+def save_image_settings(session_id: str, shot_id: str, req: ImageSettingsRequest):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    if not any(s.id == shot_id for scene in session.project.scenes for s in scene.shots):
+        return _error(404, 'Shot not found')
+    try:
+        req, _ = bind_shot_references(session, shot_id, req)
+        validate_image_settings(session, req)
+    except ValueError as exc:
+        return _error(400, str(exc))
+    except Exception:
+        return _error(502, 'Could not validate model settings')
+    with session.plan_lock:
+        session.image_settings[shot_id] = {'model':req.model, 'options':req.options, 'reference_ids':req.reference_ids, 'variations':req.variations}
+        project_store.save(session)
+    return {'saved':True}
+
+
+@app.post('/api/projects/{session_id}/shots/{shot_id}/images')
+def generate_shot_images(session_id: str, shot_id: str, req: ImageSettingsRequest):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    if not req.prompt or not req.prompt.strip():
+        return _error(400, 'Enter an image prompt')
+    if not any(s.id == shot_id for scene in session.project.scenes for s in scene.shots):
+        return _error(404, 'Shot not found')
+    if session.plan_progress.status != 'complete':
+        return _error(409, 'Wait for planning to complete')
+    if not session.image_lock.acquire(blocking=False):
+        return _error(409, 'An image operation is already running')
+    previous = session.image_provider
+    frames = []
+    try:
+        req, guidance = bind_shot_references(session, shot_id, req)
+        session.image_provider = validate_image_settings(session, req)
+        session.image_settings[shot_id] = {'model':req.model, 'options':req.options, 'reference_ids':req.reference_ids, 'variations':req.variations}
+        session.draft_prompts[shot_id] = req.prompt
+        for _ in range(req.variations):
+            session.revise(shot_id=shot_id, prompt=req.prompt+guidance)
+            frame = next(f for f in session.board if f.shot_id == shot_id)
+            frames.append(_frame_to_dict(session_id, frame))
+            project_store.save(session)
+            if frame.status == 'failed':
+                break  # Do not multiply a failing provider request.
+    except ValueError as exc:
+        return _error(400, str(exc))
+    except Exception:
+        return _error(502, 'Image generation failed; completed versions have been saved')
+    finally:
+        session.image_provider = previous
+        session.image_lock.release()
+    return {'frames':frames, 'failed':any(f['status']=='failed' for f in frames)}
+
+
+
+@app.post('/api/projects/{session_id}/image-estimate')
+def estimate_shot_images(session_id: str, req: ImageSettingsRequest):
+    session, err = _session_or_error(session_id)
+    if err:
+        return err
+    try:
+        if req.shot_id:
+            req, _ = bind_shot_references(session, req.shot_id, req)
+        provider = validate_image_settings(session, req)
+        amount = 0.0 if req.model == 'offline' else image_studio.estimate_cost(provider.endpoint, len(provider.references), req.variations)
+        return {'estimated_cost_usd':amount, 'variations':req.variations,
+                'note':'Offline preview — no charge' if req.model == 'offline' else
+                ('Estimated total; actual provider charges may differ' if amount is not None else 'Estimate unavailable for this pricing model; actual cost is recorded when reported')}
+    except ValueError as exc:
+        return _error(400, str(exc))
+    except Exception:
+        return _error(502, 'Pricing temporarily unavailable')
+
+# The unified workspace uses project-owned video records; legacy take endpoints
+# remain available for existing Blender integrations.
+from .film_workflow import router as film_router
+app.include_router(film_router)
+
+from .world import router as world_router
+app.include_router(world_router)
+
+
+@app.get("/editor.js")
+def editor_script():
+    return FileResponse(_STATIC_DIR / "editor.js", media_type="text/javascript")
+
+from .film_enhance import router as enhance_router
+app.include_router(enhance_router)

@@ -256,7 +256,7 @@ def test_a_silent_catalogue_keeps_every_reference():
         model="vendor/model",
     )
 
-    assert body["provider"]["options"]["image_urls"] == refs
+    assert [ref["image_url"]["url"] for ref in body["input_references"]] == refs
 
 
 def test_the_bridge_agrees_with_the_client_on_a_silent_catalogue():
@@ -298,7 +298,7 @@ def test_a_stated_cap_is_honoured():
         ShotSpec(shot_id="s1", prompt="p", reference_images=["a.png", "b.png", "c.png"]),
         model="vendor/model",
     )
-    assert body["provider"]["options"]["image_urls"] == ["a.png", "b.png"]
+    assert [ref["image_url"]["url"] for ref in body["input_references"]] == ["a.png", "b.png"]
 
 
 @pytest.mark.parametrize(

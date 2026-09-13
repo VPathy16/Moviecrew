@@ -73,6 +73,10 @@ _STATUS_MAP: dict[str, JobStatus] = {
 class RenderError(RuntimeError):
     """A backend call that could not be completed."""
 
+    def __init__(self, message: str, *, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
+
 
 def _urllib_transport(
     method: str, url: str, headers: dict[str, str], body: Optional[dict]
@@ -84,7 +88,7 @@ def _urllib_transport(
             return json.loads(response.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:400]
-        raise RenderError(f"{method} {url} failed ({exc.code}): {detail}") from exc
+        raise RenderError(f"{method} {url} failed ({exc.code}): {detail}", status_code=exc.code) from exc
     except urllib.error.URLError as exc:
         raise RenderError(f"{method} {url} unreachable: {exc.reason}") from exc
 
@@ -257,6 +261,7 @@ class OpenRouterRenderClient(RenderClient):
 
         return RenderCapabilities(
             max_duration_s=max_duration,
+            supported_durations=tuple(numeric),
             supported_resolutions=resolutions,
             supported_aspect_ratios=ratios,
             supports_first_last_frame=bool(frame_images),
@@ -285,9 +290,9 @@ class OpenRouterRenderClient(RenderClient):
     def build_request(self, spec: ShotSpec, *, model: str) -> dict[str, Any]:
         """The request body for `spec`. Pure, so tests can assert on it.
 
-        Reference media rides in `provider.options`, OpenRouter's pass-through
-        to model-specific parameters — `video_urls` and `image_urls` are
-        Seedance's own names, not OpenRouter's.
+        Image anchors use the documented top-level frame_images contract;
+        identity/style references use input_references. Reference video retains
+        the legacy provider-specific path.
         """
         capabilities = self.capabilities(model)
         body: dict[str, Any] = {
@@ -308,10 +313,19 @@ class OpenRouterRenderClient(RenderClient):
             options["video_urls"] = [spec.reference_video][
                 : max(1, capabilities.max_video_references)
             ]
-        if spec.reference_images:
+        frames = []
+        for frame_type, url in (("first_frame", spec.first_frame), ("last_frame", spec.last_frame)):
+            if url:
+                supported = self._model_entry(model).get("supported_frame_images", [])
+                if frame_type not in supported:
+                    raise ValueError(f"This model does not support {frame_type}")
+                frames.append({"type":"image_url", "image_url":{"url":url}, "frame_type":frame_type})
+        if frames:
+            body["frame_images"] = frames
+        elif spec.reference_images:
             capped = capabilities.cap_image_references(spec.reference_images)
             if capped:
-                options["image_urls"] = capped
+                body["input_references"] = [{"type":"image_url", "image_url":{"url":url}} for url in capped]
         if spec.negative_prompt:
             options["negative_prompt"] = spec.negative_prompt
         if options:
@@ -344,6 +358,7 @@ class OpenRouterRenderClient(RenderClient):
                 backend=self.name,
                 model=model,
                 error=str(exc),
+                raw={"http_status": exc.status_code},
             )
         return self._job_from(payload, spec.shot_id, model)
 

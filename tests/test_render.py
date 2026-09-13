@@ -322,7 +322,7 @@ def test_video_reference_is_dropped_for_a_model_that_cannot_take_one():
 def test_image_references_are_capped_at_the_model_limit():
     spec = ShotSpec(shot_id="s1", prompt="p", reference_images=[f"{i}.png" for i in range(20)])
     body = _client_with_models().build_request(spec, model="bytedance/seedance-2.5")
-    assert len(body["provider"]["options"]["image_urls"]) == 9
+    assert len(body["input_references"]) == 9
 
 
 def test_duration_is_clamped_to_what_the_model_allows():
@@ -532,3 +532,24 @@ def test_fetch_does_not_leak_the_key_to_a_third_party_host(tmp_path, monkeypatch
     client.fetch(job, str(tmp_path / "o.mp4"))
 
     assert seen["auth"] is None
+
+
+def test_storyboard_image_sent_as_exact_first_frame():
+    client = _client_with_models()
+    client._model_entry("bytedance/seedance-2.5")["supported_frame_images"] = ["first_frame", "last_frame"]
+    body = client.build_request(ShotSpec(shot_id="shot",prompt="A slow push",first_frame="https://x/shot.png",reference_images=["https://x/shot.png"]),model="bytedance/seedance-2.5")
+    assert body["frame_images"]==[{"type":"image_url","image_url":{"url":"https://x/shot.png"},"frame_type":"first_frame"}]
+    assert "input_references" not in body
+    assert "image_urls" not in body.get("provider",{}).get("options",{})
+
+
+def test_explicit_submission_rejection_retains_http_status():
+    def reject(method, url, headers, body):
+        if method == 'GET':
+            return {'data': [{'id': 'vendor/model'}]}
+        raise RenderError('Request rejected', status_code=400)
+    client = OpenRouterRenderClient(api_key='test', transport=reject)
+    job = client.submit(ShotSpec(shot_id='s1', prompt='p'), model='vendor/model')
+    assert job.status == JobStatus.FAILED
+    assert not job.job_id
+    assert job.raw['http_status'] == 400
