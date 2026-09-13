@@ -153,3 +153,45 @@ def test_unsupported_duration_rejected_before_submission(setup, monkeypatch):
     assert response.status_code == 400
     assert '5, 6 seconds' in response.json()['detail']
     assert not fake.submitted
+
+
+def test_character_mode_uses_only_owned_references_without_frame_anchors(setup, monkeypatch):
+    from types import SimpleNamespace
+    from moviecrew.render_openrouter import OpenRouterRenderClient
+    client, _, s, tmp = setup
+    calls=[]
+    def transport(method, url, headers, body):
+        if url.endswith('/videos/models'):
+            return {'data':[{'id':'minimax/hailuo-3','supported_durations':[5],
+                             'supported_resolutions':['480p'],'supported_aspect_ratios':['16:9'],
+                             'supported_frame_images':['first_frame','last_frame']}]}
+        calls.append(body)
+        return {'error':'deliberate test rejection', 'status':'failed'}
+    provider=OpenRouterRenderClient(transport=transport)
+    monkeypatch.setattr(portal,'_render_client',lambda:(provider,None))
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    path=tmp/'character.png'
+    path.write_bytes(MockImageProvider._BYTES)
+    s.image_references=[{'id':'face','path':str(path),'name':'Face'}]
+    req={**request_for(s),'model':'minimax/hailuo-3','duration_s':5,
+         'frame_id':'','reference_mode':'character','reference_ids':['face']}
+    assert client.post('/api/projects/film-a/video-estimate',json=req).status_code==200
+    assert not calls
+    for update in ({'reference_ids':['foreign']},{'reference_ids':[]},{'frame_id':s.board[0].version_id}):
+        assert client.post('/api/projects/film-a/videos',json={**req,**update}).status_code==400
+    result=client.post('/api/projects/film-a/videos',json=req)
+    assert result.status_code==200
+    assert 'reference_paths' not in result.json()
+    uploaded=[]
+    class Store:
+        serves_public_urls=True
+        name='test'
+        def put_reference(self,path,key):
+            uploaded.append(path)
+            return SimpleNamespace(url='https://example.test/character.png')
+    monkeypatch.setattr(portal,'_asset_store',lambda:Store())
+    flow.work('film-a',req['request_id'])
+    assert uploaded==[str(path)]
+    assert len(calls)==1
+    assert 'frame_images' not in calls[0]
+    assert calls[0]['input_references']==[{'type':'image_url','image_url':{'url':'https://example.test/character.png'}}]

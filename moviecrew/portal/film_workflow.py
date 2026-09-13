@@ -17,6 +17,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -29,6 +30,8 @@ router = APIRouter()
 _active: set[str] = set()
 _lock = threading.Lock()
 TERMINAL = {'complete', 'failed', 'uncertain'}
+# Explicitly documented reference-to-video support; do not infer it from I2V.
+CHARACTER_VIDEO_MODELS = {'minimax/hailuo-3', 'bytedance/seedance-2.5', 'bytedance/seedance-2.0-fast'}
 
 
 def db():
@@ -75,7 +78,7 @@ def folder(project):
 
 
 def public(item):
-    data = {k: v for k, v in item.items() if k not in {'path', 'source_path', 'provider_url', 'spec'}}
+    data = {k: v for k, v in item.items() if k not in {'path', 'source_path', 'provider_url', 'spec', 'reference_paths'}}
     data['video_url'] = f"/api/projects/{item['project']}/film-media/{item['id']}" if item.get('path') and item['status'] == 'complete' else None
     return data
 
@@ -103,7 +106,9 @@ def run_ffmpeg(args):
 class VideoRequest(BaseModel):
     request_id: uuid.UUID
     shot_id: str
-    frame_id: str
+    frame_id: str = ''
+    reference_mode: Literal['shot', 'character'] = 'shot'
+    reference_ids: list[str] = Field(default_factory=list, max_length=9)
     prompt: str = Field(min_length=1, max_length=20000)
     model: str
     duration_s: int = Field(default=5, ge=1, le=60)
@@ -120,7 +125,7 @@ def prepare(project, req):
     if not any(shot.id == req.shot_id for scene in s.project.scenes for shot in scene.shots):
         raise HTTPException(404, 'Shot not found in this film')
     frame = next((f for f in s.versions if f.shot_id == req.shot_id and f.version_id == req.frame_id and f.status == 'ok' and f.image_path), None)
-    if frame is None or not Path(frame.image_path).is_file():
+    if req.reference_mode == 'shot' and (frame is None or not Path(frame.image_path).is_file()):
         raise HTTPException(400, 'Choose an existing image version for this shot')
     client, error = _render_client()
     if error:
@@ -128,7 +133,21 @@ def prepare(project, req):
     if req.model not in {m['id'] for m in client.models()}:
         raise HTTPException(400, 'Choose an available video model')
     caps = client.capabilities(req.model)
-    if caps.max_image_references == 0 or not caps.supports_first_last_frame:
+    if req.reference_mode == 'character':
+        if client.name == 'fake':
+            raise HTTPException(400, 'Character-only video requires a connected video provider')
+        if req.model not in CHARACTER_VIDEO_MODELS:
+            raise HTTPException(400, 'Choose H3 or Seedance for character references through OpenRouter')
+        if req.frame_id:
+            raise HTTPException(400, 'Character-only mode cannot include a shot frame')
+        refs = {r['id']: r for r in s.image_references}
+        if not req.reference_ids or len(req.reference_ids) != len(set(req.reference_ids)):
+            raise HTTPException(400, 'Choose one or more distinct character references')
+        if any(r not in refs or not Path(refs[r]['path']).is_file() for r in req.reference_ids):
+            raise HTTPException(400, 'Choose references belonging to this film')
+        if caps.max_image_references is not None and len(req.reference_ids) > caps.max_image_references:
+            raise HTTPException(400, 'Too many references for this model')
+    elif caps.max_image_references == 0 or not caps.supports_first_last_frame:
         raise HTTPException(400, 'Choose a model that supports a storyboard image as its first frame')
     if req.duration_s > caps.max_duration_s:
         raise HTTPException(400, f'This model supports up to {caps.max_duration_s} seconds')
@@ -140,7 +159,7 @@ def prepare(project, req):
         raise HTTPException(400, 'Choose a supported video resolution')
     if req.audio and not caps.supports_audio:
         raise HTTPException(400, 'This model does not support generated audio')
-    if client.name != 'fake' and frame.model in ('offline', 'MockImageProvider'):
+    if req.reference_mode == 'shot' and client.name != 'fake' and frame.model in ('offline', 'MockImageProvider'):
         raise HTTPException(400, 'Create a real storyboard image before using paid video generation')
     spec = ShotSpec(shot_id=req.shot_id, prompt=req.prompt, duration_s=req.duration_s,
                     aspect_ratio=req.aspect_ratio, resolution=req.resolution, generate_audio=req.audio)
@@ -161,7 +180,8 @@ def models(project: str):
             continue
         result.append({'id': model['id'], 'name': 'Offline preview · no AI generation' if client.name == 'fake' else model.get('name', model['id']),
                        'duration_max': c.max_duration_s, 'durations': c.supported_durations, 'ratios': c.supported_aspect_ratios or ['16:9'],
-                       'resolutions': c.supported_resolutions or ['720p'], 'audio': c.supports_audio})
+                       'resolutions': c.supported_resolutions or ['720p'], 'audio': c.supports_audio,
+                       'character_references': model['id'] in CHARACTER_VIDEO_MODELS})
     return {'models': result, 'offline': client.name == 'fake'}
 
 
@@ -169,7 +189,8 @@ def models(project: str):
 def estimate(project: str, req: VideoRequest):
     client, frame, spec = prepare(project, req)
     # Estimating never uploads media or submits a generation.
-    spec.reference_images = [str(frame.image_path)]
+    spec.reference_images = ([r['path'] for r in session(project).image_references if r['id'] in req.reference_ids]
+                             if req.reference_mode == 'character' else [str(frame.image_path)])
     return {'cost': client.estimate_cost(spec, model=req.model), 'offline': client.name == 'fake'}
 
 
@@ -188,7 +209,9 @@ def create_video(project: str, req: VideoRequest):
         from dataclasses import asdict
         item = {'id': request_id, 'project': project, 'kind': 'video', 'status': 'queued',
                 'shot_id': req.shot_id, 'frame_id': req.frame_id, 'prompt': req.prompt,
-                'model': req.model, 'backend': client.name, 'source_path': frame.image_path,
+                'model': req.model, 'backend': client.name, 'source_path': frame.image_path if req.reference_mode == 'shot' else '',
+                'reference_mode': req.reference_mode, 'reference_ids': req.reference_ids if req.reference_mode == 'character' else [],
+                'reference_paths': [next(r['path'] for r in session(project).image_references if r['id'] == rid) for rid in req.reference_ids] if req.reference_mode == 'character' else [],
                 'spec': asdict(spec), 'duration_s': req.duration_s, 'created': time.time(), 'offline': client.name == 'fake'}
         # Reserve the request atomically; an ID owned by another film cannot overwrite it.
         with db() as conn:
@@ -255,12 +278,26 @@ def work(project, item_id):
                 if not store.serves_public_urls and store.name != 's3':
                     raise ValueError('Connect media storage in Settings before generating a video')
                 from ..image_studio import media_type
-                mime = media_type(Path(item['source_path']).read_bytes())
-                suffix = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}[mime]
-                asset = store.put_reference(item['source_path'], f"films/{project}/frames/{item['frame_id']}.{suffix}")
                 spec = ShotSpec(**item['spec'])
-                spec.reference_images = [asset.url]
-                spec.first_frame = asset.url
+                if item.get('reference_mode') == 'character':
+                    spec.first_frame = None
+                    spec.last_frame = None
+                    spec.reference_images = []
+                    for rid, path in zip(item['reference_ids'], item['reference_paths']):
+                        mime = media_type(Path(path).read_bytes())
+                        suffix = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}[mime]
+                        asset = store.put_reference(path, f"films/{project}/characters/{rid}.{suffix}")
+                        spec.reference_images.append(asset.url)
+                else:
+                    mime = media_type(Path(item['source_path']).read_bytes())
+                    suffix = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}[mime]
+                    asset = store.put_reference(item['source_path'], f"films/{project}/frames/{item['frame_id']}.{suffix}")
+                    spec.reference_images = [asset.url]
+                    spec.first_frame = asset.url
+                # Persist non-secret input evidence, without expiring signed URLs.
+                item['input_evidence'] = {'mode': item.get('reference_mode', 'shot'),
+                                          'frame_images': 0 if item.get('reference_mode') == 'character' else 1,
+                                          'input_references': len(spec.reference_images) if item.get('reference_mode') == 'character' else 0}
                 item['status'] = 'submitting'
                 put(item)
                 job = client.submit(spec, model=item['model'])
