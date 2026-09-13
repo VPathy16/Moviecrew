@@ -1,0 +1,172 @@
+{
+  "preserve": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/33",
+    "number": 33,
+    "title": "[P0] Back up existing films and prove a complete restore"
+  },
+  "sequence": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/34",
+    "number": 34,
+    "title": "[P0] Introduce versioned sequence and shot-state contracts"
+  },
+  "editor-context": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/35",
+    "number": 35,
+    "title": "[P0] Give the planning Editor story beats and full shot summaries"
+  },
+  "prompter": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/36",
+    "number": 36,
+    "title": "[P0] Compile shot prompts with adjacent context and approved state"
+  },
+  "data": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/37",
+    "number": 37,
+    "title": "[P0] Decide the SaaS data architecture and add migration foundations"
+  },
+  "auth": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/38",
+    "number": 38,
+    "title": "[P0] Add Firebase sign-in and server-side identity verification"
+  },
+  "tenancy": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/39",
+    "number": 39,
+    "title": "[P0] Enforce workspace permissions across every project route"
+  },
+  "media": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/40",
+    "number": 40,
+    "title": "[P0] Migrate film assets to private durable R2 storage"
+  },
+  "secrets": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/41",
+    "number": 41,
+    "title": "[P0] Separate admin provider connections from customer settings"
+  },
+  "jobs": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/42",
+    "number": 42,
+    "title": "[P0] Replace process-local job ownership with durable workers"
+  },
+  "budget": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/43",
+    "number": 43,
+    "title": "[P0] Reserve generation budgets and reconcile usage in a ledger"
+  },
+  "capabilities": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/44",
+    "number": 44,
+    "title": "[P1] Create a versioned provider capability registry"
+  },
+  "references": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/45",
+    "number": 45,
+    "title": "[P1] Select references by role and shot requirements"
+  },
+  "manifest": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/46",
+    "number": 46,
+    "title": "[P1] Persist and display the exact generation input manifest"
+  },
+  "continuation": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/47",
+    "number": 47,
+    "title": "[P1] Separate next-shot generation from true take extension"
+  },
+  "benchmark": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/48",
+    "number": 48,
+    "title": "[P1] Build a fixed-budget film-quality benchmark and baseline"
+  },
+  "review": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/49",
+    "number": 49,
+    "title": "[P1] Review generated footage for technical and story defects"
+  },
+  "timeline": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/50",
+    "number": 50,
+    "title": "[P1] Add clip-instance IDs and revisioned timeline saves"
+  },
+  "playback": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/51",
+    "number": 51,
+    "title": "[P1] Align proxy playback and export with one timing model"
+  },
+  "audio": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/52",
+    "number": 52,
+    "title": "[P1] Add independent audio tracks, gain and fades"
+  },
+  "frontend": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/53",
+    "number": 53,
+    "title": "[P1] Replace global UI overrides with explicit editor modules"
+  },
+  "contextual": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/54",
+    "number": 54,
+    "title": "[P1] Unify shot, clip and character editing around selection"
+  },
+  "isolation-tests": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/55",
+    "number": 55,
+    "title": "[P0] Make tenant isolation and recovery tests a release gate"
+  },
+  "operations": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/56",
+    "number": 56,
+    "title": "[P0] Add production observability and restore runbooks"
+  },
+  "repair": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/57",
+    "number": 57,
+    "title": "[P2] Offer targeted repairs instead of full-film regeneration"
+  },
+  "enhance": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/58",
+    "number": 58,
+    "title": "[P2] Validate canvas expansion and Topaz enhancement workflows"
+  },
+  "recipes": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/59",
+    "number": 59,
+    "title": "[P2] Publish a small evaluated set of visual recipes"
+  },
+  "assets-library": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/60",
+    "number": 60,
+    "title": "[P2] Reuse approved cast and world assets across owned projects"
+  },
+  "pilot": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/61",
+    "number": 61,
+    "title": "[P2] Launch a capped paid pilot with usage history and support"
+  },
+  "director-review": {
+    "url": "https://github.com/VPathy16/Moviecrew/issues/62",
+    "number": 62,
+    "title": "[P0] Review and refine Director story and characters before starting Writer"
+  },
+  "identity-states": {
+    "number": 63,
+    "url": "https://github.com/VPathy16/Moviecrew/issues/63",
+    "title": "[P0] Preserve approved face identity across character states"
+  },
+  "scene-look": {
+    "number": 64,
+    "url": "https://github.com/VPathy16/Moviecrew/issues/64",
+    "title": "[P1] Approve scene reference images and visual look before video generation"
+  },
+  "blocking": {
+    "number": 65,
+    "url": "https://github.com/VPathy16/Moviecrew/issues/65",
+    "title": "[P1] Add camera-view staging guides for complex shots"
+  },
+  "voice-continuity": {
+    "number": 66,
+    "url": "https://github.com/VPathy16/Moviecrew/issues/66",
+    "title": "[P1] Bind character voice direction and approved audio references across shots"
+  }
+}

@@ -1,0 +1,597 @@
+[
+  {
+    "key": "director-review",
+    "priority": "P0",
+    "title": "[P0] Review and refine Director story and characters before starting Writer",
+    "problem": "Writer starts before the user can approve Director direction.",
+    "scope": "## Top implementation priority\n\nAdd an explicit Director approval gate before Writer generation. This is the first step in the coherent-filmmaking milestone tracked by #32, ahead of #34\u201336.\n\n## Problem\n\nThe current pipeline calls Writer immediately after Director completes. The Director screen displays the resulting outline but does not let the user refine it, define characters and approve the direction before scenes are written.\n\n## Required flow\n\nConcept and creative brief \u2192 Director proposal \u2192 edit story and characters / regenerate direction \u2192 approve and continue to Writer.\n\n## Scope\n\n- Pause and persist after Director generation; do not invoke Writer automatically.\n- Show an editable title, logline and story outline in the compact Director workspace.\n- Support adding, editing and removing character definitions: name, role, motivation and essential identity notes. These become the cast requirements for later visual character sheets; image generation is not required at this step.\n- Provide a small feedback composer and Regenerate direction action. Carry the creative brief, current edits and character definitions into regeneration. Preserve explicitly locked decisions.\n- Retain previous Director revisions and allow restoring one. Do not silently overwrite a user-edited draft with an asynchronous result.\n- Provide one clear Approve & continue to Writer action. Writer receives exactly the approved Director revision and cast definitions.\n- Persist draft, revision and approval state across refresh/restart. Prevent duplicate generation and show progress, errors and retry paths.\n- If an approved direction changes after scenes exist, retain the accepted work and mark dependent scenes as needing review. Do not silently regenerate Writer or spend credits.\n- Keep legacy completed films readable and preserve their existing cuts and assets.\n\n## Acceptance criteria\n\n- [ ] Creating a film ends at a persisted Director review state; a spy/mock proves Writer has not been called.\n- [ ] User edits the story, adds a character, regenerates with feedback and can restore the earlier revision.\n- [ ] Approval starts Writer once using the exact approved outline and character definitions.\n- [ ] Refresh, duplicate clicks, failed generation and stale regeneration results cannot lose edits or start unwanted downstream jobs.\n- [ ] Changing direction after Writer completion preserves prior scenes and identifies stale dependencies.\n- [ ] The UI remains compact, with contextual editing and a clear next action.\n\n## Dependencies and validation\n\nReady to start. Coordinate the new draft/revision contract with #34; then #35 and #36 consume approved direction. Use offline tests first. Live generation must use an explicit budget. No cloud migration is required for this local workflow improvement.\n",
+    "checks": [
+      "Writer remains uncalled until approval.",
+      "Approved story and characters reach Writer unchanged.",
+      "Revision recovery and stale-result handling preserve edits."
+    ],
+    "deps": [],
+    "area": "Story quality",
+    "execution_rank": 0
+  },
+  {
+    "key": "preserve",
+    "priority": "P0",
+    "title": "[P0] Back up existing films and prove a complete restore",
+    "problem": "Existing project payloads reference local media paths. A database-only migration would leave films incomplete.",
+    "scope": "Inventory the database, settings locations, references, generated media and exports. Build a backup manifest with checksums and a restore procedure. Keep secrets outside the repository and issue attachments.",
+    "checks": [
+      "Restore an existing film in an isolated environment, including character references and timeline.",
+      "Validate playback, reference delivery and export after restore.",
+      "Report missing assets explicitly and preserve the original data until migration is accepted."
+    ],
+    "deps": [],
+    "area": "Persistence"
+  },
+  {
+    "key": "sequence",
+    "priority": "P0",
+    "title": "[P0] Introduce versioned sequence and shot-state contracts",
+    "problem": "Shot descriptions do not enforce narrative progression or state transitions.",
+    "scope": "Add sequence goals and ordered beats; shot purpose, entry state, one observable action, exit state, screen direction, audio intent and approved asset-version bindings. Preserve legacy projects through defaults or migration.",
+    "checks": [
+      "The four-shot Everest hazard/slip/arrest/retreat fixture has explicit causal transitions.",
+      "Validate missing beats, duplicate IDs and contradictory required states.",
+      "Version new plans without overwriting accepted plans; existing films still load."
+    ],
+    "deps": [
+      "director-review"
+    ],
+    "area": "Story quality",
+    "execution_rank": 1,
+    "priority_note": "## First implementation priority\n\nThis is the first task in the active #34 \u2192 #35 \u2192 #36 filmmaking milestone. Give scenes an event, character goal, obstacle and turning point; give shots an entry state, observable action and exit state. Bind approved character/costume, location and prop versions without overwriting originals. Keep this detail behind compact scene cards rather than adding a large form.\n\nAcceptance example: the climber tests a foothold \u2192 the foothold breaks \u2192 the rope catches him \u2192 he checks the damaged anchor. Each shot must advance the event and inherit the required physical state. Preserve the existing hazard/slip/arrest/retreat fixture as additional coverage.",
+    "story_priority_note": "Add per-character goal, obstacle and observable tactic to the scene contract. Express performance through actions, gaze and timing; do not rely solely on emotion adjectives. Track prop ownership and physical condition across shots. Underplaying is a creative choice, not a universal rule."
+  },
+  {
+    "key": "editor-context",
+    "priority": "P0",
+    "title": "[P0] Give the planning Editor story beats and full shot summaries",
+    "problem": "EditorAgent.build_user receives only shot IDs, preventing informed judgments about story order.",
+    "scope": "Update agents.py and crew.py to send the sequence objective, shot summaries, durations and entry/exit states. Return order, transition choices and concise reasons while retaining ID/order validation.",
+    "checks": [
+      "Tests show meaningful action changes influence the supplied editorial context.",
+      "Unknown, duplicated or missing shot IDs are rejected or normalized explicitly.",
+      "The Everest fixture has human-reviewable ordering and cut rationale."
+    ],
+    "deps": [
+      "sequence"
+    ],
+    "area": "Story quality",
+    "execution_rank": 2,
+    "priority_note": "## First implementation priority\n\nSecond task in the active #34 \u2192 #35 \u2192 #36 milestone. The Editor must receive scene intent and shot states, explain causal ordering and identify missing coverage or repeated actions. Assess transitions using screen direction, action and sound intent. Validate on the four-shot Everest sequence before scaling to a full film.",
+    "story_priority_note": "Return a reason for each cut, required coverage and expected movement or sound connection. Request editable head/tail handles within supported generation durations and record the actual available handles; do not assume arbitrary frame counts can be requested. Keep the short Everest sequence as the first acceptance case."
+  },
+  {
+    "key": "prompter",
+    "priority": "P0",
+    "title": "[P0] Compile shot prompts with adjacent context and approved state",
+    "problem": "The Prompter receives one shot at a time, without explicit neighboring events or the last accepted outcome.",
+    "scope": "Pass current and adjacent shot summaries, approved reference bindings and sequence intent. Separate creative intent from provider prose and version the compiler. Distinguish hard cuts from continuous action.",
+    "checks": [
+      "A hard-cut insert retains story/identity state without copying the previous composition.",
+      "Prompts contain a feasible observable action and intended exit state.",
+      "Tests cover neighbor changes, immutable accepted inputs and legacy prompt compatibility."
+    ],
+    "deps": [
+      "sequence",
+      "editor-context"
+    ],
+    "area": "Story quality",
+    "execution_rank": 3,
+    "priority_note": "## First implementation priority\n\nThird task in the active #34 \u2192 #35 \u2192 #36 milestone. Compile self-contained provider prompts from scene intent, current and adjacent shot states, approved asset descriptions and role-specific image bindings. Include observable timed action and intended ending state; resolve references explicitly rather than relying on phrases such as \u201csame as before.\u201d Keep identity, staging and visual-style references distinct. Preserve approved portraits and asset versions.\n\nCompletion requires a reviewed short sequence, not merely passing schema tests. Prepare offline checks first; live generation uses an explicit budget. Record actual supplied inputs and distinguish successful reference delivery from visible adherence in the result.",
+    "story_priority_note": "Compile ordered sections for scene intent, approved reference roles, physical state, camera-relative blocking, timed action, performance and sound. Include only relevant constraints within provider limits. Prefer concrete positive descriptions where suitable and test negative-prompt behaviour per model; never hard-code the claim that negation always fails. Validate contradictions before submitting."
+  },
+  {
+    "key": "data",
+    "priority": "P0",
+    "title": "[P0] Decide the SaaS data architecture and add migration foundations",
+    "problem": "Single-user SQLite payloads need explicit ownership, revisions and transactional job/accounting records.",
+    "scope": "Write an architecture decision evaluating Firebase Auth plus PostgreSQL against Firebase Auth plus Firestore. PostgreSQL is the proposed default, not an already-approved deployment. Implement repository interfaces and versioned migrations for users, workspaces, memberships, projects, assets, timelines, jobs and usage; keep SQLite for local mode.",
+    "checks": [
+      "Document the selected store, operating requirements and rollback strategy.",
+      "Import a backup into an owner workspace with stable project IDs.",
+      "Migration is resumable and repeatable; no cloud purchase or secret is required by unit tests."
+    ],
+    "deps": [
+      "preserve"
+    ],
+    "area": "SaaS foundation"
+  },
+  {
+    "key": "auth",
+    "priority": "P0",
+    "title": "[P0] Add Firebase sign-in and server-side identity verification",
+    "problem": "The portal does not establish a customer identity before serving private work.",
+    "scope": "Add Google/email sign-in, sign-out, session expiry handling and backend token verification. Use the stable identity subject, not display name or email, as the user key. Keep local development explicit.",
+    "checks": [
+      "Reject missing, expired and wrong-project tokens on protected API routes.",
+      "User can sign in on another browser and load the same owned workspace.",
+      "Sign-out and revoked-session handling are tested; credentials are never logged."
+    ],
+    "deps": [
+      "data"
+    ],
+    "area": "SaaS foundation"
+  },
+  {
+    "key": "tenancy",
+    "priority": "P0",
+    "title": "[P0] Enforce workspace permissions across every project route",
+    "problem": "Project-scoped IDs provide association but do not establish user authorization.",
+    "scope": "Create owner/editor/viewer policies and centralized authorization. Cover projects, legacy session routes, duplication, references, world sheets, drafts, jobs, resume, cuts, exports and downloads. Carry workspace context into background jobs.",
+    "checks": [
+      "Two unrelated users cannot read or mutate each other\u2019s work using direct IDs or URLs.",
+      "Viewer cannot generate, edit, change membership or spend credits.",
+      "Permission changes apply consistently to new requests; return safe non-disclosing errors."
+    ],
+    "deps": [
+      "data",
+      "auth"
+    ],
+    "area": "SaaS foundation"
+  },
+  {
+    "key": "media",
+    "priority": "P0",
+    "title": "[P0] Migrate film assets to private durable R2 storage",
+    "problem": "Persisted local paths prevent portable deployments and do not by themselves provide private cloud media access.",
+    "scope": "Introduce immutable asset IDs, storage keys, checksums and provenance. Upload originals/references/proxies/exports through a resumable migration. Authorize reads before issuing bounded signed access; store keys rather than expiring URLs.",
+    "checks": [
+      "An imported film plays and exports with the original local directory unavailable.",
+      "Reference delivery and checksum validation succeed without public bucket access.",
+      "Expired URLs can be refreshed only by authorized users; missing objects and partial uploads recover cleanly."
+    ],
+    "deps": [
+      "preserve",
+      "data",
+      "tenancy"
+    ],
+    "area": "Persistence"
+  },
+  {
+    "key": "secrets",
+    "priority": "P0",
+    "title": "[P0] Separate admin provider connections from customer settings",
+    "problem": "Current settings modify installation-wide environment values; ordinary customers must not control shared provider credentials.",
+    "scope": "Move production credentials behind server-managed secret references and admin-only configuration. Keep customer settings limited to profile/preferences. Preserve local settings migration, mask secrets, and define provider-cache invalidation.",
+    "checks": [
+      "Customers cannot view or update provider/R2 keys or deployment paths.",
+      "Existing connections migrate without exposing values in responses or logs.",
+      "Credential rotation affects new jobs without changing persisted job provenance."
+    ],
+    "deps": [
+      "auth",
+      "tenancy"
+    ],
+    "area": "SaaS foundation"
+  },
+  {
+    "key": "jobs",
+    "priority": "P0",
+    "title": "[P0] Replace process-local job ownership with durable workers",
+    "problem": "Daemon threads and process-local active sets cannot coordinate claims reliably across application processes.",
+    "scope": "Add persisted job attempts, transactional dispatch, leases, heartbeats, provider IDs and idempotent transitions. Retain uncertain-submission quarantine. Add per-workspace and provider concurrency limits and explicit cancellation semantics.",
+    "checks": [
+      "Crash tests cover before submission, ambiguous submission, polling, download and export.",
+      "Two workers cannot concurrently own the same active lease; expired claims can be recovered safely.",
+      "Duplicate callbacks/retries do not create duplicate accepted outputs or blindly resubmit possibly billed jobs."
+    ],
+    "deps": [
+      "data",
+      "tenancy",
+      "secrets"
+    ],
+    "area": "Reliability"
+  },
+  {
+    "key": "budget",
+    "priority": "P0",
+    "title": "[P0] Reserve generation budgets and reconcile usage in a ledger",
+    "problem": "Cost estimates alone do not prevent concurrent overspending or establish an auditable customer balance.",
+    "scope": "Add transactional reservations, provider-cost records, customer debit/credit entries, spending caps and idempotent reconciliation. Track failed paid attempts and distinguish unknown provider cost from zero.",
+    "checks": [
+      "Concurrent requests cannot exceed the workspace budget.",
+      "Duplicate events settle a reservation once; failed and uncertain jobs follow documented policies.",
+      "Users see estimated, reserved and settled amounts; support can reconcile a job without secret payloads."
+    ],
+    "deps": [
+      "data",
+      "tenancy",
+      "jobs"
+    ],
+    "area": "Economics"
+  },
+  {
+    "key": "capabilities",
+    "priority": "P1",
+    "title": "[P1] Create a versioned provider capability registry",
+    "problem": "Model settings and reference limits are partly global or hardcoded, while endpoints support different operations.",
+    "scope": "Describe endpoint-specific frames, identity/motion/audio references, count limits, durations, ratios, resolution, negative prompts, edit/extend operations and costs. Validate combinations before upload or paid submission. Preserve user intent when changing models.",
+    "checks": [
+      "Unsupported operations stop before billing with an actionable explanation.",
+      "Capability snapshots and refresh/failure behavior are tested.",
+      "Model changes never silently discard required inputs or replace an operation with a different one."
+    ],
+    "deps": [
+      "sequence"
+    ],
+    "area": "Provider integration"
+  },
+  {
+    "key": "references",
+    "priority": "P1",
+    "title": "[P1] Select references by role and shot requirements",
+    "problem": "The four-image ceiling can conflict with face, body, costume, props and location requirements.",
+    "scope": "Add role-aware reference selection using approved asset versions and endpoint limits. Prioritize by shot purpose, show exclusions and permit explicit user choice. Treat reference-sheet compositing as an optional evaluated strategy.",
+    "checks": [
+      "The user can inspect character, costume, location and boundary roles before generating.",
+      "No required reference is silently dropped or substituted.",
+      "Tests cover multiple characters, over-capacity inputs, stale approvals and cross-workspace references."
+    ],
+    "deps": [
+      "capabilities"
+    ],
+    "area": "Creative control"
+  },
+  {
+    "key": "manifest",
+    "priority": "P1",
+    "title": "[P1] Persist and display the exact generation input manifest",
+    "problem": "Users need to verify which references and settings were actually sent, separately from whether the model followed them.",
+    "scope": "Save asset IDs/hashes, roles, transforms, resolved prompt, compiler version, endpoint/settings, provider job ID and parent generation. Add a readable input inspector and immutable version history.",
+    "checks": [
+      "Every generation can show its submitted inputs without exposing signed URLs or keys.",
+      "Changing a sheet or draft does not rewrite old manifests.",
+      "Provider request tests match the stored manifest; UI labels sent-input evidence separately from adherence review."
+    ],
+    "deps": [
+      "references",
+      "media"
+    ],
+    "area": "Provenance"
+  },
+  {
+    "key": "continuation",
+    "priority": "P1",
+    "title": "[P1] Separate next-shot generation from true take extension",
+    "problem": "The editor currently uses a boundary still, which does not carry motion or audio history.",
+    "scope": "Offer Next story shot, Continue this take and Lead into this clip. Use verified temporal-extension endpoints where supported and label still-boundary fallback honestly. Preview candidates before insertion.",
+    "checks": [
+      "Each action preserves the intended story state and exposes its reference mode.",
+      "Unsupported temporal extension cannot masquerade as seamless continuation.",
+      "Tests verify trimmed boundaries, first/last roles and insertion into the intended clip instance; live endpoint checks use an explicit budget."
+    ],
+    "deps": [
+      "prompter",
+      "capabilities",
+      "manifest"
+    ],
+    "area": "Creative control"
+  },
+  {
+    "key": "benchmark",
+    "priority": "P1",
+    "title": "[P1] Build a fixed-budget film-quality benchmark and baseline",
+    "problem": "There is no controlled evidence yet that MovieCrew improves coherent footage yield over manual workflows.",
+    "scope": "Create 12 briefs covering one-person action, interactions, handoffs, costume, camera movement and dialogue. Define fixed attempts/budgets and human review; separate matched-model from best-workflow comparisons.",
+    "checks": [
+      "Retain every attempt, prompt, input manifest, cost and rejection reason.",
+      "Report accepted seconds per dollar, beat completion, continuity defects and human repair time.",
+      "Publish a baseline without fabricated scores; paid runs have a separately authorized cap."
+    ],
+    "deps": [
+      "sequence"
+    ],
+    "area": "Evaluation",
+    "story_priority_note": "Begin with one four-shot Everest sequence comparing baseline and revised direction with the same provider, settings and attempt cap. Review action completion, causal order, state continuity and editability. Retain rejected attempts and repair costs. The twelve-brief suite is the later expansion; no improvement claim before observed results."
+  },
+  {
+    "key": "review",
+    "priority": "P1",
+    "title": "[P1] Review generated footage for technical and story defects",
+    "problem": "Textual continuity checks cannot detect defects in rendered action or appearance.",
+    "scope": "Add deterministic media checks and sampled visual review for identity, costume, prop state, screen direction and event completion. Calibrate advisory model judgments against benchmark reviewers and retain human override.",
+    "checks": [
+      "Tests include corrupt/black/frozen media and deliberately inconsistent reference fixtures.",
+      "Review shows evidence and uncertainty rather than treating a score as proof.",
+      "A failed review does not trigger uncontrolled paid retries; accepted deviations remain recorded."
+    ],
+    "deps": [
+      "manifest",
+      "benchmark"
+    ],
+    "area": "Evaluation",
+    "story_priority_note": "Review adjacent shots and the assembled cut, not only isolated frames. Check causal progression, repeated actions, identity/state drift, screen direction and missing coverage. Use reviewer findings to request specific repair candidates rather than regenerate the whole film."
+  },
+  {
+    "key": "timeline",
+    "priority": "P1",
+    "title": "[P1] Add clip-instance IDs and revisioned timeline saves",
+    "problem": "Cuts are saved as overwritten JSON; duplicate source clips and concurrent edits need stable identity and conflict handling.",
+    "scope": "Create stable clip IDs, source-version bindings, canonical timebase, timeline revisions and typed trim/move/split/insert/replace operations. Persist undo/history and migrate existing cuts.",
+    "checks": [
+      "Two concurrent saves cannot silently overwrite one another.",
+      "Repeated use of one source video has independent clip identity and extension targets.",
+      "Reload preserves accepted edit history; migration/export tests retain the original cut."
+    ],
+    "deps": [
+      "data"
+    ],
+    "area": "Editor reliability"
+  },
+  {
+    "key": "playback",
+    "priority": "P1",
+    "title": "[P1] Align proxy playback and export with one timing model",
+    "problem": "Preview reloads a video element per clip and export forces 24 fps, creating potential cadence and boundary mismatches.",
+    "scope": "Generate thumbnails/proxies, preload adjacent clips and use shared timebase/rounding rules for preview and export. Measure boundary stalls, support mixed-rate inputs, and define the output frame-rate policy.",
+    "checks": [
+      "Automated fixtures compare expected cut points, duration and audio synchronization.",
+      "A longer multi-clip edit has measured playback-stall results and a documented target.",
+      "Missing/expired media access recovers without losing edits; proxy quality is clearly distinguished from export quality."
+    ],
+    "deps": [
+      "timeline",
+      "media"
+    ],
+    "area": "Editor reliability"
+  },
+  {
+    "key": "audio",
+    "priority": "P1",
+    "title": "[P1] Add independent audio tracks, gain and fades",
+    "problem": "Film sound currently lacks the basic independent control needed for coherent sequences.",
+    "scope": "Add one music/ambience track initially, waveform navigation, clip gain/mute, fades and audio offsets. Keep edit operations deterministic and persist them in timeline revisions.",
+    "checks": [
+      "Preview and export use matching audio offsets and fade behavior.",
+      "Silent clips, mixed sample rates and trim boundaries export without unintended gaps or clipping.",
+      "Undo and reload preserve sound edits; uploads remain workspace-owned."
+    ],
+    "deps": [
+      "timeline",
+      "playback"
+    ],
+    "area": "Editor"
+  },
+  {
+    "key": "frontend",
+    "priority": "P1",
+    "title": "[P1] Replace global UI overrides with explicit editor modules",
+    "problem": "The growing chain of global function overrides makes state ownership and later collaboration fragile.",
+    "scope": "Extract project store, asset browser, composer, timeline, job status and account modules incrementally. Define typed operations and lifecycle cleanup; avoid a framework rewrite without a concrete need.",
+    "checks": [
+      "Existing image/video creation and timeline workflows pass regression checks.",
+      "Navigation stops obsolete polling/listeners and preserves intended drafts.",
+      "Each state mutation has an explicit owner; repeated mounting does not duplicate controls or actions."
+    ],
+    "deps": [
+      "timeline"
+    ],
+    "area": "Frontend architecture"
+  },
+  {
+    "key": "contextual",
+    "priority": "P1",
+    "title": "[P1] Unify shot, clip and character editing around selection",
+    "problem": "Users need the crew\u2019s help without navigating repeated forms or losing their working context.",
+    "scope": "Use a contextual composer/inspector, clear next action, accessible compact controls and visible reference/cost summaries. Crew proposals show affected shots and reversible operations before paid execution.",
+    "checks": [
+      "Users can edit a prompt, inspect references and return to a selected clip without losing context.",
+      "Keyboard/touch paths exist for contextual actions; focus and error recovery are tested.",
+      "Paid proposals require review and explicit generation; no agent directly spends through UI side effects."
+    ],
+    "deps": [
+      "frontend",
+      "prompter",
+      "manifest"
+    ],
+    "area": "UX"
+  },
+  {
+    "key": "isolation-tests",
+    "priority": "P0",
+    "title": "[P0] Make tenant isolation and recovery tests a release gate",
+    "problem": "Existing single-user tests do not prove safe shared access or correct distributed retries.",
+    "scope": "Build a two-user permission matrix and integration suite for direct API/media paths, stale revisions, duplicate requests, job crashes and permission changes. Audit legacy endpoints, not just new workspace routes.",
+    "checks": [
+      "CI fails on cross-workspace access or forbidden spending.",
+      "Concurrent cut-save and worker-claim tests demonstrate safe conflict behavior.",
+      "Document covered routes and remaining gaps; public launch is blocked until the matrix passes."
+    ],
+    "deps": [
+      "tenancy",
+      "media",
+      "secrets",
+      "jobs",
+      "budget",
+      "timeline"
+    ],
+    "area": "Launch gate"
+  },
+  {
+    "key": "operations",
+    "priority": "P0",
+    "title": "[P0] Add production observability and restore runbooks",
+    "problem": "A hosted service needs recoverable incidents and visibility into queue, provider and storage failures.",
+    "scope": "Add structured identifiers, queue/latency/error metrics, redacted logs, backup schedules, restore drills and operating runbooks. Monitor export failures, disk pressure, abandoned jobs and unreconciled costs.",
+    "checks": [
+      "An operator can trace a failed job without raw credentials or private prompt logging by default.",
+      "A simulated restart and storage failure have documented recovery outcomes.",
+      "Backup restoration and budget reconciliation are exercised before launch."
+    ],
+    "deps": [
+      "media",
+      "jobs",
+      "budget"
+    ],
+    "area": "Launch gate"
+  },
+  {
+    "key": "repair",
+    "priority": "P2",
+    "title": "[P2] Offer targeted repairs instead of full-film regeneration",
+    "problem": "Regenerating a whole film wastes accepted footage and introduces new inconsistencies.",
+    "scope": "Create review-driven repair proposals for the smallest affected shot/range. Show cost, changed constraints and dependent shots, then save a candidate for comparison and explicit replacement.",
+    "checks": [
+      "An accepted neighboring shot is not regenerated automatically.",
+      "Repair lineage, user override and before/after comparison persist.",
+      "Benchmark reports repair cost and usability improvement under a fixed cap."
+    ],
+    "deps": [
+      "review",
+      "contextual"
+    ],
+    "area": "Optimization",
+    "story_priority_note": "Track assembly, revision and approved-cut states. After a cut is approved, later generation must create a candidate and identify affected shots and sound work; it must not replace the cut automatically."
+  },
+  {
+    "key": "enhance",
+    "priority": "P2",
+    "title": "[P2] Validate canvas expansion and Topaz enhancement workflows",
+    "problem": "Existing enhancement adapters need endpoint validation and clearer resolution/provenance reporting before production claims.",
+    "scope": "Verify provider limits and preservation behavior; distinguish bars/crop/AI expansion/upscale; add side-by-side review and source/output/export dimension metadata. Keep approved originals immutable.",
+    "checks": [
+      "Contract tests cover provider errors, recovery, audio preservation and trimmed inputs.",
+      "A separately budgeted live run verifies each supported endpoint before general availability.",
+      "4K export never implies native 4K generation; replacement remains explicit."
+    ],
+    "deps": [
+      "capabilities",
+      "manifest",
+      "playback"
+    ],
+    "area": "Finishing"
+  },
+  {
+    "key": "recipes",
+    "priority": "P2",
+    "title": "[P2] Publish a small evaluated set of visual recipes",
+    "problem": "Camera/lens controls need visible, repeatable outcomes rather than arbitrary equipment labels.",
+    "scope": "Build a small set of camera/motion/light recipes with versioned provider compilation. Describe their visual outcome in simple language, keep advanced details optional and retain recipe provenance.",
+    "checks": [
+      "Blind review can distinguish intended recipe effects across selected providers.",
+      "Saved generations retain the recipe and compiler version used.",
+      "Recipes that do not improve benchmark yield remain experimental rather than default."
+    ],
+    "deps": [
+      "capabilities",
+      "benchmark"
+    ],
+    "area": "Creative control"
+  },
+  {
+    "key": "assets-library",
+    "priority": "P2",
+    "title": "[P2] Reuse approved cast and world assets across owned projects",
+    "problem": "Approved identities and environments should be reusable without copying private media or mutating historical shots.",
+    "scope": "Add a workspace asset library with search, versioned reuse and explicit project bindings. Reusing an asset preserves provenance; updates mark affected shots for review without rewriting accepted versions.",
+    "checks": [
+      "Authorized projects can bind approved versions; unrelated workspaces cannot access them.",
+      "A costume revision lists affected shots and leaves historical inputs unchanged.",
+      "Duplicate/import operations preserve ownership and reference lineage."
+    ],
+    "deps": [
+      "tenancy",
+      "media",
+      "manifest"
+    ],
+    "area": "Asset workflow"
+  },
+  {
+    "key": "pilot",
+    "priority": "P2",
+    "title": "[P2] Launch a capped paid pilot with usage history and support",
+    "problem": "Billing should follow verified isolation, recovery and usable-film quality rather than precede them.",
+    "scope": "Add explicit allowances, usage history, billing-event reconciliation and support flows. Invite a small cohort with clear spend caps; measure film completion, repeated use, repair time and cost per accepted second.",
+    "checks": [
+      "Payment event retries cannot duplicate credits or charges in the application ledger.",
+      "Pilot users complete and reopen films without operator intervention.",
+      "Document launch/rollback criteria and measured retention/economics; no unlimited promise without evidence."
+    ],
+    "deps": [
+      "isolation-tests",
+      "operations",
+      "budget",
+      "review",
+      "audio"
+    ],
+    "area": "Paid launch"
+  },
+  {
+    "key": "identity-states",
+    "priority": "P0",
+    "title": "[P0] Preserve approved face identity across character states",
+    "problem": "Character development needs an immutable identity anchor and explicit costume, injury and time-period variants.",
+    "scope": "Keep the approved face original immutable. Create named character-state versions linked to that identity: wardrobe, accessories, dirt, injury and age or timeline state. Preserve original portrait pixels when assembling sheets using deterministic compositing; do not regenerate the portrait merely to lay out a sheet. Image-model edits remain candidates and must not be presented as pixel-preserving. Bind a shot to an approved state, with readable names and stable IDs. Required character, location and prop approvals must be checked before shot generation. Reuse existing world/version machinery rather than creating a second asset system.",
+    "checks": [
+      "The approved face checksum survives sheet assembly and creation of costume variants.",
+      "User can approve or reject a state independently; original and previously accepted shot bindings remain unchanged.",
+      "Missing required assets stop submission with a specific next action.",
+      "Compare actual generated identity against the anchor; reference delivery alone does not pass visual review."
+    ],
+    "deps": [
+      "director-review",
+      "sequence"
+    ],
+    "area": "Filmmaking"
+  },
+  {
+    "key": "scene-look",
+    "priority": "P1",
+    "title": "[P1] Approve scene reference images and visual look before video generation",
+    "problem": "Text-only lighting and lens instructions can produce mismatched neighbouring shots.",
+    "scope": "Add a scene look record with palette, exposure intent, composition, aspect ratio and camera style. Generate or select location images and representative shot stills, approve them, and bind their versions to relevant shots. Support separate looks for flashbacks or locations. Distinguish a look reference from a compulsory first frame; do not force every shot to share one composition. Compare text-only and image-guided outcomes with matched settings before adopting model-specific techniques as defaults.",
+    "checks": [
+      "Adjacent shots inherit the approved scene look while retaining their own framing.",
+      "A look revision identifies affected shots without overwriting approved media.",
+      "Actual reference roles and unsupported provider combinations are visible before submission.",
+      "A small controlled comparison records drift and reviewer judgement, without claiming visual guarantees."
+    ],
+    "deps": [
+      "sequence",
+      "references"
+    ],
+    "area": "Filmmaking"
+  },
+  {
+    "key": "blocking",
+    "priority": "P1",
+    "title": "[P1] Add camera-view staging guides for complex shots",
+    "problem": "Multi-character positioning and prop interactions need explicit spatial guidance beyond identity references.",
+    "scope": "Represent screen positions, facing direction, gaze targets and prop contact in shot state. Offer an optional camera-view staging guide with coloured figures and matching text bindings to approved character IDs. Keep composition guidance distinct from identity, wardrobe and visual look. Retain the source composition and derive revisions from it to avoid cumulative drawing drift. Use only provider-supported reference roles; expose limitations. Simple shots must work without a staging-map step.",
+    "checks": [
+      "A two-character handoff fixture defines who holds the object before and after the action.",
+      "Guide-to-character mapping remains stable after edits; unknown bindings are rejected.",
+      "Visual review checks positions, direction and style contamination on a budgeted trial."
+    ],
+    "deps": [
+      "sequence",
+      "references"
+    ],
+    "area": "Filmmaking"
+  },
+  {
+    "key": "voice-continuity",
+    "priority": "P1",
+    "title": "[P1] Bind character voice direction and approved audio references across shots",
+    "problem": "Dialogue across independently generated clips can change voice and break the film.",
+    "scope": "Store a versioned voice brief per character and bind it to dialogue generation. Support approved voice references only through capable providers; descriptive prose alone must not be represented as voice cloning or a guarantee. Provide a candidate audio replacement path with sync review, retaining original picture and audio. Keep dialogue, ambience and music intent separate and respect user permissions for supplied voice media.",
+    "checks": [
+      "Every dialogue job records the character voice version and actual supplied audio reference, if supported.",
+      "Unsupported voice conditioning is clearly identified.",
+      "Replacing audio preserves the accepted picture and permits reverting to original sound.",
+      "Review adjacent dialogue clips for speaker similarity and mouth timing."
+    ],
+    "deps": [
+      "sequence",
+      "capabilities",
+      "audio"
+    ],
+    "area": "Filmmaking"
+  }
+]

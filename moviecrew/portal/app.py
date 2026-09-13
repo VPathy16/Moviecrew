@@ -287,8 +287,22 @@ def _run_plan_job(session: StudioSession, req: PlanRequest, checkpoint_path: str
             FileReferenceImageProvider(req.reference_dir) if req.reference_dir else None
         )
         crew = MovieCrew(llm, reference_provider=reference_provider, prompt_detail=req.detail)
+        if req.review_director and not session.director_review.get('approved'):
+            from .director_review import generate_direction
+            generate_direction(session, llm)
+            return
+        approved = session.director_review.get('approved')
+        cast_bible = None
+        if approved:
+            from ..schema import Character
+            cast_bible = Bible(style='', palette='', mood='', characters=[
+                Character(id=c['id'], name=c['name'], description='; '.join(
+                    f"{key}: {c[key]}" for key in ('role', 'motivation', 'description') if c.get(key)))
+                for c in approved.get('characters', [])])
         result = crew.make(
             req.concept,
+            approved_direction=approved,
+            bible=cast_bible,
             stop_after_design=req.review_world,
             checkpoint_path=checkpoint_path,
             run_continuity=False,
@@ -689,6 +703,7 @@ def _find_take(scene_id: str, shot_id: str, take_number: int):
 
 class PlanRequest(BaseModel):
     concept: str
+    review_director: bool = False  # unified workspace opts into review
     review_world: bool = False  # legacy clients retain the one-pass API
     film_type: str = Field(default="Short film", max_length=100)
     genre: str = Field(default="", max_length=160)
@@ -1037,6 +1052,8 @@ def plan(req: PlanRequest):
                         'reference_notes': req.reference_notes.strip()},
         plan_progress=PlanProgress(),
     )
+    if req.review_director:
+        session.director_review = {'revision': 0, 'history': [], 'request': req.model_dump()}
     _sessions[session_id] = session
     project_store.save(session)
 
@@ -1333,6 +1350,7 @@ def open_project(session_id: str):
                 'world_sheets': session.world_sheets,
                 'shot_sheet_versions': session.shot_sheet_versions,
                 'creative_brief': session.creative_brief,
+                'director_review': session.director_review,
                 'draft_prompts': session.draft_prompts,
                 'image_settings': session.image_settings,
                 'image_references': [{k:v for k,v in r.items() if k != 'path'} for r in session.image_references],
@@ -1634,3 +1652,10 @@ def editor_script():
 
 from .film_enhance import router as enhance_router
 app.include_router(enhance_router)
+
+from .director_review import router as director_router
+app.include_router(director_router)
+
+@app.get('/director.js')
+def director_script():
+    return FileResponse(_STATIC_DIR / 'director.js', media_type='text/javascript')

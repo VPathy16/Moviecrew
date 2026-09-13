@@ -32,7 +32,7 @@ def connect():
 
 
 def save(session):
-    payload = {k: getattr(session, k) for k in ('session_id', 'session_dir', 'backend', 'continuity_status', 'continuity_message', 'creative_brief', 'world_sheets', 'shot_sheet_versions', 'draft_prompts', 'image_settings', 'image_references')}
+    payload = {k: getattr(session, k) for k in ('session_id', 'session_dir', 'backend', 'continuity_status', 'continuity_message', 'creative_brief', 'director_review', 'world_sheets', 'shot_sheet_versions', 'draft_prompts', 'image_settings', 'image_references')}
     payload.update(project=asdict(session.project), stage=session.stage.value,
                    board=[asdict(f) for f in session.board], versions=[asdict(f) for f in session.versions],
                    plan_progress=asdict(session.plan_progress), base_flags=[asdict(f) for f in session.base_flags])

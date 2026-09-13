@@ -1,211 +1,312 @@
+<p align="center">
+  <img src="moviecrew/portal/static/moviecrew-mark.svg" width="72" height="72" alt="MovieCrew logo">
+</p>
+
 # MovieCrew
 
-A model-agnostic multi-agent pipeline that turns a movie concept into
-shot-by-shot video, with a Blender previz stage in the middle so a human — not
-a prompt — decides where the camera goes and where the actors stand.
+**A story. An entire crew.**
 
-## What it can do today
+MovieCrew is a model-agnostic filmmaking workspace that brings a director, writer,
+production designer, cinematographer, editor, prompt artist, and continuity reviewer
+into one workflow. Develop a concept, establish your cast and world, generate shots,
+and assemble the results into a film.
 
-Block a shot in Blender with grey boxes, send that take to a generative model,
-and get the shot back photoreal. **Left: the previz. Right: what came back.**
+The website uses a compact charcoal-and-coral interface with visual references,
+model controls, saved versions, and a timeline editor. Blender previz remains an
+optional production path; it is not required for the main website workflow.
 
-### The camera follows the previz
+**Current status:** a working local, single-user application. Shared accounts,
+workspace permissions, cloud persistence migration, and billing are planned work—not
+shipped SaaS features. Track delivery in the
+[production roadmap](https://github.com/VPathy16/Moviecrew/issues/32).
 
-![Camera transfer](docs/media/camera-transfer.gif)
+## Open the website
 
-A slow push-in blocked in Blender, and the same push-in in the render. Held
-against a control with an identical prompt and seed but no previz, the control
-cranes up and loses the subject entirely; reverse the previz into a pull-back
-and the render pulls back. Direction transfers — rate and magnitude don't.
+Start the server using the instructions below, then open:
 
-### Staging and casting follow it too
-
-![Staging transfer](docs/media/staging-transfer.gif)
-
-Four colour-coded marks — a crossing actor, a standing actor, an actor walking
-toward camera, and a static prop — with the prompt naming who each colour is.
-Every one is cast correctly, screen-space placement holds, and depth transfers
-once the previz gives depth something to read (converging road markings,
-building masses, haze).
-
-Full-quality clips are in [`docs/media/`](docs/media). What doesn't work yet is
-in [Known limits](#known-limits).
-
-## The arc
-
-1. **Plan** — a concept goes through the seven agents and comes out as a
-   `Project`: bible, scenes, shots, and a `RenderPlan` of `ShotIntent`s.
-   Durations, references and chain lengths are whatever the film wants —
-   a backend clamps them at its own adapter, never before.
-2. **Storyboard** — one still per shot for review; approving promotes each
-   anchored frame into that shot's reference images.
-3. **Previz** — the Blender add-on blocks a camera from the shot's prose and
-   renders a take. Every shot can have as many takes as you like.
-4. **Generate** — pick a take in the portal, pick a model, and the take is
-   sent as the driving reference for a generative render.
-5. **Review** — finished renders are downloaded into the takes tree and shown
-   in the portal beside the take that drove them, playable and downloadable.
-
-## Running it
-
-### Install
-
-```bash
-pip install -e ".[portal,dev]"
-python -m pytest        # 447 passing, no key and no network needed
-```
-
-The core has no third-party dependencies — the OpenRouter clients are stdlib
-`urllib`. That is what lets the package drop into Blender's bundled Python
-with nothing to install. `fastapi` and `uvicorn` are for the portal only.
-
-### Offline first
-
-```bash
-python -m uvicorn moviecrew.portal.app:app --reload
-```
-
-Open http://127.0.0.1:8000. The backend reads **mock**: no key, no network,
-nothing spent. Type a concept, hit Generate, and you get a full plan and a
-storyboard of stub images. Worth doing before anything costs money.
-
-### Live
-
-```bash
-export OPENROUTER_API_KEY='sk-or-...'
-export MOVIECREW_TAKES_ROOT=./takes
-python -m uvicorn moviecrew.portal.app:app --reload
-```
-
-The backend now defaults to **openrouter**, and the storyboard generates real
-stills. Point `MOVIECREW_TAKES_ROOT` at wherever the Blender add-on writes —
-the folder holding `sc1/sc1-sh1/take_001.mp4`.
-
-> With a key set, one Generate makes seven agent calls plus one image call per
-> shot. A ten-shot project is ten image generations. Run mock first, confirm
-> the shot list, then switch.
-
-### Generating video from a take
-
-A provider has to fetch your take over the internet, so it needs an address
-that isn't loopback — resolving `127.0.0.1` would reach the provider's own
-machine:
-
-```bash
-export MOVIECREW_PUBLIC_BASE_URL='https://your-tunnel.example.com'
-```
-
-A tunnel (cloudflared, ngrok) pointed at port 8000 is the quickest option.
-Without it the portal refuses the submit with an explicit message rather than
-failing late.
-
-Then in the portal: pick a take → pick a model → **Estimate Cost** →
-**Generate**. It polls, downloads into `takes/<scene>/<shot>/renders/`, and
-appears in the Renders gallery with a Download link.
-
-### CLI
-
-```bash
-python -m moviecrew "A lone man in a rain-slicked neon city." \
-  --backend openrouter --out project.json
-```
-
-`--backend` takes `mock`, `openrouter`, or `anthropic`.
-
-## Configuration
-
-| variable | what it does |
+| Address | Purpose |
 | --- | --- |
-| `MOVIECREW_TAKES_ROOT` | where Blender writes takes and renders are stored. Server-side only — a browser cannot redirect it. |
-| `OPENROUTER_API_KEY` | opts every stage into live models — agents, storyboard stills, and renders. Without it the portal runs `MockLLMClient`, `MockImageProvider` and `FakeRenderClient`, and spends nothing. |
-| `MOVIECREW_PUBLIC_BASE_URL` | an address a provider can fetch takes from. Required for models that drive motion from a video. |
-| `ANTHROPIC_API_KEY` | only for the direct-to-Anthropic LLM backend (`--backend anthropic`), which bypasses OpenRouter. |
+| [MovieCrew home](http://127.0.0.1:8000/) | Start a film, browse saved films, and enter the unified workspace |
+| [Studio](http://127.0.0.1:8000/studio) | Alternate entry point to the same website |
+| [Legacy portal](http://127.0.0.1:8000/legacy) | Earlier production and Blender-take tools |
 
-## Models
+These are local addresses, not a hosted public service. If you start on port `8001`,
+use [http://127.0.0.1:8001](http://127.0.0.1:8001/) instead. No public production
+website is currently configured in this repository.
 
-One key covers all three stages:
+## The filmmaking workflow
 
-| stage | default model | why |
-| --- | --- | --- |
-| agents (concept → plan → prompts) | `anthropic/claude-sonnet-5` | one model across all seven agents keeps a project's voice consistent and the price predictable |
-| storyboard stills | `google/gemini-2.5-flash-image` | returns images through the same chat-completions endpoint |
-| renders | `bytedance/seedance-2.5` | accepts a previz take as a driving video reference |
+```mermaid
+flowchart LR
+    A[Concept and brief] --> B[Your crew]
+    B --> C[Cast and world]
+    C --> D[Approve reference sheets]
+    D --> E[Storyboard images]
+    E --> F[Shots and video]
+    F --> G[Review takes]
+    G --> H[Final edit]
+    H --> I[Export film]
+    G --> F
+```
 
-The direct-to-Anthropic backend routes per task instead — Opus for the
-director and continuity passes, Haiku for the editor.
+### 1. Start with a concept
 
-Model choice is configuration, not code: `render.RenderClient` exposes a
-`capabilities()` that callers branch on instead of a backend name, so a model
-that takes a driving video and one that takes only first/last frames are the
-same code path. [`docs/ROADMAP.md`](docs/ROADMAP.md) extends that seam to cover
-Blender, Unreal and live action as peer execution strategies.
+Describe the story on the home screen. Set the creative brief, including genre,
+language, intended duration, and film references. The crew develops the story and
+production plan, with progress shown while planning runs in the background.
 
-Renders land in `<takes root>/<scene>/<shot>/renders/<job id>.mp4`. They are
-downloaded rather than linked: a provider URL expires, and the render cost
-real money.
+### 2. Bring in the crew
 
-## Known limits
+**Your crew** brings the creative outputs together:
 
-Measured, not guessed — each of these came out of a live render.
+- **Director:** the film's vision and story direction.
+- **Writer:** scenes and story development.
+- **Production designer:** characters, locations, and props.
+- **Cinematographer:** shots, framing, and camera direction.
+- **Editor:** proposed ordering and grouping of shots.
+- **Prompt artist:** generation prompts for individual shots.
+- **Continuity:** checks across the written plan and prompts.
 
-- **Which actor performs which action is unstable.** The *set* of staged
-  behaviours arrives intact; the mapping onto characters re-rolls between
-  generations. Identical previz, prompt and seed have produced different
-  assignments. Distinct per-character proportions in the previz are the next
-  thing to try.
-- **Rate and magnitude don't transfer, only direction.** A previz that travels
-  1.23× over 8 seconds produced a render that travelled 1.10× over 5.
-- **Depth needs cues.** Marks floating in an empty void get flattened into one
-  plane near the lens, and a pure Z move vanishes. A floor, walls, converging
-  lines and haze fix it.
-- **Reference media must serve a real MIME type.** `raw.githubusercontent`
-  returns `application/octet-stream` and the clip is silently ignored — the
-  render succeeds, bills in full, and simply doesn't use your previz.
-- **Hosting takes is unsolved.** `MOVIECREW_PUBLIC_BASE_URL` plus a tunnel
-  works, but it isn't a product answer.
+These are AI-assisted proposals for review. The current continuity pass checks text;
+it does not certify the consistency of generated video. Better sequencing context
+and footage evaluation are active roadmap items.
 
-Most of these share a root cause: a shot is carried as prose, so nothing
-downstream can reason about it. [`docs/ROADMAP.md`](docs/ROADMAP.md) is the
-architecture that fixes it — intent as data, a production graph, USD and OTIO
-for interchange, a bidirectional Blender client, and an evaluator that scores a
-render against the shot that was asked for.
+### 3. Establish the cast and world
 
-## Layout
+Create and review character, environment, and asset sheets before generating shots.
+Character creation supports **face → full body → accessories → costume**, with
+reference images and editable descriptions.
 
-- `moviecrew/schema.py` — the shared vocabulary as stdlib dataclasses:
-  `Bible`, `Scene`, `Shot`, `ShotIntent`, `ContinuityFlag`, `RenderPlan`,
-  `Project`. `ShotIntent` is the centre: what a shot should be, in terms no
-  backend owns, carrying no vendor's limits. The module does not know a
-  vendor named Veo exists.
-- `moviecrew/production.py` — resolves canonical state for one shot at the
-  moment of execution, so a request carries the references a board approval
-  just changed rather than a copy taken at plan time.
-- `moviecrew/agents.py`, `crew.py` — the seven agents and the orchestrator.
-- `moviecrew/llm.py` — `LLMClient` and the direct Anthropic backend.
-  `llm_openrouter.py` routes the same interface through OpenRouter.
-- `moviecrew/image.py`, `image_openrouter.py` — storyboard stills.
-- `moviecrew/video.py` — the Veo execution boundary. Owns `VeoPrompt` and
-  `veo_prompt()`, the adapter where Veo's clip lengths, reference cap and
-  legal aspect ratios are applied — and the only place they are.
-- `moviecrew/render.py` — the backend-neutral render abstraction: submit,
-  poll, fetch, and a `capabilities()` callers branch on instead of a backend
-  name. `render_openrouter.py` implements it; `FakeRenderClient` is the
-  offline default.
-- `moviecrew/takes.py` — the take model: scene → shot → numbered take, a
-  filesystem convention with a rebuildable manifest.
-- `moviecrew/blocking.py` — shot prose into camera geometry. No `bpy`, so it
-  is tested without Blender.
-- `blender/moviecrew_blender/` — the add-on: load a project, block a shot,
-  render a take.
-- `moviecrew/portal/` — the FastAPI backend and the single-page front end.
+Approve the sheets and apply their versions to the shots. Image generation binds
+approved references rather than silently using unapproved drafts. The current image
+workflow accepts up to four reference images; an oversized set is rejected before
+generation so you can choose a smaller set.
+
+### 4. Create the storyboard
+
+Generate still images for the shots using the available image models. Review the
+images, edit prompts, regenerate, and choose the version you want to use. Model,
+aspect ratio, quality, and other supported controls are available through compact
+selectors; available settings depend on the selected model and endpoint.
+
+### 5. Generate and review video
+
+In **Shots & video**, choose the shot, prompt, model, duration, ratio, resolution,
+and supported audio/reference options. Review the estimate when available, then
+explicitly start generation.
+
+Use a shot image as the visual starting point, or choose character-reference mode
+where supported. These are distinct input modes; attaching an image is not a
+guarantee that the model will preserve its appearance or perform the intended action.
+Generated clips remain available for preview and selection before entering the edit.
+
+### 6. Edit the film on a visual timeline
+
+In **Final edit**:
+
+- Drag clip edges to trim and drag clips to reorder.
+- Scrub the playhead and change timeline zoom.
+- Right-click a clip or select **⋯** for trim, split, mute, move, remove, extension,
+  and enhancement actions.
+- Open **Trim…** for precise in/out values; use Undo for changes in the current session.
+- Use **+** to insert a library video, upload media, or generate from an image.
+- Save the edit and preview the sequence before exporting.
+
+**Extend before** generates a prequel using the trimmed opening frame as an ending
+constraint. **Extend after** generates a sequel using the final visible frame of the
+trimmed clip as its starting constraint. Only models advertising the required frame
+position are offered. These operations use a boundary still, not the full motion
+history; separate character sheets are not attached in this mode. Review the result
+before inserting it.
+
+### 7. Choose the canvas and export
+
+Choose landscape **16:9**, portrait **9:16**, or square **1:1**, then:
+
+| Operation | Result |
+| --- | --- |
+| Fit | Preserve the picture and add black bars where needed |
+| Crop | Fill the canvas by cropping the edges |
+| AI expand | Generate surrounding content as a new candidate version |
+| Upscale · Topaz | Enhance and increase dimensions through the optional fal integration |
+| Export size | Resize the assembled film to 720p, 1080p, or 4K |
+
+A 4K export setting is ordinary resizing; it does not mean native 4K generation or
+Topaz enhancement. The browser may buffer between preview clips; exporting creates
+the assembled video file.
+
+See the [editor guide](docs/editor.md) for extension behavior, enhancement limits,
+audio preservation, and recovery details.
+
+## Run locally
+
+### Requirements
+
+- Python **3.10 or newer**; CI covers 3.10, 3.11, and 3.12.
+- **FFmpeg and ffprobe** on your PATH for video processing and export.
+- A modern browser.
+
+Install FFmpeg through your system's package manager, for example `brew install ffmpeg`
+on macOS or `sudo apt-get install ffmpeg` on Debian/Ubuntu.
+
+```bash
+git clone https://github.com/VPathy16/Moviecrew.git
+cd Moviecrew
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[portal,dev]"
+python -m moviecrew.portal
+```
+
+On Windows, activate the environment with `.venv\Scripts\Activate.ps1` in PowerShell.
+The server binds to `127.0.0.1:8000`. To use another port:
+
+```bash
+PORT=8001 python -m moviecrew.portal
+```
+
+For development with automatic backend reload:
+
+```bash
+python -m uvicorn moviecrew.portal.app:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### Try the offline workflow
+
+Without configured provider credentials, the default planning backend is mock and
+the application supports offline previews. Stub images and preview outputs are not
+AI-generated footage. Saved settings can restore credentials at startup, so absence
+of a key in the current shell alone does not establish offline mode.
+
+For an isolated offline trial on macOS/Linux, use a fresh directory and remove
+inherited provider keys:
+
+```bash
+trial_dir=$(mktemp -d)
+env -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY -u FAL_KEY \
+  MOVIECREW_SETTINGS_PATH="$trial_dir/settings.json" \
+  MOVIECREW_PROJECTS_ROOT="$trial_dir/projects" \
+  python -m moviecrew.portal
+```
+
+This trial uses temporary storage. Use the normal persistent defaults for films you
+want to keep, and do not add live credentials to the offline trial.
+
+### Connect live providers
+
+Open **Settings** in the sidebar to configure OpenRouter and R2/S3 storage. Optional
+fal credentials enable Topaz upscaling and AI canvas expansion. The fal integration
+uses a fal API key, not a Topaz desktop licence.
+
+Model availability and valid settings depend on the connected endpoint. Planning,
+image generation, video generation, and enhancement can incur provider charges.
+Review prompts, references, and estimates before starting paid work; some enhancement
+operations do not provide an estimate.
+
+## Storage and configuration
+
+Settings are saved in an owner-readable/writable local file. Secret fields are
+masked in responses. Settings currently apply to the whole installation.
+
+| Variable | Purpose |
+| --- | --- |
+| `MOVIECREW_PROJECTS_ROOT` | Project database and new project directories; defaults to `~/.moviecrew/projects` |
+| `MOVIECREW_SETTINGS_PATH` | Saved provider settings; defaults to `~/.moviecrew/settings.json` |
+| `OPENROUTER_API_KEY` | OpenRouter-backed planning and image/video workflows |
+| `ANTHROPIC_API_KEY` | Optional direct Anthropic planning backend; install `.[anthropic]` to use it |
+| `FAL_KEY` | Optional Topaz and AI canvas-expansion integration |
+| `MOVIECREW_S3_ENDPOINT` | R2/S3-compatible endpoint |
+| `MOVIECREW_S3_BUCKET` | Media bucket name |
+| `MOVIECREW_S3_ACCESS_KEY` | Storage access key |
+| `MOVIECREW_S3_SECRET_KEY` | Storage secret key |
+| `MOVIECREW_S3_REGION` | Storage region; use `auto` for R2 |
+| `MOVIECREW_ASSET_BASE_URL` | Optional public asset base for workflows requiring it |
+| `MOVIECREW_TAKES_ROOT` | Optional Blender-take directory; defaults to `./takes` |
+| `MOVIECREW_PUBLIC_BASE_URL` | Provider-reachable portal address for legacy take delivery |
+| `PORT` | Port for `python -m moviecrew.portal`; defaults to `8000` |
+
+Projects, drafts, approved sheets, generations, and cuts have local persistence.
+Some provider inputs are delivered through signed R2/S3 URLs. This does **not** mean
+all project media has been migrated to cloud storage: saved records can still depend
+on local files. Back up the database **and** its referenced media directories.
+
+Keep credentials out of Git. The current portal has no multi-user authorization
+boundary; run it locally until the SaaS access-control work is complete. A bucket
+connection or a Firebase project alone does not make this deployment a secure shared
+service.
+
+## Optional Blender and CLI workflows
+
+The Blender add-on can load a project, block camera/staging, and render previz takes.
+The legacy portal lets you review those takes and submit compatible generative
+renders using video references. Provider delivery must use a reachable media address;
+loopback URLs cannot be fetched by a remote generation provider.
+
+See [the Blender add-on](blender/moviecrew_blender/) and the earlier
+[camera-transfer](docs/media/camera-transfer.gif) and
+[staging-transfer](docs/media/staging-transfer.gif) experiments. These demonstrate
+specific tested examples, not universal guarantees of action or camera transfer.
+
+Generate a plan from the command line:
+
+```bash
+python -m moviecrew "A solo climber decides to turn back from Everest." \
+  --backend mock --out project.json
+```
+
+For live planning, select `--backend openrouter` or `--backend anthropic` with the
+appropriate credentials. Run `python -m moviecrew --help` for the full CLI options.
 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
+python -m pip install -e ".[dev,portal]"
 python -m pytest
 python -m pyflakes moviecrew tests
 ```
 
-No API key or network access is required to run the tests — every backend has
-an offline implementation, and the live ones take an injectable transport.
+Include **both** the dev and portal extras: portal tests import FastAPI. FFmpeg-based
+tests need FFmpeg/ffprobe. Tests use offline implementations and controlled provider
+transports; they do not establish live-model quality or complete SaaS readiness.
+
+The core Python package is dependency-light. The portal uses FastAPI/Uvicorn;
+OpenRouter clients use standard-library HTTP transports. The website is served from
+`moviecrew/portal/static/studio.html`, with timeline behavior in `editor.js`.
+
+| Area | Source |
+| --- | --- |
+| Shared film schema | `moviecrew/schema.py` |
+| Crew and planning | `moviecrew/agents.py`, `moviecrew/crew.py` |
+| Local project persistence | `moviecrew/projects.py` |
+| Settings and asset storage | `moviecrew/settings.py`, `moviecrew/assets.py` |
+| Image generation and model controls | `moviecrew/image_studio.py`, `moviecrew/image_openrouter.py` |
+| Video provider adapters | `moviecrew/render.py`, `moviecrew/render_openrouter.py` |
+| Cast and world approval | `moviecrew/portal/world.py` |
+| Video jobs, cuts and exports | `moviecrew/portal/film_workflow.py` |
+| Extensions and enhancement | `moviecrew/portal/film_enhance.py` |
+| Website and timeline | `moviecrew/portal/static/` |
+| Optional previz | `blender/moviecrew_blender/`, `moviecrew/blocking.py` |
+
+## What comes next
+
+The [prioritized GitHub backlog](https://github.com/VPathy16/Moviecrew/issues/32)
+contains implementation issues with dependencies and acceptance criteria:
+
+- **P0:** backup/restore, sequence contracts, better Editor/Prompter context, identity,
+  workspace permissions, durable media/jobs, spending controls, and launch gates.
+- **P1:** model capabilities, role-aware references, input provenance, footage
+  evaluation, revisioned timelines, playback, audio, and contextual UX.
+- **P2:** targeted repairs, evaluated visual recipes, reusable workspace assets,
+  production-validated enhancements, and a capped paid pilot.
+
+Firebase Auth with PostgreSQL and private R2 is a proposed target architecture,
+not a current runtime dependency. The
+[architecture decision issue](https://github.com/VPathy16/Moviecrew/issues/37)
+tracks that choice. See also the [brand guide](docs/brand.md) and
+[longer-term production architecture](docs/ROADMAP.md).
+
+### Review direction before writing
+
+New films in the unified workspace pause after the Director proposal. Edit the title, logline and story beats, add character roles and motivations, and save or regenerate with feedback. Previous versions can be restored. **Approve & continue to Writer** passes the approved story and cast into writing, then pauses at the existing cast/world approval step.
+
+Drafts and revision history persist in the local project store. Existing completed films keep their original workflow and media. A later direction edit on a reviewed project marks it as needing review; it does not automatically rewrite accepted scenes. Legacy API clients keep the one-pass flow unless they send `review_director: true` to `/api/plan`.

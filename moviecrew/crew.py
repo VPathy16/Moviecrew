@@ -313,6 +313,7 @@ class MovieCrew:
         *,
         bible: Optional[Bible] = None,
         stop_after_design: bool = False,
+        approved_direction: Optional[dict] = None,
         approved_project: Optional[Project] = None,
         checkpoint_path: Optional[str] = None,
         run_continuity: bool = True,
@@ -366,7 +367,7 @@ class MovieCrew:
             bible = approved_project.bible
             raw_scenes = [{**asdict(scene), 'shots': []} for scene in approved_project.scenes]
         else:
-            director_out = self.director.run(concept=concept)
+            director_out = approved_direction if approved_direction is not None else self.director.run(concept=concept)
             title = director_out["title"]
             logline = director_out["logline"]
             outline = director_out["outline"]
@@ -425,18 +426,31 @@ class MovieCrew:
         if not all_shots:
             raise PipelineError("the cinematographer produced no shots for any scene")
 
-        editor_out = self.editor.run(shot_ids=[shot.id for shot in all_shots])
+        from .story_direction import COMPILER_VERSION, check_sequence, prompt_context
+        editor_out = self.editor.run(shot_ids=[shot.id for shot in all_shots], context={
+            'title':title, 'logline':logline, 'outline':outline,
+            'scenes':[asdict(scene) for scene in scenes]})
         order = normalize_order(all_shots, editor_out.get("order", []))
         chains = normalize_chains(all_shots, order, editor_out.get("chains", []))
 
+        notes = editor_out.get('editorial_notes', {})
+        if not isinstance(notes, dict):
+            raise PipelineError('Editor notes must map shot IDs to reasons')
+        notes = {k:v for k,v in notes.items() if k in order and isinstance(v,str)}
+        try:
+            direction_flags = check_sequence(all_shots, order)
+        except ValueError as exc:
+            raise PipelineError(str(exc)) from exc
         select_anchors(scenes, chains, bible)
         if on_progress:
             on_progress("editor_complete", order=order, chains=chains, shot_count=len(all_shots))
 
         intents: list[ShotIntent] = []
-        flags: list[ContinuityFlag] = []
+        flags: list[ContinuityFlag] = list(direction_flags)
         for shot in all_shots:
-            prompter_out = self.prompter.run(shot=asdict(shot))
+            context = prompt_context(shot, scenes, order, bible, title, logline, outline, notes,
+                                     world_approved=approved_project is not None)
+            prompter_out = self.prompter.run(shot=asdict(shot), context=context)
             raw_prompt, extra_flags = _prompt_for_shot(shot, prompter_out.get("prompts", []))
             flags.extend(extra_flags)
 
@@ -447,6 +461,8 @@ class MovieCrew:
                 negative=raw_prompt.get("negative_prompt", ""),
                 duration_s=shot.duration_s,
                 aspect_ratio=DEFAULT_ASPECT_RATIO,
+                compiler_version=COMPILER_VERSION,
+                direction_context=context,
             )
             intents.append(intent)
             # A lint, run here so its warnings reach the plan; it reads a
@@ -493,6 +509,7 @@ class MovieCrew:
             order=order,
             chains=chains,
             est_duration_s=est_duration_s,
+            editorial_notes=notes,
         )
         project = Project(
             title=title,

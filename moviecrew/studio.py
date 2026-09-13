@@ -131,6 +131,7 @@ class StudioSession:
     board: list[StoryboardFrame] = field(default_factory=list)
     versions: list[StoryboardFrame] = field(default_factory=list)
     creative_brief: dict = field(default_factory=dict)
+    director_review: dict = field(default_factory=dict)
     world_sheets: dict = field(default_factory=dict)
     shot_sheet_versions: dict = field(default_factory=dict)
     draft_prompts: dict[str, str] = field(default_factory=dict)
