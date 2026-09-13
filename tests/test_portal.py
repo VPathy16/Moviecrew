@@ -178,7 +178,7 @@ def test_index_serves_html():
 
 
 def test_plan_with_mock_backend_returns_full_project():
-    res = client.post("/api/plan", json={"concept": "A lighthouse keeper meets a sea spirit."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A lighthouse keeper meets a sea spirit."})
     assert res.status_code == 200
     session_id = res.json()["session_id"]
 
@@ -219,7 +219,7 @@ def test_plan_rejects_unknown_backend():
 
 
 def test_plan_rejects_unknown_detail():
-    res = client.post("/api/plan", json={"concept": "x", "detail": "not-a-level"})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "x", "detail": "not-a-level"})
     assert res.status_code == 400
     assert "error" in res.json()
 
@@ -233,7 +233,7 @@ def test_plan_returns_before_generation_completes(gate):
     """The core claim of PR #29: the request returns the moment a job is
     started, not once Director-through-Prompter have all run."""
     gate.block_before("director")
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     assert res.status_code == 200
     body = res.json()
     assert set(body.keys()) == {"session_id", "status"}
@@ -246,7 +246,7 @@ def test_plan_returns_before_generation_completes(gate):
 
 def test_session_exists_as_soon_as_plan_returns(gate):
     gate.block_before("director")
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = res.json()["session_id"]
 
     assert session_id in _sessions
@@ -261,14 +261,14 @@ def test_session_exists_as_soon_as_plan_returns(gate):
 def test_plan_does_not_invoke_continuity(call_log):
     """Director/Writer/Designer/Cinematographer/Editor/Prompter run; the
     global ContinuityAgent does not — it is a separate request."""
-    res = client.post("/api/plan", json={"concept": "A lighthouse keeper meets a sea spirit."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A lighthouse keeper meets a sea spirit."})
     session_id = res.json()["session_id"]
     _wait_for_plan(session_id)
     assert "continuity" not in call_log
 
 
 def test_completed_plan_includes_continuity_status_not_started():
-    res = client.post("/api/plan", json={"concept": "A lighthouse keeper meets a sea spirit."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A lighthouse keeper meets a sea spirit."})
     session_id = res.json()["session_id"]
     project = _wait_for_plan(session_id)
     assert project["continuity_status"] == "not_started"
@@ -280,7 +280,7 @@ def test_a_checkpoint_is_written_before_each_milestone_is_exposed(gate):
     it (before the editor call) and checking the checkpoint on disk
     already agrees with what the progress endpoint is about to report."""
     gate.block_before("editor")
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = res.json()["session_id"]
     gate.wait_until_reached()
 
@@ -302,7 +302,7 @@ def test_a_checkpoint_is_written_before_each_milestone_is_exposed(gate):
 
 def test_progress_stages_update_as_generation_proceeds(gate):
     gate.block_before("cinematographer")
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = res.json()["session_id"]
     gate.wait_until_reached()
 
@@ -319,7 +319,7 @@ def test_progress_stages_update_as_generation_proceeds(gate):
 
 def test_stage_transitions_happen_in_a_fixed_order(gate):
     gate.block_before("director")
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = res.json()["session_id"]
     gate.wait_until_reached()
 
@@ -349,7 +349,7 @@ def test_stage_transitions_happen_in_a_fixed_order(gate):
 
 def test_completed_scene_data_is_visible_before_the_whole_plan_completes(gate):
     gate.block_before("editor")
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = res.json()["session_id"]
     gate.wait_until_reached()
 
@@ -368,7 +368,7 @@ def test_completed_scene_data_is_visible_before_the_whole_plan_completes(gate):
 
 def test_completed_prompt_is_visible_before_remaining_prompts_finish(gate):
     gate.block_before("prompter")
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = res.json()["session_id"]
     gate.wait_until_reached()  # blocked before the 1st shot's prompter call
 
@@ -391,7 +391,7 @@ def test_partial_work_remains_accessible_after_a_later_generation_failure(failin
     """Completed creative work must never be lost with the request that
     was building the rest of it — here, the scene and its two shots
     survive an editor call that fails right after them."""
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = res.json()["session_id"]
 
     final = _wait_for_plan(session_id)
@@ -421,7 +421,7 @@ def test_completed_job_returns_the_same_project_as_the_normal_pipeline():
     direct_project = MovieCrew(mock_module.MockLLMClient()).make(concept, run_continuity=False)
     expected = asdict(direct_project)
 
-    res = client.post("/api/plan", json={"concept": concept})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": concept})
     session_id = res.json()["session_id"]
     final = _wait_for_plan(session_id)
 
@@ -437,7 +437,7 @@ def test_completed_job_returns_the_same_project_as_the_normal_pipeline():
 def test_save_project_succeeds_after_a_normal_plan():
     """Save must work before continuity runs at all — the continuity
     endpoint is never called in this test."""
-    plan_res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    plan_res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = plan_res.json()["session_id"]
     project = _wait_for_plan(session_id)
 
@@ -463,7 +463,7 @@ def test_save_project_for_an_unknown_session_is_404():
 
 def test_continuity_does_not_start_until_plan_status_is_complete(gate):
     gate.block_before("prompter")
-    res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = res.json()["session_id"]
     gate.wait_until_reached()
 
@@ -480,7 +480,7 @@ def test_continuity_does_not_start_until_plan_status_is_complete(gate):
 
 
 def test_continuity_endpoint_uses_the_existing_project_without_regenerating_it(call_log):
-    plan_res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    plan_res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = plan_res.json()["session_id"]
     _wait_for_plan(session_id)
     assert "continuity" not in call_log
@@ -492,7 +492,7 @@ def test_continuity_endpoint_uses_the_existing_project_without_regenerating_it(c
 
 
 def test_continuity_success_updates_flags_and_status():
-    plan_res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    plan_res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = plan_res.json()["session_id"]
     _wait_for_plan(session_id)
 
@@ -513,7 +513,7 @@ def test_continuity_success_updates_flags_and_status():
 def test_continuity_failure_preserves_the_project_and_reports_failed(failing_continuity):
     """The requirement stated explicitly: continuity failure must never cost
     the plan, and must return a normal (not fatal) response."""
-    plan_res = client.post("/api/plan", json={"concept": "A lighthouse keeper meets a sea spirit."})
+    plan_res = client.post("/api/plan", json={"backend": "mock", "concept": "A lighthouse keeper meets a sea spirit."})
     assert plan_res.status_code == 200
     session_id = plan_res.json()["session_id"]
     project = _wait_for_plan(session_id)
@@ -534,7 +534,7 @@ def test_continuity_failure_preserves_the_project_and_reports_failed(failing_con
 
 
 def test_a_second_concurrent_continuity_run_is_refused(call_log):
-    plan_res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    plan_res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = plan_res.json()["session_id"]
     _wait_for_plan(session_id)
     session = _sessions[session_id]
@@ -555,7 +555,7 @@ def test_continuity_endpoint_for_an_unknown_session_is_404():
 
 
 def test_project_is_persisted_after_continuity_completes():
-    plan_res = client.post("/api/plan", json={"concept": "A quiet heist."})
+    plan_res = client.post("/api/plan", json={"backend": "mock", "concept": "A quiet heist."})
     session_id = plan_res.json()["session_id"]
     _wait_for_plan(session_id)
     session = _sessions[session_id]
@@ -570,7 +570,7 @@ def test_project_is_persisted_after_continuity_completes():
 def test_save_project_succeeds_even_though_continuity_failed(failing_continuity):
     """The requirement stated explicitly: Save must work when continuity is
     incomplete or failed, not only on the happy path."""
-    plan_res = client.post("/api/plan", json={"concept": "A lighthouse keeper meets a sea spirit."})
+    plan_res = client.post("/api/plan", json={"backend": "mock", "concept": "A lighthouse keeper meets a sea spirit."})
     assert plan_res.status_code == 200
     session_id = plan_res.json()["session_id"]
     project = _wait_for_plan(session_id)

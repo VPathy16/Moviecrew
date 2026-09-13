@@ -19,6 +19,7 @@
  const fit=select('Framing','edit-fit',[['contain','Fit · black bars'],['cover','Crop to fill']]);
  const resolution=select('Export size','edit-resolution',[['720p','720p'],['1080p','1080p'],['4K','4K']]);
  const stage=crewEl('div');stage.id='edit-stage';const player=crewEl('video');player.id='edit-player';player.controls=true;player.playsInline=true;stage.append(player);
+ const hold=crewEl('canvas');hold.setAttribute('aria-hidden','true');hold.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none;background:#000';stage.style.position='relative';stage.append(hold);let loadVersion=0;
  const transport=crewEl('div',undefined,'edit-transport'),play=crewEl('button','▶ Play film'),seek=crewEl('input'),time=crewEl('span','0:00 / 0:00');seek.type='range';seek.id='edit-seek';seek.min=0;seek.step=.01;seek.setAttribute('aria-label','Film playhead');time.id='edit-time';transport.append(play,seek,time);
  const inspector=crewEl('div');inspector.id='edit-inspector';inspector.hidden=true;const jobs=crewEl('div');jobs.id='edit-jobs';
  host.insertBefore(toolbar,$('cut-clips'));host.insertBefore(stage,$('cut-clips'));host.insertBefore(transport,$('cut-clips'));$('cut-clips').after(inspector,jobs);
@@ -32,7 +33,24 @@
  function changed(){cutDirty=true;$('cut-status').textContent='Unsaved edit';renderInspector();}
  function applyCanvas(){const [w,h]=cut.aspect_ratio.split(':').map(Number);stage.style.aspectRatio=w+'/'+h;stage.style.width='min(100%, '+(420*w/h)+'px)';player.style.objectFit=cut.fit||'contain';}
  function stop(){playing=false;player.pause();play.textContent='▶ Play film'}
- function loadClip(index,autoplay=false,position=null){selected=Math.max(0,Math.min(index,cut.clips.length-1));const c=cut.clips[selected],m=media(c);if(!c||!m?.video_url){player.removeAttribute('src');player.load();return}player.src=m.video_url;player.muted=c.mute;player.onloadedmetadata=()=>{player.currentTime=position??c.start;if(autoplay)player.play().catch(()=>stop())};}
+ function loadClip(index,autoplay=false,position=null){
+  const token=++loadVersion;
+  // Keep the outgoing decoded frame visible while the replacement buffers/seeks.
+  if(player.readyState>=2&&player.videoWidth){try{hold.width=player.videoWidth;hold.height=player.videoHeight;hold.getContext('2d').drawImage(player,0,0);hold.style.objectFit=cut.fit||'contain';hold.style.display='block'}catch(e){hold.style.display='none'}}
+  player.pause();selected=Math.max(0,Math.min(index,cut.clips.length-1));
+  const c=cut.clips[selected],m=media(c);
+  if(!c||!m?.video_url){hold.style.display='none';player.removeAttribute('src');player.load();return}
+  const reveal=()=>{if(token===loadVersion)hold.style.display='none'};
+  player.onloadedmetadata=()=>{if(token!==loadVersion)return;player.currentTime=position??c.start};
+  player.onseeked=()=>{if(token!==loadVersion)return;
+   requestAnimationFrame(()=>requestAnimationFrame(reveal));
+   if(autoplay&&playing)player.play().catch(()=>{reveal();stop()});
+  };
+  player.onloadeddata=()=>{if(token===loadVersion&&!player.seeking)player.onseeked()};
+  player.onerror=()=>{if(token!==loadVersion)return;reveal();stop();$('cut-status').textContent='This clip could not load. Try playing again.'};
+  player.src=m.video_url;player.muted=c.mute;player.preload='auto';
+ }
+
  function refreshClock(){const c=cut.clips[selected];const now=c?offset(selected)+Math.max(0,Math.min(c.end,player.currentTime)-c.start):0;seek.max=total();seek.value=now;time.textContent=clock(now)+' / '+clock(total());const head=$('timeline-playhead');if(head){head.style.left=(24+now*pixelsPerSecond)+'px';head.setAttribute('aria-valuenow',now.toFixed(2))}}
  player.ontimeupdate=()=>{refreshClock();const c=cut.clips[selected];if(c&&player.currentTime>=c.end-.025){if(playing&&selected+1<cut.clips.length){loadClip(selected+1,true);renderTiles();renderInspector()}else stop()}};
  player.onended=()=>{if(playing&&selected+1<cut.clips.length){loadClip(selected+1,true);renderTiles();renderInspector()}else stop()};
@@ -141,6 +159,13 @@
    if(project.id!==owner||!d.open||ticket!==dialogVersion)return;
    const picture=crewEl('img');picture.src=boundary.image_url;picture.alt=direction==='before'?'Required ending frame':'Starting frame';picture.style.cssText='width:100%;max-height:180px;object-fit:contain;background:#000;border-radius:8px';d.append(picture);
    const prompt=crewEl('textarea');prompt.rows=3;prompt.placeholder=direction==='before'?'What happens before this moment?':'What happens after this moment?';prompt.setAttribute('aria-label','Extension prompt');d.append(prompt);
+   const referenceBox=crewEl('details'),referenceTitle=crewEl('summary','Character sheets · optional');referenceBox.open=true;referenceBox.append(referenceTitle);d.append(referenceBox);
+   referenceBox.append(crewEl('p','Selecting sheets uses character-guided generation instead of a locked boundary frame. The join may need editing. Clear selections to restore the exact boundary mode.'));
+   let selectedSheets=[];const picker=crewEl('div',undefined,'edit-toolbar');referenceBox.append(picker);
+   function drawSheets(){picker.replaceChildren();for(const ref of project.image_references||[]){const label=crewEl('label'),check=crewEl('input');check.type='checkbox';check.checked=selectedSheets.includes(ref.id);check.style.width='auto';check.onchange=()=>{selectedSheets=check.checked?[...selectedSheets,ref.id]:selectedSheets.filter(id=>id!==ref.id);requestId=crypto.randomUUID();estimate()};const img=crewEl('img');img.src='/api/projects/'+owner+'/references/'+ref.id;img.alt=ref.name;img.style.cssText='width:70px;height:70px;object-fit:contain';label.append(check,img,crewEl('span',ref.name));picker.append(label)}}
+   const upload=crewEl('input');upload.type='file';upload.accept='image/png,image/jpeg,image/webp';upload.setAttribute('aria-label','Upload character sheet');const uploadLabel=crewEl('label','Upload character sheet from your computer');uploadLabel.append(upload);referenceBox.append(uploadLabel);
+   upload.onchange=async()=>{const file=upload.files[0];if(!file)return;upload.disabled=true;try{if(file.size>5*1024*1024)throw Error('Choose an image smaller than 5 MB');const result=await fetch('/api/projects/'+owner+'/references',{method:'POST',headers:{'Content-Type':file.type,'X-Image-Name':encodeURIComponent(file.name)},body:file});const data=await result.json();if(!result.ok)throw Error(data.error||data.detail||'Upload failed');const fresh=await api('/api/projects/'+owner);if(project.id!==owner||!d.open)return;const old=new Set((project.image_references||[]).map(r=>r.id));project.image_references=fresh.image_references;selectedSheets.push(...fresh.image_references.filter(r=>!old.has(r.id)).map(r=>r.id));drawSheets();requestId=crypto.randomUUID();estimate()}catch(e){status.textContent=e.message}finally{upload.disabled=false;upload.value=''}};
+   drawSheets();
    const row=crewEl('div',undefined,'edit-toolbar');d.append(row);
    function field(label){const l=crewEl('label',label+' '),select=crewEl('select');select.setAttribute('aria-label',label);l.append(select);row.append(l);return select}
    const model=field('Extension model'),duration=field('Extension seconds'),quality=field('Extension resolution'),ratio=field('Extension ratio');
@@ -153,11 +178,11 @@
    const submit=button('Generate '+(direction==='before'?'prequel':'sequel'),async()=>{
     submit.disabled=true;try{const job=await api('/api/projects/'+owner+'/videos','POST',body());if(project.id!==owner)return;filmMedia.unshift(job);dialog.close();renderExports();startMediaPoll();notify('Extension generating. Preview it below before inserting.')}catch(e){price.textContent=e.message;submit.disabled=false}
    },d);submit.disabled=true;
-   function body(){return {request_id:requestId,shot_id:boundary.shot_id,frame_id:boundary.frame_id,anchor_position:boundary.anchor_position,reference_mode:'shot',prompt:prompt.value.trim(),model:model.value,duration_s:Number(duration.value),aspect_ratio:ratio.value,resolution:quality.value,audio:audio.checked}}
+   function body(){return {request_id:requestId,shot_id:boundary.shot_id,frame_id:boundary.frame_id,anchor_position:boundary.anchor_position,reference_mode:selectedSheets.length?'character':'shot',reference_ids:selectedSheets,prompt:prompt.value.trim(),model:model.value,duration_s:Number(duration.value),aspect_ratio:ratio.value,resolution:quality.value,audio:audio.checked}}
    async function estimate(){const token=++version;submit.disabled=true;if(!choices.length||!prompt.value.trim()){price.textContent='Describe the action to see the estimate.';return}try{const result=await api('/api/projects/'+owner+'/video-estimate','POST',body());if(token!==version||project.id!==owner||ticket!==dialogVersion||!d.open)return;price.textContent=result.offline?'Offline preview · no charge':result.cost==null?'Paid generation · estimate unavailable':'Estimated cost: $'+Number(result.cost).toFixed(4);submit.disabled=false}catch(e){if(token===version&&ticket===dialogVersion)price.textContent=e.message}}
    function sync(){const m=choices.find(m=>m.id===model.value);if(!m)return;fill(duration,m.durations?.length?m.durations:Array.from({length:m.duration_max},(_,i)=>i+1));if([...duration.options].some(o=>o.value==='5'))duration.value='5';fill(quality,m.resolutions);fill(ratio,m.ratios);if(m.ratios.includes(cut.aspect_ratio))ratio.value=cut.aspect_ratio;audio.disabled=!m.audio;audio.checked=false;estimate()}
    model.onchange=sync;for(const el of [duration,quality,ratio,audio])el.onchange=estimate;let timer;prompt.oninput=()=>{++version;submit.disabled=true;clearTimeout(timer);timer=setTimeout(estimate,350)};
-   status.textContent=choices.length?'The boundary carries the character’s appearance. Separate character sheets are not attached in this mode.':'No connected model advertises '+(direction==='before'?'ending':'starting')+'-frame support. Choose another provider in Settings.';
+   status.textContent=choices.length?'Default: locked boundary frame. Open Character sheets to select library images or upload a sheet for character-guided generation.':'No connected model advertises '+(direction==='before'?'ending':'starting')+'-frame support. Choose another provider in Settings.';
    sync();
   }catch(e){status.textContent=e.message}
  }

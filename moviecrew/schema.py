@@ -119,6 +119,9 @@ class Shot:
     reference_image_ids: list[str] = field(default_factory=list)
     first_frame_ref: Optional[str] = None
     last_frame_ref: Optional[str] = None
+    visible_character_ids: Optional[list[str]] = None
+    visible_prop_ids: Optional[list[str]] = None
+    image_prompt: str = ""
     consistency_anchor: bool = False
     story_contract_version: int = 0  # 0: legacy, 1: explicit causal direction
     purpose: str = ''
@@ -248,6 +251,7 @@ class Project:
     outline: list[str] = field(default_factory=list)
     scenes: list[Scene] = field(default_factory=list)
     render_plan: Optional[RenderPlan] = None
+    sheet_notes: dict[str, dict[str, str]] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)

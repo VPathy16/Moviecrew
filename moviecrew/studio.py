@@ -133,6 +133,7 @@ class StudioSession:
     creative_brief: dict = field(default_factory=dict)
     director_review: dict = field(default_factory=dict)
     world_sheets: dict = field(default_factory=dict)
+    planning_scenes: dict = field(default_factory=dict)
     shot_sheet_versions: dict = field(default_factory=dict)
     draft_prompts: dict[str, str] = field(default_factory=dict)
     image_settings: dict[str, dict] = field(default_factory=dict)

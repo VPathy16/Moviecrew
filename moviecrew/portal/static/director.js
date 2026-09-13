@@ -67,6 +67,7 @@ renderCrew = function() {
   }
   const local = directionLocal();
   const form=crewEl('fieldset',undefined,'direction-form');form.disabled=active;content.append(form);
+  if(project.backend==='mock')form.append(crewEl('p','Demo example: fixed sample output, not a generated interpretation of your concept.','status'));
   form.append(crewEl('p',hasScenes?'Your accepted scenes are preserved. Story changes are saved as a proposal for review.':'Refine the story and cast. Your Writer starts when you approve.','muted'));
   function field(parent,label,key,object,rows=0) {
     const wrap=crewEl('label',label), input=crewEl(rows?'textarea':'input');

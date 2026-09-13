@@ -6,7 +6,7 @@ from .schema import ContinuityFlag
 COMPILER_VERSION = 'story-direction-v1'
 
 
-def check_sequence(shots, order):
+def check_sequence(shots, order, *, strict=True):
     by_id = {s.id:s for s in shots}
     flags = []
     previous = None
@@ -17,7 +17,10 @@ def check_sequence(shots, order):
         elif previous and previous.story_contract_version and previous.scene_id==shot.scene_id and shot.transition!='ellipsis':
             contradictions = [key for key in shot.entry_state if key in previous.exit_state and previous.exit_state[key]!=shot.entry_state[key]]
             if contradictions:
-                raise ValueError(f'{previous.id} → {sid}: conflicting entry state for {", ".join(contradictions)}; revise direction or specify an intentional ellipsis')
+                message = f'{previous.id} → {sid}: conflicting entry state for {", ".join(contradictions)}; review whether the transition is intentional.'
+                if strict:
+                    raise ValueError(message)
+                flags.append(ContinuityFlag(sid, 'warning', message))
             if previous.action.strip().casefold()==shot.action.strip().casefold():
                 flags.append(ContinuityFlag(sid,'warning','Adjacent shots repeat the same action. Check that this is intentional coverage, not a repeated event.'))
         previous = shot

@@ -108,7 +108,7 @@ class VideoRequest(BaseModel):
     shot_id: str
     frame_id: str = ''
     anchor_position: Literal['first_frame', 'last_frame'] = 'first_frame'
-    reference_mode: Literal['shot', 'character'] = 'shot'
+    reference_mode: Literal['shot', 'character', 'text'] = 'shot'
     reference_ids: list[str] = Field(default_factory=list, max_length=9)
     prompt: str = Field(min_length=1, max_length=20000)
     model: str
@@ -145,7 +145,7 @@ def prepare(project, req):
     caps = client.capabilities(req.model)
     if req.reference_mode == 'shot' and req.anchor_position not in frame_positions(client, req.model):
         raise HTTPException(400, 'This model does not support the required '+req.anchor_position.replace('_', ' '))
-    if frame and frame.settings.get('extension'):
+    if req.reference_mode == 'shot' and frame and frame.settings.get('extension'):
         expected = 'last_frame' if frame.settings['extension']['direction'] == 'before' else 'first_frame'
         if req.anchor_position != expected:
             raise HTTPException(400, 'The extension boundary must be used as the '+expected.replace('_', ' '))
@@ -154,7 +154,7 @@ def prepare(project, req):
             raise HTTPException(400, 'Character-only video requires a connected video provider')
         if req.model not in CHARACTER_VIDEO_MODELS:
             raise HTTPException(400, 'Choose H3 or Seedance for character references through OpenRouter')
-        if req.frame_id:
+        if req.frame_id and not (frame and frame.settings.get('extension')):
             raise HTTPException(400, 'Character-only mode cannot include a shot frame')
         refs = {r['id']: r for r in s.image_references}
         if not req.reference_ids or len(req.reference_ids) != len(set(req.reference_ids)):
@@ -163,6 +163,11 @@ def prepare(project, req):
             raise HTTPException(400, 'Choose references belonging to this film')
         if caps.max_image_references is not None and len(req.reference_ids) > caps.max_image_references:
             raise HTTPException(400, 'Too many references for this model')
+    elif req.reference_mode == 'text':
+        if req.frame_id or req.reference_ids:
+            raise HTTPException(400, 'Text-only video cannot include images')
+        if client.name == 'fake':
+            raise HTTPException(400, 'Choose a connected video model for text-only generation')
     elif caps.max_image_references == 0 or not caps.supports_first_last_frame:
         raise HTTPException(400, 'Choose a model that supports a storyboard image as its first frame')
     if req.duration_s > caps.max_duration_s:
@@ -207,7 +212,7 @@ def estimate(project: str, req: VideoRequest):
     client, frame, spec = prepare(project, req)
     # Estimating never uploads media or submits a generation.
     spec.reference_images = ([r['path'] for r in session(project).image_references if r['id'] in req.reference_ids]
-                             if req.reference_mode == 'character' else [str(frame.image_path)])
+                             if req.reference_mode == 'character' else [] if req.reference_mode == 'text' else [str(frame.image_path)])
     return {'cost': client.estimate_cost(spec, model=req.model), 'offline': client.name == 'fake'}
 
 
@@ -298,11 +303,15 @@ def work(project, item_id):
                     put(item)
                     return
                 store = _asset_store()
-                if not store.serves_public_urls and store.name != 's3':
+                if item.get('reference_mode') != 'text' and not store.serves_public_urls and store.name != 's3':
                     raise ValueError('Connect media storage in Settings before generating a video')
                 from ..image_studio import media_type
                 spec = ShotSpec(**item['spec'])
-                if item.get('reference_mode') == 'character':
+                if item.get('reference_mode') == 'text':
+                    spec.first_frame = None
+                    spec.last_frame = None
+                    spec.reference_images = []
+                elif item.get('reference_mode') == 'character':
                     spec.first_frame = None
                     spec.last_frame = None
                     spec.reference_images = []
@@ -320,7 +329,7 @@ def work(project, item_id):
                     spec.last_frame = asset.url if item.get('anchor_position') == 'last_frame' else None
                 # Persist non-secret input evidence, without expiring signed URLs.
                 item['input_evidence'] = {'mode': item.get('reference_mode', 'shot'),
-                                          'frame_images': 0 if item.get('reference_mode') == 'character' else 1,
+                                          'frame_images': 1 if item.get('reference_mode', 'shot') == 'shot' else 0,
                                           'input_references': len(spec.reference_images) if item.get('reference_mode') == 'character' else 0}
                 item['status'] = 'submitting'
                 put(item)

@@ -21,7 +21,7 @@ takes that drove it, served locally and downloadable.
 
 One key runs all three stages: $OPENROUTER_API_KEY covers the agents, the
 storyboard stills, and the generative renders. Setting it switches the
-defaults from mock to live; without it every stage stays offline and free.
+selects live planning; without a story-provider key, planning requires explicit demo selection.
 $ANTHROPIC_API_KEY still drives the direct-to-Anthropic backend for anyone
 who prefers it.
 
@@ -155,7 +155,7 @@ def _build_llm(backend: str) -> LLMClient:
     if backend == "openrouter":
         from ..llm_openrouter import OpenRouterLLMClient
 
-        return OpenRouterLLMClient()
+        return OpenRouterLLMClient(max_tokens=32768)
     if backend == "anthropic":
         from ..llm import AnthropicLLMClient
 
@@ -164,12 +164,13 @@ def _build_llm(backend: str) -> LLMClient:
 
 
 def _default_backend() -> str:
-    """`openrouter` once a key is present, so the portal opens ready to run.
+    """Select a configured live backend; demo generation requires explicit opt-in."""
+    if os.environ.get(_OPENROUTER_KEY_ENV):
+        return 'openrouter'
+    if os.environ.get('ANTHROPIC_API_KEY'):
+        return 'anthropic'
+    return ''
 
-    Without one it stays on `mock`, which needs no key and no network — the
-    portal must be useful before anyone has paid for anything.
-    """
-    return "openrouter" if os.environ.get(_OPENROUTER_KEY_ENV) else "mock"
 
 
 def _build_image_provider() -> ImageProvider:
@@ -1019,6 +1020,8 @@ def plan(req: PlanRequest):
     request, all the way from the first agent call, not just after it.
     """
     backend = req.backend or _default_backend()
+    if not backend:
+        return _error(400, 'Connect a story provider in Settings, or explicitly choose Demo example. No film was generated.')
     if backend not in _BACKENDS:
         return _error(400, f"unknown backend: {backend!r} (must be one of {_BACKENDS})")
     if req.detail not in DETAIL_LEVELS:
@@ -1341,7 +1344,13 @@ def open_project(session_id: str):
     if err:
         return err
     with session.plan_lock:
-        return {'id': session_id, 'project': asdict(session.project),
+        from .world import shot_sheets, sheet_reference_ids
+        payload=asdict(session.project)
+        for scene in payload['scenes']:
+            if not scene['shots'] and scene['id'] in session.planning_scenes:
+                scene['shots']=session.planning_scenes[scene['id']]['shots']
+        shot_refs={shot.id:list(dict.fromkeys(ref for sheet in shot_sheets(session,scene,shot) for ref in sheet_reference_ids(next((v for v in [sheet,*sheet.get('history',[])] if v['version']==session.shot_sheet_versions.get(shot.id,{}).get(sheet['key']) and v.get('approved_version')==v['version']), {'reference_ids':[]})))) for scene in session.project.scenes for shot in scene.shots}
+        return {'id': session_id, 'project': payload, 'shot_reference_ids':shot_refs,
                 'status': session.plan_progress.status, 'error': session.plan_progress.error,
                 'stage': session.stage.value, 'backend': session.backend,
                 'plan_progress': asdict(session.plan_progress),
@@ -1506,15 +1515,29 @@ class ImageSettingsRequest(BaseModel):
     shot_id: str | None = None
 
 
+def image_reference_limit(model, options=None):
+    if model == 'offline':
+        return 4
+    endpoint = image_studio.choose_endpoint(image_studio.endpoints(model), options or {}, True)
+    spec = endpoint.get('supported_parameters', {}).get('input_references', {})
+    maximum = spec.get('max', spec.get('max_items', 4))
+    return int(maximum) if isinstance(maximum, (int, float)) and maximum >= 1 else 4
+
+
 def bind_shot_references(session, shot_id, req):
     """Use the approved sheet versions assigned to this shot, never a draft."""
     scene=next((scene for scene in session.project.scenes if any(shot.id==shot_id for shot in scene.shots)),None)
     if scene is None:
         raise ValueError('Shot not found')
     assigned=session.shot_sheet_versions.get(shot_id,{})
+    from .world import shot_sheets, sheet_reference_ids
+    shot=next(x for x in scene.shots if x.id==shot_id)
+    visible={x['key'] for x in shot_sheets(session,scene,shot)}
+    all_sheet_refs={ref for x in session.world_sheets.values() for version in [x,*x.get('history',[])] for ref in version['reference_ids']}
     refs=[]
     labels=[]
     for sheet in session.world_sheets.values():
+        if sheet['key'] not in visible: continue
         if assigned:
             if sheet['key'] not in assigned: continue
             version=assigned[sheet['key']]
@@ -1525,14 +1548,15 @@ def bind_shot_references(session, shot_id, req):
             approved=sheet if sheet['version']==sheet['approved_version'] else None
             if approved is None: continue
         views=approved.get('character_views',{})
-        for ref in approved['reference_ids']:
+        for ref in sheet_reference_ids(approved):
             if ref not in refs:
                 refs.append(ref)
                 view=next((key.replace('_',' ') for key,value in views.items() if value==ref),'reference')
                 labels.append(f"Reference {len(refs)}: {approved['name']} — {view}")
-    merged=list(dict.fromkeys(refs+req.reference_ids))
-    if len(merged)>4:
-        raise ValueError('This shot needs more than four reference images. Select a smaller approved reference set in Cast & world and apply it to this shot; no images were generated.')
+    merged=list(dict.fromkeys(refs+[r for r in req.reference_ids if r not in all_sheet_refs]))
+    limit = image_reference_limit(req.model, req.options) if merged else 0
+    if len(merged)>limit:
+        raise ValueError(f'This shot has {len(merged)} references; the selected model supports {limit}. Choose another model or fewer references. No references were dropped.')
     req=req.model_copy(update={'reference_ids':merged})
     guidance=''
     if labels:
@@ -1543,8 +1567,9 @@ def bind_shot_references(session, shot_id, req):
 def validate_image_settings(session, req):
     if not 1 <= req.variations <= 4:
         raise ValueError('Choose between 1 and 4 variations')
-    if len(req.reference_ids) > 4:
-        raise ValueError('Choose at most four reference images')
+    limit = image_reference_limit(req.model, req.options) if req.reference_ids else 0
+    if len(set(req.reference_ids)) > limit:
+        raise ValueError(f'This model supports at most {limit} reference images with these settings')
     if any(key not in image_studio.FIELDS for key in req.options):
         raise ValueError('Unsupported image setting')
     by_id = {r['id']: r for r in session.image_references}

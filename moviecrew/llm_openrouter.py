@@ -124,6 +124,24 @@ def _text_and_finish_reason(payload: dict[str, Any]) -> tuple[str, Optional[str]
     raise LLMError(f"no text content in response: {json.dumps(payload)[:300]}")
 
 
+def _parse_completed_response(text, finish_reason):
+    try:
+        return parse_json_response(text)
+    except JSONParseError:
+        # Only repair one missing outer-object brace on a normally finished
+        # response. json.loads still rejects cut strings, values and arrays.
+        stripped = text.strip()
+        if finish_reason == 'stop' and stripped.startswith('{'):
+            try:
+                repaired = json.loads(stripped + '}')
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(repaired, dict):
+                    return repaired
+        raise
+
+
 class OpenRouterLLMClient(LLMClient):
     """Every agent's completions, routed through OpenRouter."""
 
@@ -233,7 +251,7 @@ class OpenRouterLLMClient(LLMClient):
         """
         text, finish_reason = self._call(task=task, system=system, user=user)
         try:
-            return parse_json_response(text)
+            return _parse_completed_response(text, finish_reason)
         except JSONParseError as first_error:
             if finish_reason == _TRUNCATED_FINISH_REASON:
                 raise self._truncation_error(
@@ -244,7 +262,7 @@ class OpenRouterLLMClient(LLMClient):
                 task=task, system=system, user=f"{user}\n\n{_CORRECTION_INSTRUCTION}"
             )
             try:
-                return parse_json_response(retry_text)
+                return _parse_completed_response(retry_text, retry_finish_reason)
             except JSONParseError as retry_error:
                 if retry_finish_reason == _TRUNCATED_FINISH_REASON:
                     raise self._truncation_error(

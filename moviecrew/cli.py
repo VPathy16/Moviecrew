@@ -196,6 +196,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.backend == 'mock':
+        print('DEMO MODE: fixed sample story; this does not generate a story from your concept.', file=sys.stderr)
     llm = _build_llm(args.backend)
     reference_provider: Optional[ReferenceImageProvider] = (
         FileReferenceImageProvider(args.reference_dir) if args.reference_dir else None

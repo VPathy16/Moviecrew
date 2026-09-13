@@ -315,6 +315,8 @@ class MovieCrew:
         stop_after_design: bool = False,
         approved_direction: Optional[dict] = None,
         approved_project: Optional[Project] = None,
+        completed_scenes: Optional[dict[str, dict]] = None,
+        strict_sequence: bool = True,
         checkpoint_path: Optional[str] = None,
         run_continuity: bool = True,
         on_progress: Optional[Callable[..., None]] = None,
@@ -362,7 +364,9 @@ class MovieCrew:
         Project, before continuity). Omitted (the default), this is the
         plain CLI path and nothing about it changes.
         """
+        sheet_notes = {}
         if approved_project is not None:
+            sheet_notes = approved_project.sheet_notes
             title, logline, outline = approved_project.title, approved_project.logline, approved_project.outline
             bible = approved_project.bible
             raw_scenes = [{**asdict(scene), 'shots': []} for scene in approved_project.scenes]
@@ -399,9 +403,10 @@ class MovieCrew:
                     props=[Prop(**p) for p in designer_out.get("props", [])],
                 )
             bible = effective_bible
+            sheet_notes = designer_out.get("sheet_notes", {})
 
         if stop_after_design:
-            draft = Project(title=title, logline=logline, outline=outline, bible=bible,
+            draft = Project(title=title, logline=logline, outline=outline, bible=bible, sheet_notes=sheet_notes,
                             scenes=[Scene(**{**scene, 'shots': []}) for scene in raw_scenes])
             if checkpoint_path:
                 write_checkpoint(draft, checkpoint_path)
@@ -416,7 +421,8 @@ class MovieCrew:
         seen_shot_ids: set[str] = set()
         for raw_scene in raw_scenes:
             scene = Scene(**raw_scene)
-            cine_out = self.cinematographer.run(scene=raw_scene)
+            cached_scene = (completed_scenes or {}).get(scene.id)
+            cine_out = cached_scene if cached_scene is not None else self.cinematographer.run(scene=raw_scene)
             scene.shots = _shots_for_scene(scene, cine_out.get("shots", []), seen_shot_ids)
             scenes.append(scene)
             all_shots.extend(scene.shots)
@@ -438,7 +444,7 @@ class MovieCrew:
             raise PipelineError('Editor notes must map shot IDs to reasons')
         notes = {k:v for k,v in notes.items() if k in order and isinstance(v,str)}
         try:
-            direction_flags = check_sequence(all_shots, order)
+            direction_flags = check_sequence(all_shots, order, strict=strict_sequence)
         except ValueError as exc:
             raise PipelineError(str(exc)) from exc
         select_anchors(scenes, chains, bible)
@@ -518,6 +524,7 @@ class MovieCrew:
             outline=outline,
             scenes=scenes,
             render_plan=render_plan,
+            sheet_notes=sheet_notes,
         )
 
         if checkpoint_path:

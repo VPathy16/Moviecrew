@@ -332,3 +332,36 @@ def test_extensions_use_trimmed_boundaries_and_correct_anchor_positions(setup, m
         calls.clear()
     assert client.post('/api/projects/film-b/extension-boundary',json=trim).status_code==404
     assert client.post('/api/projects/film-a/extension-boundary',json={**trim,'end':2}).status_code==400
+
+
+def test_text_only_video_has_no_image_inputs(setup, monkeypatch):
+    client, fake, s, _ = setup
+    monkeypatch.setattr(fake, 'name', 'test-live')
+    monkeypatch.setattr(flow, 'launch', lambda *args: None)
+    req = {**request_for(s), 'reference_mode':'text', 'frame_id':'', 'reference_ids':[]}
+    _, frame, spec = flow.prepare('film-a', flow.VideoRequest(**req))
+    assert frame is None and not spec.reference_images and not spec.first_frame and not spec.last_frame
+    assert client.post('/api/projects/film-a/video-estimate',json=req).status_code == 200
+    assert client.post('/api/projects/film-a/videos',json=req).status_code == 200
+    bad={**req,'frame_id':s.board[0].version_id}
+    assert client.post('/api/projects/film-a/video-estimate',json=bad).status_code == 400
+    assert not fake.submitted
+
+
+def test_character_guided_extension_preserves_metadata_without_anchor(setup, monkeypatch):
+    client,fake,s,root=setup
+    monkeypatch.setattr(fake,'name','test-live')
+    monkeypatch.setattr(flow,'CHARACTER_VIDEO_MODELS',{'fake/model'})
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    frame=s.versions[0]
+    frame.settings['extension']={'direction':'after','video_id':'source','start':0,'end':1}
+    path=root/'sheet.png';path.write_bytes(MockImageProvider._BYTES)
+    s.image_references.append({'id':'sheet','path':str(path),'media_type':'image/png','name':'Character'})
+    req={**request_for(s),'frame_id':frame.version_id,'reference_mode':'character','reference_ids':['sheet']}
+    _,_,spec=flow.prepare('film-a',flow.VideoRequest(**req))
+    assert not spec.first_frame and not spec.last_frame
+    result=client.post('/api/projects/film-a/videos',json=req)
+    assert result.status_code==200,result.text
+    item=flow.get('film-a',req['request_id'])
+    assert item['extension']['direction']=='after'
+    assert item['reference_ids']==['sheet'] and item['source_path']==''
