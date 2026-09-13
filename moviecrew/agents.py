@@ -48,9 +48,12 @@ class WriterAgent(Agent):
     role = "writer"
     system_prompt = (
         "You are the Writer. Given the title, logline, and outline, break the story into "
-        "scenes.\n"
+        "scenes. Give each scene an event, goal, obstacle, turning_point, and acting_tasks "
+        "(a dictionary from character ID to observable tactic, including what the eyes attend to). "
+        "Every scene must change the situation; do not repeat the same action in successive scenes.\n"
         'Respond with JSON only: {"scenes": [{"id": str, "slug": str, "title": str, '
-        '"summary": str, "location_id": str, "character_ids": [str, ...]}]}.'
+        '"summary": str, "location_id": str, "character_ids": [str, ...], '
+        '"event": str, "goal": str, "obstacle": str, "turning_point": str, "acting_tasks": {str: str}}]}.'
     )
 
     _ASSETS_FIRST_ADDENDUM = (
@@ -156,10 +159,18 @@ class CinematographerAgent(Agent):
         "You are the Cinematographer. Given one scene, break it into shots. Give each "
         "shot the duration the cut actually wants, in seconds — 2.5, 5, 11.5 and 18 "
         "are all legitimate; do not round to fit any particular renderer, which will "
-        "clamp or split later if it must. Durations must be positive.\n"
+        "clamp or split later if it must. Durations must be positive. "
+        "Plan cause and consequence. Each shot has story_contract_version=1, purpose, one observable "
+        "action, entry_state and exit_state (non-empty dictionaries of stable entity/property keys to "
+        "concise state labels), screen_direction, audio_intent and transition (cut, continuous, ellipsis). "
+        "Use identical labels when a state is unchanged. Adjacent shots in a scene must agree on shared "
+        "exit/entry keys unless an explicit ellipsis advances time. A cut changes framing, not physical "
+        "facts. Vary shot size with a story reason; carry prop ownership and physical condition.\n"
         'Respond with JSON only: {"shots": [{"id": str, "scene_id": str, '
         '"description": str, "duration_s": number, "camera_move": str, "lens": str, '
-        '"framing": str}]}.'
+        '"framing": str, "story_contract_version": 1, "purpose": str, "action": str, '
+        '"entry_state": {str: str}, "exit_state": {str: str}, "screen_direction": str, '
+        '"audio_intent": str, "transition": "cut"|"continuous"|"ellipsis"}]}.'
     )
 
     def build_user(self, *, scene: dict[str, Any]) -> str:
@@ -199,6 +210,13 @@ def _build_prompter_system_prompt(detail: str) -> str:
         "matching negative prompt.",
         "",
         _PROMPTER_LEAD_RULE,
+        "When context is supplied, use the current shot action and entry/exit states as authoritative. "
+        "Use neighbouring shots only to ensure progression: never animate their actions in this shot. "
+        "Write a self-contained instruction, not 'same as previous'. A hard cut may change composition; "
+        "continuous action preserves motion direction. Preserve supplied character and world descriptors. "
+        "Distinguish identity references from composition references. Never invent attached images. "
+        "Integrate scene acting tasks through visible behaviour, feasible timing and sound. "
+        "The intended ending state must follow the current action. Prefer concrete positive descriptions.",
         "",
     ]
     if level["layered"]:
@@ -243,8 +261,11 @@ class PrompterAgent(Agent):
         self.detail = detail
         self.system_prompt = _build_prompter_system_prompt(detail)
 
-    def build_user(self, *, shot: dict[str, Any]) -> str:
-        return json.dumps({"shot": shot}, indent=2)
+    def build_user(self, *, shot: dict[str, Any], context: dict | None = None) -> str:
+        data = {"shot": shot}
+        if context is not None:
+            data['context'] = context
+        return json.dumps(data, indent=2)
 
 
 class ContinuityAgent(Agent):
@@ -263,16 +284,23 @@ class ContinuityAgent(Agent):
 class EditorAgent(Agent):
     role = "editor"
     system_prompt = (
-        "You are the Editor. Given every shot id, return the final screening order, "
-        "plus how shots group into continuous takes. A chain is an editorial "
+        "You are the Editor. Given story intent, scenes and full shot states, return the final screening order. "
+        "Preserve causal progression and flag coverage gaps in editorial_notes keyed by shot ID. "
+        "Explain each cut using action, movement or sound. Never reorder an effect before its cause. "
+        "Also return "
+        "how shots group into continuous takes. A chain is an editorial "
         "statement: these shots play as one unbroken take, with no cut between them. "
         "Group ADJACENT shots that form one continuous take into a chain (in playing "
         "order); a hard cut starts a new chain; a standalone shot is a one-element "
         "chain. Chain length is a creative choice — do not shorten a take because you "
         "imagine a tool might struggle with it. Every shot id must appear exactly "
         "once across all chains, consistent with order.\n"
-        'Respond with JSON only: {"order": [str, ...], "chains": [[str, ...], ...]}.'
+        'Respond with JSON only: {"order": [str, ...], "chains": [[str, ...], ...], '
+        '"editorial_notes": {str: str}}.'
     )
 
-    def build_user(self, *, shot_ids: list[str]) -> str:
-        return json.dumps({"shot_ids": shot_ids}, indent=2)
+    def build_user(self, *, shot_ids: list[str], context: dict | None = None) -> str:
+        data = {"shot_ids": shot_ids}
+        if context is not None:
+            data['context'] = context
+        return json.dumps(data, indent=2)

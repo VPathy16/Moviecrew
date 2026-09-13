@@ -120,8 +120,27 @@ class Shot:
     first_frame_ref: Optional[str] = None
     last_frame_ref: Optional[str] = None
     consistency_anchor: bool = False
+    story_contract_version: int = 0  # 0: legacy, 1: explicit causal direction
+    purpose: str = ''
+    action: str = ''
+    entry_state: dict[str, str] = field(default_factory=dict)
+    exit_state: dict[str, str] = field(default_factory=dict)
+    screen_direction: str = ''
+    audio_intent: str = ''
+    transition: str = 'cut'  # cut | continuous | ellipsis
+
 
     def __post_init__(self) -> None:
+        if self.story_contract_version not in (0, 1):
+            raise ValueError('Unsupported story contract version')
+        if self.story_contract_version == 1 and self.transition not in ('cut', 'continuous', 'ellipsis'):
+            raise ValueError('Unknown shot transition')
+        if self.story_contract_version == 1:
+            if not isinstance(self.purpose, str) or not self.purpose.strip() or not isinstance(self.action, str) or not self.action.strip():
+                raise ValueError(f'Shot {self.id} needs a purpose and observable action')
+            for state in (self.entry_state, self.exit_state):
+                if not isinstance(state, dict) or not state or any(not isinstance(k, str) or not isinstance(v, str) or not k.strip() or not v.strip() for k, v in state.items()):
+                    raise ValueError(f'Shot {self.id} needs named entry and exit states')
         if self.duration_s <= 0:
             raise ValueError(
                 f"shot {self.id}: duration_s must be positive, got {self.duration_s}"
@@ -137,6 +156,11 @@ class Scene:
     location_id: Optional[str] = None
     character_ids: list[str] = field(default_factory=list)
     shots: list[Shot] = field(default_factory=list)
+    event: str = ''
+    goal: str = ''
+    obstacle: str = ''
+    turning_point: str = ''
+    acting_tasks: dict[str, str] = field(default_factory=dict)
 
 
 # --- Generated artifacts ----------------------------------------------------
@@ -181,6 +205,8 @@ class ShotIntent:
     negative: str = ""
     duration_s: float = 8.0
     aspect_ratio: str = DEFAULT_ASPECT_RATIO
+    compiler_version: str = 'legacy'
+    direction_context: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.duration_s <= 0:
@@ -208,6 +234,7 @@ class RenderPlan:
     order: list[str] = field(default_factory=list)
     chains: list[list[str]] = field(default_factory=list)
     est_duration_s: float = 0.0
+    editorial_notes: dict[str, str] = field(default_factory=dict)
 
 
 # --- Project (top-level container) ------------------------------------------
