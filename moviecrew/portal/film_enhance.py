@@ -242,3 +242,45 @@ def editor_frame(project: str, req: FrameRequest):
         s.versions.append(frame)
         projects.save(s)
     return {'frame_id':frame.version_id, 'shot_id':req.shot_id}
+
+
+class ExtensionBoundary(BaseModel):
+    video_id: str
+    start: float = Field(default=0, ge=0, allow_inf_nan=False)
+    end: float = Field(gt=0, allow_inf_nan=False)
+    direction: Literal['before', 'after']
+
+
+@router.post('/api/projects/{project}/extension-boundary')
+def extension_boundary(project: str, req: ExtensionBoundary):
+    """Prepare a boundary reference without submitting a paid generation."""
+    from .. import projects
+    s = f.session(project)
+    source = f.get(project, req.video_id)
+    if source['status'] != 'complete' or req.end <= req.start or req.end > source['duration_s']:
+        raise HTTPException(400, 'Choose a valid trimmed range in a completed clip')
+    shot_id = source.get('shot_id') or next((shot.id for scene in s.project.scenes for shot in scene.shots), None)
+    if not shot_id:
+        raise HTTPException(400, 'This film needs a shot before generating an extension')
+    # Decode frame timestamps; duration - 1/24 can select the wrong frame at other FPS.
+    if req.direction == 'after':
+        import subprocess
+        result = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                                 '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json',
+                                 source['path']], capture_output=True, text=True, check=True, timeout=60)
+        times = [float(row['best_effort_timestamp_time']) for row in json.loads(result.stdout).get('frames', [])
+                 if 'best_effort_timestamp_time' in row]
+        times = [t for t in times if req.start <= t < req.end]
+        if not times:
+            raise HTTPException(400, 'There is no video frame inside this selection')
+        at = max(times)
+    else:
+        at = req.start
+    created = editor_frame(project, FrameRequest(shot_id=shot_id, video_id=req.video_id, time_s=at))
+    with s.plan_lock:
+        frame = next(v for v in s.versions if v.version_id == created['frame_id'])
+        frame.settings['extension'] = req.model_dump()
+        frame.settings['boundary_time_s'] = at
+        projects.save(s)
+    return {**created, 'anchor_position':'last_frame' if req.direction == 'before' else 'first_frame',
+            'image_url':f"/api/projects/{project}/versions/{created['frame_id']}/image"}

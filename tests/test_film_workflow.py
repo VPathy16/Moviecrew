@@ -278,3 +278,57 @@ def test_enhance_missing_key_and_unknown_submission(setup, monkeypatch):
     job=dict(id=str(uuid.uuid4()),project='film-a',kind='video',backend='fal-enhance',status='submitting')
     flow.put(job);monkeypatch.setattr(flow,'launch',lambda *args:None);flow.recover()
     assert flow.get('film-a',job['id'])['status']=='uncertain'
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg') or not shutil.which('ffprobe'), reason='ffmpeg required')
+def test_extensions_use_trimmed_boundaries_and_correct_anchor_positions(setup, monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from moviecrew.render_openrouter import OpenRouterRenderClient
+    client, _, s, tmp=setup
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    path=tmp/'48fps.mp4'
+    flow.run_ffmpeg(['-f','lavfi','-i','testsrc2=s=96x96:r=48','-t','1','-c:v','libx264','-pix_fmt','yuv420p',str(path)])
+    source=dict(id=str(uuid.uuid4()),project='film-a',kind='video',status='complete',shot_id=s.board[0].shot_id,path=str(path),duration_s=1)
+    flow.put(source)
+    calls=[]
+    def transport(method,url,headers,body):
+        if url.endswith('/videos/models'):
+            return {'data':[{'id':name,'supported_durations':[5],'supported_resolutions':['480p'],
+                             'supported_aspect_ratios':['16:9'],'supported_frame_images':positions}
+                            for name,positions in [('start-only',['first_frame']),('both',['first_frame','last_frame'])]]}
+        calls.append(body)
+        return {'status':'failed','error':'deliberate test stop'}
+    provider=OpenRouterRenderClient(transport=transport)
+    monkeypatch.setattr(portal,'_render_client',lambda:(provider,None))
+    class Store:
+        serves_public_urls=True
+        name='test'
+        def put_reference(self,path,key):return SimpleNamespace(url='https://example.test/boundary.png')
+    monkeypatch.setattr(portal,'_asset_store',lambda:Store())
+    models=client.get('/api/projects/film-a/video-models').json()['models']
+    assert models[0]['frame_positions']==['first_frame']
+    for direction,position in [('before','last_frame'),('after','first_frame')]:
+        trim={'video_id':source['id'],'start':.2,'end':.4,'direction':direction}
+        result=client.post('/api/projects/film-a/extension-boundary',json=trim)
+        assert result.status_code==200,result.text
+        boundary=result.json()
+        assert boundary['anchor_position']==position
+        assert not calls  # Boundary preparation must never start paid work.
+        frame=next(v for v in s.versions if v.version_id==boundary['frame_id'])
+        if direction=='after':
+            assert .39 < frame.settings['boundary_time_s'] < .4  # Last 48fps frame, not end - 1/24.
+        req={**request_for(s),'model':'both','duration_s':5,'frame_id':boundary['frame_id'],'anchor_position':position}
+        if direction=='before':
+            assert client.post('/api/projects/film-a/videos',json={**req,'model':'start-only'}).status_code==400
+            assert client.post('/api/projects/film-a/videos',json={**req,'anchor_position':'first_frame'}).status_code==400
+        created=client.post('/api/projects/film-a/videos',json=req)
+        assert created.status_code==200,created.text
+        assert created.json()['extension']==trim
+        assert client.post('/api/projects/film-a/videos',json=req).json()['id']==req['request_id']
+        flow.work('film-a',req['request_id'])
+        assert len(calls)==1
+        assert calls[0]['frame_images']==[{'type':'image_url','image_url':{'url':'https://example.test/boundary.png'},'frame_type':position}]
+        calls.clear()
+    assert client.post('/api/projects/film-b/extension-boundary',json=trim).status_code==404
+    assert client.post('/api/projects/film-a/extension-boundary',json={**trim,'end':2}).status_code==400
