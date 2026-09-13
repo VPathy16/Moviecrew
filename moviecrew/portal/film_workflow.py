@@ -107,6 +107,7 @@ class VideoRequest(BaseModel):
     request_id: uuid.UUID
     shot_id: str
     frame_id: str = ''
+    anchor_position: Literal['first_frame', 'last_frame'] = 'first_frame'
     reference_mode: Literal['shot', 'character'] = 'shot'
     reference_ids: list[str] = Field(default_factory=list, max_length=9)
     prompt: str = Field(min_length=1, max_length=20000)
@@ -115,6 +116,15 @@ class VideoRequest(BaseModel):
     aspect_ratio: str = '16:9'
     resolution: str = '720p'
     audio: bool = False
+
+
+def frame_positions(client, model):
+    entry = next((m for m in client.models() if m['id'] == model), {})
+    positions = entry.get('supported_frame_images')
+    if isinstance(positions, list):
+        return [p for p in positions if p in ('first_frame', 'last_frame')]
+    # Legacy providers advertise only a combined flag. Never infer ending-frame support.
+    return ['first_frame'] if client.capabilities(model).supports_first_last_frame else []
 
 
 def prepare(project, req):
@@ -133,6 +143,12 @@ def prepare(project, req):
     if req.model not in {m['id'] for m in client.models()}:
         raise HTTPException(400, 'Choose an available video model')
     caps = client.capabilities(req.model)
+    if req.reference_mode == 'shot' and req.anchor_position not in frame_positions(client, req.model):
+        raise HTTPException(400, 'This model does not support the required '+req.anchor_position.replace('_', ' '))
+    if frame and frame.settings.get('extension'):
+        expected = 'last_frame' if frame.settings['extension']['direction'] == 'before' else 'first_frame'
+        if req.anchor_position != expected:
+            raise HTTPException(400, 'The extension boundary must be used as the '+expected.replace('_', ' '))
     if req.reference_mode == 'character':
         if client.name == 'fake':
             raise HTTPException(400, 'Character-only video requires a connected video provider')
@@ -181,6 +197,7 @@ def models(project: str):
         result.append({'id': model['id'], 'name': 'Offline preview · no AI generation' if client.name == 'fake' else model.get('name', model['id']),
                        'duration_max': c.max_duration_s, 'durations': c.supported_durations, 'ratios': c.supported_aspect_ratios or ['16:9'],
                        'resolutions': c.supported_resolutions or ['720p'], 'audio': c.supports_audio,
+                       'frame_positions': frame_positions(client, model['id']),
                        'character_references': model['id'] in CHARACTER_VIDEO_MODELS})
     return {'models': result, 'offline': client.name == 'fake'}
 
@@ -209,6 +226,8 @@ def create_video(project: str, req: VideoRequest):
         from dataclasses import asdict
         item = {'id': request_id, 'project': project, 'kind': 'video', 'status': 'queued',
                 'shot_id': req.shot_id, 'frame_id': req.frame_id, 'prompt': req.prompt,
+                'anchor_position': req.anchor_position,
+                'extension': frame.settings.get('extension') if frame else None,
                 'model': req.model, 'backend': client.name, 'source_path': frame.image_path if req.reference_mode == 'shot' else '',
                 'reference_mode': req.reference_mode, 'reference_ids': req.reference_ids if req.reference_mode == 'character' else [],
                 'reference_paths': [next(r['path'] for r in session(project).image_references if r['id'] == rid) for rid in req.reference_ids] if req.reference_mode == 'character' else [],
@@ -297,7 +316,8 @@ def work(project, item_id):
                     suffix = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}[mime]
                     asset = store.put_reference(item['source_path'], f"films/{project}/frames/{item['frame_id']}.{suffix}")
                     spec.reference_images = [asset.url]
-                    spec.first_frame = asset.url
+                    spec.first_frame = asset.url if item.get('anchor_position', 'first_frame') == 'first_frame' else None
+                    spec.last_frame = asset.url if item.get('anchor_position') == 'last_frame' else None
                 # Persist non-secret input evidence, without expiring signed URLs.
                 item['input_evidence'] = {'mode': item.get('reference_mode', 'shot'),
                                           'frame_images': 0 if item.get('reference_mode') == 'character' else 1,

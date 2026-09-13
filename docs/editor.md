@@ -46,3 +46,31 @@ Contracts verified against provider documentation:
 
 Tests use controlled provider responses and real FFmpeg media. Live processing must
 be verified with the owner's fal credentials before claiming production readiness.
+
+## Extend before / after
+
+Each selected timeline clip has Extend before (prequel) and Extend after (sequel).
+The generation panel remains in the editor and displays the actual boundary image,
+prompt, model, duration, ratio, resolution and audio controls. Only models advertising
+the needed frame position are listed. Catalogue support is validated again on the
+server; provider-specific restrictions may still reject a live request.
+
+Prequels send the trimmed opening image as `last_frame`. Sequels send the final
+visible frame inside the trimmed range as `first_frame`; frame timestamps are read
+from the actual video rather than assuming 24 fps. Character appearance is carried
+by this boundary; separate character-reference images are not attached in this mode.
+No boundary preparation or cost estimate submits a generation. Users explicitly
+Generate, preview the saved result and Insert before/after source clip. Insertion
+refuses to guess when the source range changed or appears multiple times. Candidates
+and their source ranges persist across reloads and remain available in the library.
+
+## Visual timeline
+
+The video track uses a shared pixels-per-second scale for clip widths, ruler ticks,
+insertion points and the playhead. Zoom changes that scale without changing the edit.
+Drag the ruler/playhead to scrub; drag clip edges to trim with ripple movement of
+following clips; drag a clip onto the left/right half of another to insert before/after.
+Edge handles also accept arrow keys in 0.05-second steps. Numeric trim controls remain
+available for very short clips. Undo restores a completed trim or move.
+
+Clip actions open in a compact right-click menu, also available from each clip’s ⋯ button or Shift+F10. Trim opens a small popup with precise in/out values; drag handles remain available on the timeline. Escape and outside clicks dismiss the menu. Undo stays in the timeline toolbar.
