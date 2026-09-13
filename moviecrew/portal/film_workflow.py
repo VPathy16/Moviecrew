@@ -78,7 +78,7 @@ def folder(project):
 
 
 def public(item):
-    data = {k: v for k, v in item.items() if k not in {'path', 'source_path', 'provider_url', 'spec', 'reference_paths'}}
+    data = {k: v for k, v in item.items() if k not in {'path', 'source_path', 'provider_url', 'spec', 'reference_paths', 'fal_status_url', 'fal_response_url'}}
     data['video_url'] = f"/api/projects/{item['project']}/film-media/{item['id']}" if item.get('path') and item['status'] == 'complete' else None
     return data
 
@@ -239,7 +239,11 @@ def work(project, item_id):
         output = dest / (item_id + '.mp4')
         if item['status'] in TERMINAL:
             return
-        if item['kind'] == 'export':
+        if item.get('backend') == 'fal-enhance':
+            from .film_enhance import process
+            if not process(item, output):
+                return
+        elif item['kind'] == 'export':
             export_movie(item, output)
         elif item.get('backend') == 'upload':
             run_ffmpeg(['-i', item['source_path'], '-map', '0:v:0', '-map', '0:a:0?', '-c:v', 'libx264', '-preset', 'fast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-movflags', '+faststart', str(output)])
@@ -413,6 +417,8 @@ class CutClip(BaseModel):
 class CutRequest(BaseModel):
     clips: list[CutClip] = Field(max_length=200)
     aspect_ratio: str = '16:9'
+    fit: Literal['contain', 'cover'] = 'contain'
+    resolution: Literal['720p', '1080p', '4K'] = '720p'
 
 
 def validate_cut(project, cut):
@@ -439,7 +445,9 @@ def read_cut(project: str):
 def save_cut(project: str, req: CutRequest):
     session(project)
     validate_cut(project, req)
-    payload = req.model_dump()
+    payload = req.model_dump(exclude_defaults=True)
+    payload['clips'] = [c.model_dump() for c in req.clips]
+    payload['aspect_ratio'] = req.aspect_ratio
     with db() as conn:
         conn.execute('INSERT INTO film_cuts VALUES (?,?) ON CONFLICT(project) DO UPDATE SET payload=excluded.payload', (project, json.dumps(payload)))
     return payload
@@ -457,8 +465,16 @@ def create_export(project: str):
     return public(item)
 
 
+def canvas_filter(w, h, fit='contain'):
+    if fit == 'cover':
+        return f'scale={w}:{h}:force_original_aspect_ratio=increase:force_divisible_by=2,crop={w}:{h},setsar=1'
+    return f'scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1'
+
+
 def export_movie(item, output):
-    w, h = {'16:9': (1280, 720), '9:16': (720, 1280), '1:1': (720, 720)}[item['cut']['aspect_ratio']]
+    short = {'720p':720, '1080p':1080, '4K':2160}[item['cut'].get('resolution', '720p')]
+    long = short * 16 // 9
+    w, h = {'16:9': (long, short), '9:16': (short, long), '1:1': (short, short)}[item['cut']['aspect_ratio']]
     temp = output.parent / (item['id']+'_parts')
     temp.mkdir(exist_ok=True)
     try:
@@ -472,7 +488,7 @@ def export_movie(item, output):
             if clip['mute'] or not has_audio:
                 args += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']
             args += ['-t', str(length), '-map', '0:v:0', '-map', '1:a:0' if clip['mute'] or not has_audio else '0:a:0',
-                     '-vf', f'scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1',
+                     '-vf', canvas_filter(w, h, item['cut'].get('fit', 'contain')),
                      '-r', '24', '-c:v', 'libx264', '-preset', 'fast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', str(part)]
             run_ffmpeg(args)
             parts.append(part)

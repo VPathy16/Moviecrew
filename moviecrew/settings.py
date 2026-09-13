@@ -62,6 +62,8 @@ class SettingsField:
 # Adding one here is the only way to make it settable through the UI —
 # `save_file` refuses anything not in this list.
 SETTINGS_FIELDS: tuple[SettingsField, ...] = (
+    SettingsField("FAL_KEY", "fal API key · Topaz & AI expand", secret=True,
+                  help="Optional. Connects Topaz upscaling and Luma canvas expansion. Billed through fal."),
     SettingsField(
         "OPENROUTER_API_KEY",
         "OpenRouter API key",

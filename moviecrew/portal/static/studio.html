@@ -186,7 +186,7 @@ $('generate-image').onclick=async()=>{if(viewMode==='image')return generateImage
 async function pollVideoJob(id,projectId,shot){try{const data=await api('/api/render/'+id);if(data.is_terminal){videoJob=null;if(project?.id===projectId&&shotId===shot&&viewMode==='video'){await loadVideoView();$('video-message').textContent=data.status==='succeeded'?(data.render_url?'Your video is ready in Generated videos.':'Generation finished, but the video could not be saved to your library.'):(data.error||'Video generation failed.');applyView()}}else setTimeout(()=>pollVideoJob(id,projectId,shot),2500)}catch(e){videoJob=null;if(project?.id===projectId&&shotId===shot){$('video-message').textContent='Progress could not be checked. The job may still be running; avoid generating again until its status is confirmed.';applyView()}}}
 function renderAccountFields(fields){
  $('account-fields').replaceChildren();
- const groups=[['Generation',f=>f.key.includes('API_KEY')],['Media storage',f=>f.key.startsWith('MOVIECREW_S3_')||f.key==='MOVIECREW_ASSET_BASE_URL'],['Production setup',f=>['MOVIECREW_PUBLIC_BASE_URL','MOVIECREW_TAKES_ROOT'].includes(f.key)]];
+ const groups=[['Generation',f=>f.key.includes('API_KEY')||f.key==='FAL_KEY'],['Media storage',f=>f.key.startsWith('MOVIECREW_S3_')||f.key==='MOVIECREW_ASSET_BASE_URL'],['Production setup',f=>['MOVIECREW_PUBLIC_BASE_URL','MOVIECREW_TAKES_ROOT'].includes(f.key)]];
  for(const [title,matches] of groups){const section=document.createElement('section');const heading=document.createElement('h3');heading.textContent=title;section.append(heading);
  for(const field of fields.filter(matches)){const label=document.createElement('label');label.textContent=field.label+(field.configured?' · Saved':'');const input=document.createElement('input');input.type=field.secret?'password':'text';input.autocomplete='off';input.dataset.key=field.key;input.dataset.secret=String(field.secret);input.dataset.original=field.secret?'':field.value||'';input.value=input.dataset.original;input.setAttribute('aria-label',field.label);input.placeholder=field.secret?(field.configured?'Saved key · leave blank to keep':'Enter key'):(field.key==='MOVIECREW_S3_REGION'?'auto':'');label.append(input);section.append(label);if(field.help){const help=document.createElement('p');help.className='settings-help';help.textContent=field.help;section.append(help)}}$('account-fields').append(section)}
 }
@@ -339,4 +339,4 @@ if(new URLSearchParams(location.search).has('record-demo')){
  };
 }
 
-</script></body></html>
+</script><script src="/editor.js"></script></body></html>

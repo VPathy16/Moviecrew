@@ -195,3 +195,86 @@ def test_character_mode_uses_only_owned_references_without_frame_anchors(setup, 
     assert len(calls)==1
     assert 'frame_images' not in calls[0]
     assert calls[0]['input_references']==[{'type':'image_url','image_url':{'url':'https://example.test/character.png'}}]
+
+
+def test_canvas_modes_and_sizes_roundtrip(setup, monkeypatch):
+    client, _, _, _ = setup
+    payload={'clips':[], 'aspect_ratio':'9:16','fit':'cover','resolution':'4K'}
+    assert client.put('/api/projects/film-a/cut',json=payload).json()==payload
+    assert client.get('/api/projects/film-a/cut').json()==payload
+    assert client.put('/api/projects/film-a/cut',json={**payload,'fit':'stretch'}).status_code==422
+    assert client.put('/api/projects/film-a/cut',json={**payload,'resolution':'8K'}).status_code==422
+    assert 'crop=1280:720' in flow.canvas_filter(1280,720,'cover')
+    assert 'color=black' in flow.canvas_filter(1280,720,'contain')
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='ffmpeg required')
+def test_enhancement_ownership_payload_resume_and_original_audio(setup, monkeypatch):
+    from moviecrew.portal import film_enhance as enhance
+    from types import SimpleNamespace
+    client, _, s, tmp=setup
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    monkeypatch.setenv('FAL_KEY','test-key-not-real')
+    source=tmp/'portrait.mp4'
+    flow.run_ffmpeg(['-f','lavfi','-i','color=c=red:s=90x160:r=24','-f','lavfi','-i','sine=frequency=400:sample_rate=48000','-t','0.5','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac',str(source)])
+    original=dict(id=str(uuid.uuid4()),project='film-a',kind='video',status='complete',shot_id=s.board[0].shot_id,path=str(source),duration_s=.5)
+    flow.put(original)
+    class Store:
+        serves_public_urls=True
+        name='test'
+        def put_reference(self,path,key):return SimpleNamespace(url='https://v3.fal.media/source.mp4')
+    monkeypatch.setattr(portal,'_asset_store',lambda:Store())
+    calls=[]
+    def queue(url,body=None):
+        calls.append((url,body))
+        if body:return {'request_id':'remote-1','status_url':'https://queue.fal.run/status','response_url':'https://queue.fal.run/result'}
+        if url.endswith('status'):return {'status':'COMPLETED'}
+        return {'video':{'url':'https://v3.fal.media/output.mp4'}}
+    monkeypatch.setattr(enhance,'queue_request',queue)
+    monkeypatch.setattr(enhance,'download',lambda url,path:shutil.copyfile(source,path))
+    req={'request_id':str(uuid.uuid4()),'video_id':original['id'],'operation':'upscale','start':0,'end':.5,'factor':2}
+    assert client.post('/api/projects/film-b/enhancements',json=req).status_code==404
+    res=client.post('/api/projects/film-a/enhancements',json=req)
+    assert res.status_code==200
+    assert client.post('/api/projects/film-a/enhancements',json=req).json()['id']==req['request_id']
+    assert not calls
+    flow.work('film-a',req['request_id'])
+    done=flow.get('film-a',req['request_id'])
+    assert done['status']=='complete',done.get('error')
+    assert calls[0][1]=={'video_url':'https://v3.fal.media/source.mp4','model':'Proteus','upscale_factor':2,'H264_output':True}
+    assert flow.probe(done['path'])[1]
+    assert flow.get('film-a',original['id'])==original
+    assert 'fal_status_url' not in flow.public(done)
+    # Resume only polls the original provider job.
+    done.update(status='waiting');flow.put(done);calls.clear();flow.work('film-a',done['id'])
+    assert not any(body for _,body in calls)
+    # Expand sends a video (not an image-generation prompt); centre is composited back.
+    req.update(request_id=str(uuid.uuid4()),operation='expand',aspect_ratio='16:9',preserve_center=True)
+    client.post('/api/projects/film-a/enhancements',json=req);calls.clear();flow.work('film-a',req['request_id'])
+    expanded=flow.get('film-a',req['request_id'])
+    assert expanded['status']=='complete',expanded.get('error')
+    assert calls[0][1]['aspect_ratio']=='16:9'
+    assert '/reframe' in calls[0][0]
+    assert flow.probe(expanded['path'])[1]
+    import json
+    info=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-of','json',expanded['path']]))
+    v=next(x for x in info['streams'] if x['codec_type']=='video')
+    assert (v['width'],v['height'])==(1280,720)
+    # A boundary image is owned by this film and usable as a starting frame.
+    frame=client.post('/api/projects/film-a/editor-frame',json={'shot_id':s.board[0].shot_id,'video_id':original['id'],'time_s':.25})
+    assert frame.status_code==200
+    assert any(v.version_id==frame.json()['frame_id'] for v in s.versions)
+    assert client.post('/api/projects/film-b/editor-frame',json={'shot_id':s.board[0].shot_id,'video_id':original['id'],'time_s':.25}).status_code==404
+
+
+def test_enhance_missing_key_and_unknown_submission(setup, monkeypatch):
+    from moviecrew.portal import film_enhance as enhance
+    client,_,_,tmp=setup
+    monkeypatch.delenv('FAL_KEY',raising=False)
+    assert client.get('/api/projects/film-a/enhancement-options').json()['configured'] is False
+    monkeypatch.setenv('FAL_KEY','test')
+    monkeypatch.setattr(enhance,'queue_request',lambda *args: (_ for _ in ()).throw(AssertionError('must not resubmit')))
+    # The common recovery path marks an interrupted enhancement submission uncertain.
+    job=dict(id=str(uuid.uuid4()),project='film-a',kind='video',backend='fal-enhance',status='submitting')
+    flow.put(job);monkeypatch.setattr(flow,'launch',lambda *args:None);flow.recover()
+    assert flow.get('film-a',job['id'])['status']=='uncertain'

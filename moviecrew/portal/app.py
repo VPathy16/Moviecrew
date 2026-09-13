@@ -1626,3 +1626,11 @@ app.include_router(film_router)
 
 from .world import router as world_router
 app.include_router(world_router)
+
+
+@app.get("/editor.js")
+def editor_script():
+    return FileResponse(_STATIC_DIR / "editor.js", media_type="text/javascript")
+
+from .film_enhance import router as enhance_router
+app.include_router(enhance_router)
