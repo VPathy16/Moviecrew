@@ -57,6 +57,7 @@ def download(url, path):
 
 
 class EnhanceRequest(BaseModel):
+    clip_id: str | None = Field(default=None, max_length=100)
     request_id: uuid.UUID
     video_id: str
     operation: Literal['expand', 'upscale']
@@ -297,6 +298,7 @@ def editor_frame(project: str, req: FrameRequest):
 
 
 class ExtensionBoundary(BaseModel):
+    clip_id: str | None = Field(default=None, max_length=100)
     video_id: str
     start: float = Field(default=0, ge=0, allow_inf_nan=False)
     end: float = Field(gt=0, allow_inf_nan=False)
@@ -331,7 +333,7 @@ def extension_boundary(project: str, req: ExtensionBoundary):
     created = editor_frame(project, FrameRequest(shot_id=shot_id, video_id=req.video_id, time_s=at))
     with s.plan_lock:
         frame = next(v for v in s.versions if v.version_id == created['frame_id'])
-        frame.settings['extension'] = req.model_dump()
+        frame.settings['extension'] = req.model_dump(exclude_none=True)
         frame.settings['boundary_time_s'] = at
         projects.save(s)
     return {**created, 'anchor_position':'last_frame' if req.direction == 'before' else 'first_frame',

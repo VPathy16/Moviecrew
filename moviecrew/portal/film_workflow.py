@@ -437,6 +437,7 @@ async def upload(project: str, shot_id: str, request: Request):
 
 
 class CutClip(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), min_length=1, max_length=100)
     video_id: str
     start: float = Field(default=0, ge=0, allow_inf_nan=False)
     end: float = Field(gt=0, allow_inf_nan=False)
@@ -444,6 +445,7 @@ class CutClip(BaseModel):
 
 
 class CutRequest(BaseModel):
+    revision: int = Field(default=0, ge=0)
     clips: list[CutClip] = Field(max_length=200)
     aspect_ratio: str = '16:9'
     fit: Literal['contain', 'cover'] = 'contain'
@@ -453,6 +455,8 @@ class CutRequest(BaseModel):
 def validate_cut(project, cut):
     if cut.aspect_ratio not in ('16:9', '9:16', '1:1'):
         raise HTTPException(400, 'Choose landscape, portrait or square')
+    if len({c.id for c in cut.clips}) != len(cut.clips):
+        raise HTTPException(400, 'Each timeline clip must have a unique identity')
     for clip in cut.clips:
         item = get(project, clip.video_id)
         if item['kind'] != 'video' or item['status'] != 'complete':
@@ -467,7 +471,11 @@ def read_cut(project: str):
     init()
     with db() as conn:
         row = conn.execute('SELECT payload FROM film_cuts WHERE project=?', (project,)).fetchone()
-    return json.loads(row[0]) if row else {'clips': [], 'aspect_ratio': '16:9'}
+    payload = json.loads(row[0]) if row else {'clips': [], 'aspect_ratio': '16:9'}
+    payload.setdefault('revision', 0)
+    for index, clip in enumerate(payload['clips']):
+        clip.setdefault('id', str(uuid.uuid5(uuid.NAMESPACE_URL, f'moviecrew:{project}:legacy:{index}')))
+    return payload
 
 
 @router.put('/api/projects/{project}/cut')
@@ -478,6 +486,12 @@ def save_cut(project: str, req: CutRequest):
     payload['clips'] = [c.model_dump() for c in req.clips]
     payload['aspect_ratio'] = req.aspect_ratio
     with db() as conn:
+        conn.execute('BEGIN IMMEDIATE')
+        row = conn.execute('SELECT payload FROM film_cuts WHERE project=?', (project,)).fetchone()
+        current = json.loads(row[0]).get('revision', 0) if row else 0
+        if req.revision != current:
+            raise HTTPException(409, 'This edit changed in another window. Your local changes are retained; reopen the film to load the saved version.')
+        payload['revision'] = current + 1
         conn.execute('INSERT INTO film_cuts VALUES (?,?) ON CONFLICT(project) DO UPDATE SET payload=excluded.payload', (project, json.dumps(payload)))
     return payload
 
@@ -511,19 +525,24 @@ def export_movie(item, output):
         for index, clip in enumerate(item['cut']['clips']):
             source = get(item['project'], clip['video_id'])
             _, has_audio = probe(source['path'])
-            part = temp / f'{index}.mp4'
-            length = clip['end'] - clip['start']
-            args = ['-ss', str(clip['start']), '-i', source['path']]
+            part = temp / f'{index}.nut'
+            start_frame = math.floor(clip['start'] * 24 + .5)
+            end_frame = math.floor(clip['end'] * 24 + .5)
+            if end_frame <= start_frame:
+                raise ValueError('A clip must contain at least one output frame')
+            length = (end_frame - start_frame) / 24
+            args = ['-i', source['path']]
             if clip['mute'] or not has_audio:
                 args += ['-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo']
             args += ['-t', str(length), '-map', '0:v:0', '-map', '1:a:0' if clip['mute'] or not has_audio else '0:a:0',
-                     '-vf', canvas_filter(w, h, item['cut'].get('fit', 'contain')),
-                     '-r', '24', '-c:v', 'libx264', '-preset', 'fast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ar', '48000', '-ac', '2', str(part)]
+                     '-vf', f'fps=24,trim=start_frame={start_frame}:end_frame={end_frame},setpts=PTS-STARTPTS,' + canvas_filter(w, h, item['cut'].get('fit', 'contain')),
+                     '-af', f'atrim=start={0 if clip["mute"] or not has_audio else start_frame/24}:duration={length},asetpts=PTS-STARTPTS,apad',
+                     '-r', '24', '-c:v', 'libx264', '-preset', 'fast', '-crf', '0', '-pix_fmt', 'yuv420p', '-c:a', 'pcm_s16le', '-ar', '48000', '-ac', '2', str(part)]
             run_ffmpeg(args)
             parts.append(part)
         manifest = temp / 'clips.txt'
         manifest.write_text(''.join(f"file '{p.name}'\n" for p in parts))
-        run_ffmpeg(['-f', 'concat', '-safe', '1', '-i', str(manifest), '-c:v', 'copy', '-af', 'aresample=async=1:first_pts=0', '-c:a', 'aac', '-movflags', '+faststart', str(output)])
+        run_ffmpeg(['-f', 'concat', '-safe', '1', '-i', str(manifest), '-vf', 'setpts=N/(24*TB)', '-r', '24', '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-af', 'aresample=async=1:first_pts=0', '-c:a', 'aac', '-movflags', '+faststart', str(output)])
     finally:
         shutil.rmtree(temp, ignore_errors=True)
 

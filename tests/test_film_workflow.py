@@ -76,7 +76,9 @@ def test_offline_video_cut_export_and_reopen(setup, monkeypatch):
     assert video['status']=='complete', video.get('error')
     assert video['offline']
     cut={'clips':[{'video_id':video['id'],'start':0,'end':.5,'mute':True},{'video_id':video['id'],'start':.2,'end':.8,'mute':False}], 'aspect_ratio':'9:16'}
-    assert client.put('/api/projects/film-a/cut',json=cut).status_code==200
+    saved=client.put('/api/projects/film-a/cut',json=cut)
+    assert saved.status_code==200
+    cut=saved.json()
     bad={**cut,'clips':[{'video_id':video['id'],'start':1,'end':.5}]}
     assert client.put('/api/projects/film-a/cut',json=bad).status_code==400
     export=client.post('/api/projects/film-a/exports').json()
@@ -200,7 +202,9 @@ def test_character_mode_uses_only_owned_references_without_frame_anchors(setup, 
 def test_canvas_modes_and_sizes_roundtrip(setup, monkeypatch):
     client, _, _, _ = setup
     payload={'clips':[], 'aspect_ratio':'9:16','fit':'cover','resolution':'4K'}
-    assert client.put('/api/projects/film-a/cut',json=payload).json()==payload
+    saved=client.put('/api/projects/film-a/cut',json=payload).json()
+    assert saved=={**payload,'revision':1}
+    payload=saved
     assert client.get('/api/projects/film-a/cut').json()==payload
     assert client.put('/api/projects/film-a/cut',json={**payload,'fit':'stretch'}).status_code==422
     assert client.put('/api/projects/film-a/cut',json={**payload,'resolution':'8K'}).status_code==422
@@ -319,7 +323,7 @@ def test_extensions_use_trimmed_boundaries_and_correct_anchor_positions(setup, m
     models=client.get('/api/projects/film-a/video-models').json()['models']
     assert models[0]['frame_positions']==['first_frame']
     for direction,position in [('before','last_frame'),('after','first_frame')]:
-        trim={'video_id':source['id'],'start':.2,'end':.4,'direction':direction}
+        trim={'clip_id':'occurrence-1','video_id':source['id'],'start':.2,'end':.4,'direction':direction}
         result=client.post('/api/projects/film-a/extension-boundary',json=trim)
         assert result.status_code==200,result.text
         boundary=result.json()
@@ -375,3 +379,44 @@ def test_character_guided_extension_preserves_metadata_without_anchor(setup, mon
     item=flow.get('film-a',req['request_id'])
     assert item['extension']['direction']=='after'
     assert item['reference_ids']==['sheet'] and item['source_path']==''
+
+
+def test_cut_revision_conflict_and_legacy_ids(setup):
+    client, _, _, _ = setup
+    with flow.db() as conn:
+        conn.execute('INSERT INTO film_cuts VALUES (?,?)', ('film-a', __import__('json').dumps({'clips':[{'video_id':'legacy','start':0,'end':1}],'aspect_ratio':'16:9'})))
+    first=client.get('/api/projects/film-a/cut').json()
+    assert first['revision']==0
+    assert first['clips'][0]['id']==client.get('/api/projects/film-a/cut').json()['clips'][0]['id']
+    first['clips']=[]
+    saved=client.put('/api/projects/film-a/cut',json=first)
+    assert saved.status_code==200
+    assert saved.json()['revision']==1
+    conflict=client.put('/api/projects/film-a/cut',json=first)
+    assert conflict.status_code==409
+    assert client.get('/api/projects/film-a/cut').json()==saved.json()
+    duplicate={'id':'same','video_id':'legacy','end':1}
+    assert client.put('/api/projects/film-a/cut',json={'revision':1,'clips':[duplicate,duplicate]}).status_code==400
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'), reason='ffmpeg required')
+def test_export_exact_frame_count_and_cut_boundary(setup):
+    import json
+    client, _, _, tmp = setup
+    clips=[]
+    for color, rate, start, end in [('red',48,2/24,8/24),('blue',30,3/24,12/24)]:
+        source=tmp/(color+'.mp4')
+        flow.run_ffmpeg(['-f','lavfi','-i',f'color=c={color}:s=64x64:r={rate}', '-t','1','-c:v','libx264','-pix_fmt','yuv420p',str(source)])
+        item={'id':color,'project':'film-a','kind':'video','status':'complete','path':str(source),'duration_s':1}
+        flow.put(item)
+        clips.append({'video_id':color,'start':start,'end':end,'mute':True})
+    out=tmp/'cut.mp4'
+    flow.export_movie({'id':'frame-test','project':'film-a','cut':{'clips':clips,'aspect_ratio':'1:1'}},out)
+    info=json.loads(subprocess.check_output(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=nb_frames,r_frame_rate','-of','json',str(out)]))['streams'][0]
+    assert int(info['nb_frames'])==15
+    assert info['r_frame_rate']=='24/1'
+    pixels=subprocess.check_output(['ffmpeg','-v','error','-i',str(out),'-vf','scale=1:1','-f','rawvideo','-pix_fmt','rgb24','-'])
+    colors=[tuple(pixels[i:i+3]) for i in range(0,len(pixels),3)]
+    assert len(colors)==15
+    assert all(r>200 and b<50 for r,g,b in colors[:6])
+    assert all(b>200 and r<50 for r,g,b in colors[6:])

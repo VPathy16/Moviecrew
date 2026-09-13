@@ -1684,3 +1684,13 @@ app.include_router(director_router)
 @app.get('/director.js')
 def director_script():
     return FileResponse(_STATIC_DIR / 'director.js', media_type='text/javascript')
+
+
+@app.get('/ui-system.css')
+def ui_system_styles():
+    return FileResponse(_STATIC_DIR / 'ui-system.css', media_type='text/css')
+
+
+@app.get('/ui-system.js')
+def ui_system_script():
+    return FileResponse(_STATIC_DIR / 'ui-system.js', media_type='text/javascript')
