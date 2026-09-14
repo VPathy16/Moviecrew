@@ -437,6 +437,13 @@ async def upload(project: str, shot_id: str, request: Request):
 
 
 class CutClip(BaseModel):
+    # A clip's identity, not its position: reordering, trimming and moving a
+    # clip keep this id, so a later operation (an extension job landing, a
+    # "replace this selection" action) can find the exact clip instance it
+    # meant, even when another clip with the same video_id/start/end exists
+    # elsewhere in the timeline. Defaulted (not required) so a payload from
+    # before this field existed still loads — see read_cut's own backfill.
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     video_id: str
     start: float = Field(default=0, ge=0, allow_inf_nan=False)
     end: float = Field(gt=0, allow_inf_nan=False)
@@ -448,6 +455,12 @@ class CutRequest(BaseModel):
     aspect_ratio: str = '16:9'
     fit: Literal['contain', 'cover'] = 'contain'
     resolution: Literal['720p', '1080p', '4K'] = '720p'
+    # The revision this edit was read from, not the revision it becomes —
+    # save_cut compares it against what's actually stored and bumps it by
+    # one on success. Two tabs (or an autosave racing a manual save) can
+    # otherwise silently overwrite each other with no trace of the lost
+    # edit; this makes that a rejected, reportable conflict instead.
+    revision: int = Field(default=0, ge=0)
 
 
 def validate_cut(project, cut):
@@ -467,17 +480,33 @@ def read_cut(project: str):
     init()
     with db() as conn:
         row = conn.execute('SELECT payload FROM film_cuts WHERE project=?', (project,)).fetchone()
-    return json.loads(row[0]) if row else {'clips': [], 'aspect_ratio': '16:9'}
+    payload = json.loads(row[0]) if row else {'clips': [], 'aspect_ratio': '16:9'}
+    payload.setdefault('revision', 0)
+    # Backfilled per read, not persisted here: a saved cut from before clip
+    # ids existed gets stable ids the moment it's next saved (CutClip
+    # default_factory, on the way through save_cut below); until then each
+    # read hands out fresh ones so the frontend never sees a missing id.
+    for clip in payload.get('clips', []):
+        clip.setdefault('id', uuid.uuid4().hex)
+    return payload
 
 
 @router.put('/api/projects/{project}/cut')
 def save_cut(project: str, req: CutRequest):
     session(project)
     validate_cut(project, req)
-    payload = req.model_dump(exclude_defaults=True)
-    payload['clips'] = [c.model_dump() for c in req.clips]
-    payload['aspect_ratio'] = req.aspect_ratio
     with db() as conn:
+        row = conn.execute('SELECT payload FROM film_cuts WHERE project=?', (project,)).fetchone()
+        current_revision = json.loads(row[0]).get('revision', 0) if row else 0
+        if req.revision != current_revision:
+            raise HTTPException(409, 'This edit has a newer revision. Reload before saving.')
+        payload = {
+            'clips': [c.model_dump() for c in req.clips],
+            'aspect_ratio': req.aspect_ratio,
+            'fit': req.fit,
+            'resolution': req.resolution,
+            'revision': current_revision + 1,
+        }
         conn.execute('INSERT INTO film_cuts VALUES (?,?) ON CONFLICT(project) DO UPDATE SET payload=excluded.payload', (project, json.dumps(payload)))
     return payload
 

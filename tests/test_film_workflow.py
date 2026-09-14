@@ -1,4 +1,5 @@
 import importlib
+import json
 import shutil
 import subprocess
 import uuid
@@ -76,9 +77,17 @@ def test_offline_video_cut_export_and_reopen(setup, monkeypatch):
     assert video['status']=='complete', video.get('error')
     assert video['offline']
     cut={'clips':[{'video_id':video['id'],'start':0,'end':.5,'mute':True},{'video_id':video['id'],'start':.2,'end':.8,'mute':False}], 'aspect_ratio':'9:16'}
-    assert client.put('/api/projects/film-a/cut',json=cut).status_code==200
-    bad={**cut,'clips':[{'video_id':video['id'],'start':1,'end':.5}]}
+    first=client.put('/api/projects/film-a/cut',json=cut)
+    assert first.status_code==200
+    saved=first.json()
+    assert saved['revision']==1
+    clip_ids=[c['id'] for c in saved['clips']]
+    assert all(clip_ids) and len(set(clip_ids))==2  # every clip gets its own durable id
+    bad={**cut,'revision':saved['revision'],'clips':[{'video_id':video['id'],'start':1,'end':.5}]}
     assert client.put('/api/projects/film-a/cut',json=bad).status_code==400
+    # Saving against the revision this edit started from (0, now superseded
+    # by the save above) is rejected rather than silently overwriting it.
+    assert client.put('/api/projects/film-a/cut',json=cut).status_code==409
     export=client.post('/api/projects/film-a/exports').json()
     flow.work('film-a',export['id'])
     completed=flow.get('film-a',export['id'])
@@ -86,7 +95,8 @@ def test_offline_video_cut_export_and_reopen(setup, monkeypatch):
     duration,audio=flow.probe(completed['path'])
     assert .9 < duration < 1.4 and audio
     portal._sessions.pop('film-a')
-    assert client.get('/api/projects/film-a/cut').json()==cut
+    reopened=client.get('/api/projects/film-a/cut').json()
+    assert reopened['clips']==saved['clips'] and reopened['aspect_ratio']==saved['aspect_ratio'] and reopened['revision']==saved['revision']
     assert client.get('/api/projects/film-a/film-media/'+export['id']).status_code==200
     assert client.get('/api/projects/film-b/film-media/'+export['id']).status_code==404
     # A silent uploaded video also exports with a synthesized silent audio track.
@@ -97,10 +107,77 @@ def test_offline_video_cut_export_and_reopen(setup, monkeypatch):
     clip=uploaded.json()
     flow.work('film-a',clip['id'])
     assert flow.get('film-a',clip['id'])['status']=='complete'
-    client.put('/api/projects/film-a/cut',json={'clips':[{'video_id':clip['id'],'end':.5}]})
+    replaced=client.put('/api/projects/film-a/cut',json={'revision':reopened['revision'],'clips':[{'video_id':clip['id'],'end':.5}]})
+    assert replaced.status_code==200
     export2=client.post('/api/projects/film-a/exports').json()
     flow.work('film-a',export2['id'])
     assert flow.get('film-a',export2['id'])['status']=='complete'
+
+
+def _complete_video(project, duration_s=2.0):
+    """A 'complete' video item with no real file on disk — enough for
+    save_cut/read_cut/validate_cut, which never touch the file itself.
+    Lets the cut-identity/revision tests below run without ffmpeg."""
+    item = dict(id=str(uuid.uuid4()), project=project, kind='video', status='complete', duration_s=duration_s)
+    flow.put(item)
+    return item
+
+
+def test_cut_clips_get_stable_ids_and_saves_are_revisioned(setup):
+    """Issue: two tabs (or an autosave racing a manual save) could silently
+    overwrite each other's edit, and clips had nothing stable to identify
+    them by beyond video_id/start/end, which collide for two identical
+    trims of the same source."""
+    client, _, _, _ = setup
+    video = _complete_video('film-a')
+
+    assert client.get('/api/projects/film-a/cut').json() == {'clips': [], 'aspect_ratio': '16:9', 'revision': 0}
+
+    first = client.put('/api/projects/film-a/cut', json={
+        'clips': [{'video_id': video['id'], 'start': 0, 'end': 1}, {'video_id': video['id'], 'start': 1, 'end': 2}],
+        'revision': 0,
+    })
+    assert first.status_code == 200
+    body = first.json()
+    assert body['revision'] == 1
+    ids = [c['id'] for c in body['clips']]
+    assert all(ids) and len(set(ids)) == 2  # every clip gets its own, distinct id
+
+    # Saving again from the same (now stale) revision is rejected, not
+    # silently accepted over whatever the first save already wrote.
+    stale = client.put('/api/projects/film-a/cut', json={'clips': body['clips'], 'revision': 0})
+    assert stale.status_code == 409
+
+    # Saving from the *current* revision is accepted and advances by one;
+    # the clip ids themselves survive an unrelated save unchanged.
+    again = client.put('/api/projects/film-a/cut', json={'clips': body['clips'], 'revision': body['revision']})
+    assert again.status_code == 200
+    assert again.json()['revision'] == 2
+    assert [c['id'] for c in again.json()['clips']] == ids
+
+
+def test_a_legacy_cut_with_no_ids_or_revision_still_loads(setup):
+    """A cut saved before clip ids/revisions existed must still open —
+    backfilled for reading, not rejected or blanked out."""
+    client, _, _, _ = setup
+    video = _complete_video('film-a')
+    flow.init()
+    with flow.db() as conn:
+        conn.execute(
+            'INSERT INTO film_cuts VALUES (?,?)',
+            ('film-a', json.dumps({'clips': [{'video_id': video['id'], 'start': 0, 'end': 1, 'mute': False}], 'aspect_ratio': '16:9'})),
+        )
+
+    read = client.get('/api/projects/film-a/cut').json()
+    assert read['revision'] == 0
+    assert read['clips'][0]['id']  # backfilled, never missing
+
+    # A save against a legacy cut's implicit revision 0 is accepted, and
+    # from then on the clip has a durable id like any other.
+    saved = client.put('/api/projects/film-a/cut', json={'clips': read['clips'], 'revision': 0})
+    assert saved.status_code == 200
+    assert saved.json()['revision'] == 1
+    assert saved.json()['clips'][0]['id'] == read['clips'][0]['id']
 
 
 def test_video_direction_persists_separately(setup):
@@ -200,8 +277,9 @@ def test_character_mode_uses_only_owned_references_without_frame_anchors(setup, 
 def test_canvas_modes_and_sizes_roundtrip(setup, monkeypatch):
     client, _, _, _ = setup
     payload={'clips':[], 'aspect_ratio':'9:16','fit':'cover','resolution':'4K'}
-    assert client.put('/api/projects/film-a/cut',json=payload).json()==payload
-    assert client.get('/api/projects/film-a/cut').json()==payload
+    expected={**payload,'revision':1}
+    assert client.put('/api/projects/film-a/cut',json=payload).json()==expected
+    assert client.get('/api/projects/film-a/cut').json()==expected
     assert client.put('/api/projects/film-a/cut',json={**payload,'fit':'stretch'}).status_code==422
     assert client.put('/api/projects/film-a/cut',json={**payload,'resolution':'8K'}).status_code==422
     assert 'crop=1280:720' in flow.canvas_filter(1280,720,'cover')
@@ -292,7 +370,6 @@ def test_enhance_missing_key_and_unknown_submission(setup, monkeypatch):
 
 @pytest.mark.skipif(not shutil.which('ffmpeg') or not shutil.which('ffprobe'), reason='ffmpeg required')
 def test_extensions_use_trimmed_boundaries_and_correct_anchor_positions(setup, monkeypatch):
-    import json
     from types import SimpleNamespace
     from moviecrew.render_openrouter import OpenRouterRenderClient
     client, _, s, tmp=setup
