@@ -75,6 +75,8 @@ def test_offline_video_cut_export_and_reopen(setup, monkeypatch):
     video=flow.get('film-a',req['request_id'])
     assert video['status']=='complete', video.get('error')
     assert video['offline']
+    listed=client.get('/api/projects/film-a/videos').json()['items']
+    assert listed[0]['width'] and listed[0]['height']
     cut={'clips':[{'video_id':video['id'],'start':0,'end':.5,'mute':True},{'video_id':video['id'],'start':.2,'end':.8,'mute':False}], 'aspect_ratio':'9:16'}
     assert client.put('/api/projects/film-a/cut',json=cut).status_code==200
     bad={**cut,'clips':[{'video_id':video['id'],'start':1,'end':.5}]}
@@ -83,8 +85,9 @@ def test_offline_video_cut_export_and_reopen(setup, monkeypatch):
     flow.work('film-a',export['id'])
     completed=flow.get('film-a',export['id'])
     assert completed['status']=='complete',completed.get('error')
-    duration,audio=flow.probe(completed['path'])
+    duration,audio,width,height=flow.probe(completed['path'])
     assert .9 < duration < 1.4 and audio
+    assert width and height
     portal._sessions.pop('film-a')
     assert client.get('/api/projects/film-a/cut').json()==cut
     assert client.get('/api/projects/film-a/film-media/'+export['id']).status_code==200
@@ -204,6 +207,7 @@ def test_canvas_modes_and_sizes_roundtrip(setup, monkeypatch):
     assert client.get('/api/projects/film-a/cut').json()==payload
     assert client.put('/api/projects/film-a/cut',json={**payload,'fit':'stretch'}).status_code==422
     assert client.put('/api/projects/film-a/cut',json={**payload,'resolution':'8K'}).status_code==422
+    assert client.put('/api/projects/film-a/cut',json={**payload,'resolution':'1440p'}).status_code==200
     assert 'crop=1280:720' in flow.canvas_filter(1280,720,'cover')
     assert 'color=black' in flow.canvas_filter(1280,720,'contain')
 

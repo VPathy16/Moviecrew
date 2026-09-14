@@ -10,29 +10,56 @@
  #edit-time{font-variant-numeric:tabular-nums;font-size:12px;color:#a5abb5}.edit-transport{display:flex;align-items:center;gap:16px;margin:10px 0}#edit-seek{flex:1;padding:0;accent-color:#f27656}
  #cut-clips{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:12px 0 18px;min-height:100px}.edit-tile{flex-shrink:0;height:90px;min-width:110px;border:1px solid #34383f;border-radius:9px;padding:0;overflow:hidden;background:#24272d;text-align:left}.edit-tile[aria-pressed=true]{border:2px solid #f27656}.edit-tile video{width:100%;height:55px;object-fit:cover;pointer-events:none}.edit-tile small{display:block;padding:3px 8px;font-size:10px;white-space:nowrap}.edit-add{padding:4px 8px;border:0;background:transparent;color:#f4f1eb;font-size:20px;flex-shrink:0}
  #edit-inspector{padding:12px 16px;border:1px solid #34383f;border-radius:12px}.trim-control{display:flex;align-items:center;gap:8px;font-size:12px}.trim-control input[type=range]{width:130px;padding:0;accent-color:#f27656}.trim-control input[type=number]{width:70px;padding:6px;font-size:12px}#edit-inspector .edit-toolbar{margin:6px 0}
- #editor-dialog{width:min(620px,90vw);max-height:85vh;overflow:auto;padding:24px}#editor-dialog h2{font-size:20px}#editor-dialog p{font-size:13px;color:#a5abb5}#editor-dialog button{font-size:12px}#editor-dialog video{width:100%;max-height:250px}.edit-library{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.edit-library button{padding:6px}.edit-library img,.edit-library video{height:90px;width:100%;object-fit:cover}.edit-library small{display:block;font-size:11px}.edit-job{border-top:1px solid #34383f;padding:12px 0}.edit-job video{max-height:200px;width:100%}
+ #editor-dialog{width:min(620px,90vw);max-height:85vh;overflow:auto;padding:24px;position:relative}#editor-dialog h2{font-size:20px}#editor-dialog p{font-size:13px;color:#a5abb5}#editor-dialog button{font-size:12px}#editor-dialog video{width:100%;max-height:250px}.edit-library{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.edit-library button{padding:6px}.edit-library img,.edit-library video{height:90px;width:100%;object-fit:cover}.edit-library small{display:block;font-size:11px}.edit-job{border-top:1px solid #34383f;padding:12px 0}.edit-job video{max-height:200px;width:100%}
+ .icon-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;min-height:0;padding:0;border-radius:8px;flex-shrink:0}.icon-btn svg{display:block}
+ .dialog-close{position:absolute;top:14px;right:14px;width:30px;height:30px;padding:0;border-radius:6px;background:transparent;border:0;color:#a5abb5}.dialog-close:hover{background:#ffffff10;color:#f4f1eb}
+ .zoom-control{display:flex;align-items:center;gap:6px;color:#a5abb5}
  @media(max-width:700px){#final-edit{padding:18px 12px}.edit-toolbar{gap:7px}.edit-library{grid-template-columns:repeat(2,1fr)}#edit-stage,#edit-player{max-height:320px}}
  `;document.head.append(style);
+ const SVG_NS='http://www.w3.org/2000/svg';
+ function iconSvg(inner,size=16){const svg=document.createElementNS(SVG_NS,'svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width',size);svg.setAttribute('height',size);svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.setAttribute('stroke-width','2');svg.setAttribute('stroke-linecap','round');svg.setAttribute('stroke-linejoin','round');svg.style.display='block';svg.innerHTML=inner;return svg}
+ const ICONS={
+  play:'<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
+  pause:'<rect x="6" y="5" width="4" height="14" fill="currentColor" stroke="none"/><rect x="14" y="5" width="4" height="14" fill="currentColor" stroke="none"/>',
+  undo:'<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  redo:'<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+  close:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  zoom:'<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+ };
+ function setIcon(btn,name,label){btn.replaceChildren(iconSvg(ICONS[name]));btn.setAttribute('aria-label',label);btn.title=label}
+ function iconButton(name,fn,label,parent){const b=crewEl('button');b.type='button';b.className='icon-btn';setIcon(b,name,label);b.onclick=fn;if(parent)parent.append(b);return b}
  const toolbar=crewEl('div',undefined,'edit-toolbar');
  const format=host.querySelector(':scope > label');format.firstChild.textContent='Canvas ';toolbar.append(format);
  function select(label,id,choices){const l=crewEl('label',label+' '),s=crewEl('select');s.id=id;for(const [v,t] of choices){const o=crewEl('option',t);o.value=v;s.append(o)}l.append(s);toolbar.append(l);return s}
  const fit=select('Framing','edit-fit',[['contain','Fit · black bars'],['cover','Crop to fill']]);
- const resolution=select('Export size','edit-resolution',[['720p','720p'],['1080p','1080p'],['4K','4K']]);
+ const resolution=select('Export size','edit-resolution',[['720p','720p']]);
+ const RESOLUTION_TIERS=[['480p',480],['720p',720],['1080p',1080],['1440p',1440],['4K',2160]];
+ function sourceMaxHeight(){let max=0;for(const clip of cut.clips){const m=media(clip);if(m?.height)max=Math.max(max,m.height)}return max}
+ function refreshResolutionOptions(){
+  const maxH=sourceMaxHeight();
+  const desired=cut.resolution||'720p';
+  const applicable=maxH?RESOLUTION_TIERS.filter(([,h])=>h<=maxH):RESOLUTION_TIERS.filter(([,h])=>h<=1080);
+  const tiers=applicable.length?applicable:RESOLUTION_TIERS.slice(0,1);
+  resolution.replaceChildren();
+  for(const [name,h] of tiers){const o=crewEl('option',h===maxH?name+' · source quality':name);o.value=name;resolution.append(o)}
+  resolution.value=tiers.some(([name])=>name===desired)?desired:tiers[tiers.length-1][0];
+  cut.resolution=resolution.value;
+ }
  const stage=crewEl('div');stage.id='edit-stage';const player=crewEl('video');player.id='edit-player';player.controls=true;player.playsInline=true;stage.append(player);
  const hold=crewEl('canvas');hold.setAttribute('aria-hidden','true');hold.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none;background:#000';stage.style.position='relative';stage.append(hold);let loadVersion=0;
- const transport=crewEl('div',undefined,'edit-transport'),play=crewEl('button','▶ Play film'),seek=crewEl('input'),time=crewEl('span','0:00 / 0:00');seek.type='range';seek.id='edit-seek';seek.min=0;seek.step=.01;seek.setAttribute('aria-label','Film playhead');time.id='edit-time';transport.append(play,seek,time);
+ const transport=crewEl('div',undefined,'edit-transport'),play=iconButton('play',null,'Play film'),seek=crewEl('input'),time=crewEl('span','0:00 / 0:00');seek.type='range';seek.id='edit-seek';seek.min=0;seek.step=.01;seek.setAttribute('aria-label','Film playhead');time.id='edit-time';transport.append(play,seek,time);
  const inspector=crewEl('div');inspector.id='edit-inspector';inspector.hidden=true;const jobs=crewEl('div');jobs.id='edit-jobs';
  host.insertBefore(toolbar,$('cut-clips'));host.insertBefore(stage,$('cut-clips'));host.insertBefore(transport,$('cut-clips'));$('cut-clips').after(inspector,jobs);
  const dialog=crewEl('dialog');dialog.id='editor-dialog';document.body.append(dialog);
- let selected=0,playing=false,dragIndex=null,insertAt=0,pendingInsert=null,enhanceId=null,undo=[],dialogVersion=0;
+ let selected=0,playing=false,dragIndex=null,insertAt=0,pendingInsert=null,enhanceId=null,undo=[],redo=[],dialogVersion=0;
  const clock=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
  const total=()=>cut.clips.reduce((n,c)=>n+c.end-c.start,0);
  const offset=i=>cut.clips.slice(0,i).reduce((n,c)=>n+c.end-c.start,0);
  const media=c=>filmMedia.find(v=>v.id===c?.video_id);
- function remember(){undo.push(JSON.stringify(cut));if(undo.length>30)undo.shift()}
+ function remember(){undo.push(JSON.stringify(cut));if(undo.length>30)undo.shift();redo.length=0}
  function changed(){cutDirty=true;$('cut-status').textContent='Unsaved edit';renderInspector();}
  function applyCanvas(){const [w,h]=cut.aspect_ratio.split(':').map(Number);stage.style.aspectRatio=w+'/'+h;stage.style.width='min(100%, '+(420*w/h)+'px)';player.style.objectFit=cut.fit||'contain';}
- function stop(){playing=false;player.pause();play.textContent='▶ Play film'}
+ function stop(){playing=false;player.pause();setIcon(play,'play','Play film')}
  function loadClip(index,autoplay=false,position=null){
   const token=++loadVersion;
   // Keep the outgoing decoded frame visible while the replacement buffers/seeks.
@@ -54,14 +81,14 @@
  function refreshClock(){const c=cut.clips[selected];const now=c?offset(selected)+Math.max(0,Math.min(c.end,player.currentTime)-c.start):0;seek.max=total();seek.value=now;time.textContent=clock(now)+' / '+clock(total());const head=$('timeline-playhead');if(head){head.style.left=(24+now*pixelsPerSecond)+'px';head.setAttribute('aria-valuenow',now.toFixed(2))}}
  player.ontimeupdate=()=>{refreshClock();const c=cut.clips[selected];if(c&&player.currentTime>=c.end-.025){if(playing&&selected+1<cut.clips.length){loadClip(selected+1,true);renderTiles();renderInspector()}else stop()}};
  player.onended=()=>{if(playing&&selected+1<cut.clips.length){loadClip(selected+1,true);renderTiles();renderInspector()}else stop()};
- play.onclick=()=>{if(playing)return stop();if(!cut.clips.length)return;playing=true;play.textContent='Pause';loadClip(0,true);renderTiles();renderInspector()};
+ play.onclick=()=>{if(playing)return stop();if(!cut.clips.length)return;playing=true;setIcon(play,'pause','Pause film');loadClip(0,true);renderTiles();renderInspector()};
  seek.oninput=()=>{stop();let t=Number(seek.value),i=0;while(i<cut.clips.length-1&&t>cut.clips[i].end-cut.clips[i].start){t-=cut.clips[i].end-cut.clips[i].start;i++}loadClip(i,false,cut.clips[i]?.start+t);renderTiles();renderInspector()};
  for(const control of [$('cut-ratio'),fit,resolution])control.onchange=()=>{remember();cut.aspect_ratio=$('cut-ratio').value;cut.fit=fit.value;cut.resolution=resolution.value;changed();applyCanvas()};
  function button(text,fn,parent){const b=crewEl('button',text);b.onclick=fn;parent.append(b);return b}
- function modal(title){closeClipMenu();dialog.classList.remove('trim-dialog');dialogVersion++;dialog.replaceChildren();dialog.append(crewEl('h2',title));button('Close',()=>dialog.close(),dialog);if(!dialog.open)dialog.showModal();return dialog}
+ function modal(title){closeClipMenu();dialog.classList.remove('trim-dialog');dialogVersion++;dialog.replaceChildren();dialog.append(crewEl('h2',title));iconButton('close',()=>dialog.close(),'Close',dialog).className='dialog-close';if(!dialog.open)dialog.showModal();return dialog}
  let pixelsPerSecond=40,trimActive=false;
  const zoomRow=crewEl('div',undefined,'edit-toolbar');zoomRow.append(crewEl('strong','Timeline'),crewEl('span','Drag edges to trim · right-click for options','muted'));
- const zoomLabel=crewEl('label','Zoom '),zoom=crewEl('input');zoom.type='range';zoom.min=16;zoom.max=100;zoom.value=pixelsPerSecond;zoom.setAttribute('aria-label','Timeline zoom');zoom.style.cssText='width:100px;padding:0;accent-color:#f27656';zoomLabel.append(zoom);zoomRow.append(zoomLabel);$('cut-clips').before(zoomRow);
+ const zoomLabel=crewEl('label',undefined,'zoom-control'),zoom=crewEl('input');zoomLabel.title='Timeline zoom';zoomLabel.append(iconSvg(ICONS.zoom,14));zoom.type='range';zoom.min=16;zoom.max=100;zoom.value=pixelsPerSecond;zoom.setAttribute('aria-label','Timeline zoom');zoom.style.cssText='width:100px;padding:0;accent-color:#f27656';zoomLabel.append(zoom);zoomRow.append(zoomLabel);$('cut-clips').before(zoomRow);
  zoom.oninput=()=>{pixelsPerSecond=Number(zoom.value);renderTiles();refreshClock()};
  const timelineStyle=crewEl('style');timelineStyle.textContent=`
  #edit-inspector{display:none}
@@ -134,10 +161,11 @@
   }
   button('Done',()=>dialog.close(),d);
  }
- function renderInspector(){undoButton.disabled=!undo.length;}
- const undoButton=button('↶ Undo',()=>{if(!undo.length)return;stop();cut=JSON.parse(undo.pop());changed();renderCut()},zoomRow);undoButton.disabled=true;
- renderCut=function(){stop();selected=Math.min(selected,Math.max(0,cut.clips.length-1));$('cut-ratio').value=cut.aspect_ratio;fit.value=cut.fit||'contain';resolution.value=cut.resolution||'720p';applyCanvas();renderTiles();renderInspector();loadClip(selected);refreshClock()};
- const oldLoad=loadFinalEdit;loadFinalEdit=async function(){undo=[];selected=0;await oldLoad()};
+ function renderInspector(){undoButton.disabled=!undo.length;redoButton.disabled=!redo.length;}
+ const undoButton=iconButton('undo',()=>{if(!undo.length)return;stop();redo.push(JSON.stringify(cut));if(redo.length>30)redo.shift();cut=JSON.parse(undo.pop());changed();renderCut()},'Undo',zoomRow);undoButton.disabled=true;
+ const redoButton=iconButton('redo',()=>{if(!redo.length)return;stop();undo.push(JSON.stringify(cut));if(undo.length>30)undo.shift();cut=JSON.parse(redo.pop());changed();renderCut()},'Redo',zoomRow);redoButton.disabled=true;
+ renderCut=function(){stop();selected=Math.min(selected,Math.max(0,cut.clips.length-1));$('cut-ratio').value=cut.aspect_ratio;fit.value=cut.fit||'contain';refreshResolutionOptions();applyCanvas();renderTiles();renderInspector();loadClip(selected);refreshClock()};
+ const oldLoad=loadFinalEdit;loadFinalEdit=async function(){undo=[];redo=[];selected=0;await oldLoad()};
  async function insert(item,index=insertAt){remember();cut.clips.splice(Math.min(index,cut.clips.length),0,{video_id:item.id,start:0,end:item.duration_s,mute:false});changed();dialog.close();renderCut();await saveCut()}
  function showAdd(index){insertAt=index;const d=modal('Add a clip');const row=crewEl('div',undefined,'edit-toolbar');d.append(row);button('Video library',()=>libraryPicker('video'),row);button('Generate from image',()=>libraryPicker('image'),row);button('Upload',()=>uploadPicker(),row);if(index>0){button('Extend previous clip',()=>extendClip(index-1,'after'),row)}if(index<cut.clips.length){button('Extend before next clip',()=>extendClip(index,'before'),row)}}
  function libraryPicker(kind){const d=modal(kind==='video'?'Video library':'Choose a starting image');const grid=crewEl('div',undefined,'edit-library');d.append(grid);const entries=kind==='video'?filmMedia.filter(i=>i.kind==='video'&&i.status==='complete'):project.versions.filter(i=>i.status==='ok'&&i.image_url);for(const entry of entries){const b=button('',()=>kind==='video'?insert(entry):prepareGeneration({version_id:entry.version_id},entry.shot_id),grid);const visual=crewEl(kind==='video'?'video':'img');visual.src=kind==='video'?entry.video_url:entry.image_url;if(kind==='video'){visual.preload='metadata';visual.muted=true}b.append(visual,crewEl('small',friendlyShot(entry.shot_id||'Clip')))}if(!entries.length)d.append(crewEl('p','No saved '+(kind==='video'?'videos':'images')+' yet. Upload one to get started.'));if(kind==='image')for(const ref of project.image_references||[]){const b=button('',()=>prepareGeneration({reference_id:ref.id}),grid);const img=crewEl('img');img.src='/api/projects/'+project.id+'/references/'+ref.id;b.append(img,crewEl('small',ref.name||'Reference'))}}
@@ -192,8 +220,8 @@
   await insert(item,matches[0].index+(e.direction==='after'?1:0));
  }
 
- const exportDialog=crewEl('dialog');exportDialog.id='export-dialog';exportDialog.style.cssText='width:min(580px,90vw);max-height:85vh;overflow:auto;padding:24px';document.body.append(exportDialog);
- exportDialog.append(crewEl('h2','Export your film'));button('Close',()=>exportDialog.close(),exportDialog);
+ const exportDialog=crewEl('dialog');exportDialog.id='export-dialog';exportDialog.style.cssText='width:min(580px,90vw);max-height:85vh;overflow:auto;padding:24px;position:relative';document.body.append(exportDialog);
+ exportDialog.append(crewEl('h2','Export your film'));iconButton('close',()=>exportDialog.close(),'Close',exportDialog).className='dialog-close';
  exportDialog.append(crewEl('p','Choose the export size. For AI detail enhancement, export first, then choose Upscale with FLUX on the saved film.'));
  exportDialog.append(resolution.parentElement);
  const exportAction=$('export-film').onclick;

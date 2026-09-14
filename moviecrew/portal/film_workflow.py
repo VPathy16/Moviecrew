@@ -84,6 +84,13 @@ def public(item):
 
 
 def probe(path):
+    """(duration, has_audio, width, height) measured from the file itself.
+
+    Never trusted from what a request asked for: a provider (or the
+    offline demo path) does not always honor a requested resolution
+    exactly, and export needs to offer what the footage actually is, not
+    what it was ordered as.
+    """
     try:
         result = subprocess.run(['ffprobe', '-v', 'error', '-show_streams', '-show_format', '-of', 'json', str(path)], capture_output=True, text=True, timeout=30, check=True)
         data = json.loads(result.stdout)
@@ -91,7 +98,8 @@ def probe(path):
         duration = float(data['format'].get('duration') or video.get('duration') or 0)
         if not math.isfinite(duration) or duration <= 0:
             raise ValueError('Invalid duration')
-        return duration, any(s['codec_type'] == 'audio' for s in data['streams'])
+        width, height = video.get('width'), video.get('height')
+        return duration, any(s['codec_type'] == 'audio' for s in data['streams']), width, height
     except (OSError, ValueError, StopIteration, subprocess.SubprocessError) as exc:
         raise ValueError('This file is not a readable video. MP4 or MOV is recommended.') from exc
 
@@ -367,8 +375,8 @@ def work(project, item_id):
                 item.update(status='waiting', error='Still processing. Resume to check the existing job.')
                 put(item)
                 return
-        duration, _ = probe(output)
-        item.update(status='complete', path=str(output), duration_s=duration, error=None)
+        duration, _, width, height = probe(output)
+        item.update(status='complete', path=str(output), duration_s=duration, width=width, height=height, error=None)
         put(item)
     except Exception as exc:
         state = 'uncertain' if item.get('status') == 'submitting' else ('waiting' if item.get('provider_id') and item.get('status') != 'failed' else 'failed')
@@ -422,18 +430,25 @@ async def upload(project: str, shot_id: str, request: Request):
                     raise HTTPException(413, 'Choose a video smaller than 250 MB')
                 output.write(chunk)
         try:
-            duration, _ = await asyncio.to_thread(probe, path)
+            duration, _, width, height = await asyncio.to_thread(probe, path)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         init()
         item = {'id': item_id, 'project': project, 'kind': 'video', 'status': 'queued',
-                'shot_id': shot_id, 'duration_s': duration, 'source_path': str(path), 'created': time.time(), 'model': 'Uploaded clip', 'backend': 'upload', 'offline': False}
+                'shot_id': shot_id, 'duration_s': duration, 'width': width, 'height': height,
+                'source_path': str(path), 'created': time.time(), 'model': 'Uploaded clip', 'backend': 'upload', 'offline': False}
         put(item)
         launch(project, item_id)
         return public(item)
     except Exception:
         path.unlink(missing_ok=True)
         raise
+
+
+# Export tiers, short-edge pixel height. Kept permissive here (any tier is
+# postable) - the frontend narrows the offered choices to what the source
+# footage actually supports.
+EXPORT_RESOLUTIONS = {'480p': 480, '720p': 720, '1080p': 1080, '1440p': 1440, '4K': 2160}
 
 
 class CutClip(BaseModel):
@@ -447,7 +462,7 @@ class CutRequest(BaseModel):
     clips: list[CutClip] = Field(max_length=200)
     aspect_ratio: str = '16:9'
     fit: Literal['contain', 'cover'] = 'contain'
-    resolution: Literal['720p', '1080p', '4K'] = '720p'
+    resolution: Literal['480p', '720p', '1080p', '1440p', '4K'] = '720p'
 
 
 def validate_cut(project, cut):
@@ -501,7 +516,7 @@ def canvas_filter(w, h, fit='contain'):
 
 
 def export_movie(item, output):
-    short = {'720p':720, '1080p':1080, '4K':2160}[item['cut'].get('resolution', '720p')]
+    short = EXPORT_RESOLUTIONS[item['cut'].get('resolution', '720p')]
     long = short * 16 // 9
     w, h = {'16:9': (long, short), '9:16': (short, long), '1:1': (short, short)}[item['cut']['aspect_ratio']]
     temp = output.parent / (item['id']+'_parts')
@@ -510,7 +525,7 @@ def export_movie(item, output):
         parts = []
         for index, clip in enumerate(item['cut']['clips']):
             source = get(item['project'], clip['video_id'])
-            _, has_audio = probe(source['path'])
+            _, has_audio, _, _ = probe(source['path'])
             part = temp / f'{index}.mp4'
             length = clip['end'] - clip['start']
             args = ['-ss', str(clip['start']), '-i', source['path']]
