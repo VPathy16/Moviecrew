@@ -236,6 +236,25 @@ def test_cut_clips_get_distinct_stable_ids(setup, monkeypatch):
     assert client.get('/api/projects/film-a/cut').json()['clips'][0]['id']=='my-stable-id'
 
 
+def test_legacy_cut_id_backfill_is_persisted_not_regenerated(setup):
+    import json
+    client,_,_,_=setup
+    flow.init()
+    # A cut saved before clip ids existed - written straight into storage,
+    # bypassing CutClip's own id default, the way an actually-old row would
+    # look.
+    legacy={'clips':[{'video_id':'v1','start':0,'end':1,'mute':False}],'aspect_ratio':'16:9'}
+    with flow.db() as conn:
+        conn.execute('INSERT INTO film_cuts VALUES (?,?) ON CONFLICT(project) DO UPDATE SET payload=excluded.payload',
+                      ('film-a', json.dumps(legacy)))
+    first=client.get('/api/projects/film-a/cut').json()['clips'][0]['id']
+    second=client.get('/api/projects/film-a/cut').json()['clips'][0]['id']
+    # A regenerate job (or anything else) referencing this clip by id must
+    # still find it on a later read - reloading the page a second time
+    # without an intervening save must not hand out a different id.
+    assert first and first==second
+
+
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='ffmpeg required')
 def test_enhancement_ownership_payload_resume_and_original_audio(setup, monkeypatch):
     from moviecrew.portal import film_enhance as enhance

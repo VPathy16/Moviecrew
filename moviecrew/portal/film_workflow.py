@@ -554,13 +554,21 @@ def read_cut(project: str):
     init()
     with db() as conn:
         row = conn.execute('SELECT payload FROM film_cuts WHERE project=?', (project,)).fetchone()
-    payload = json.loads(row[0]) if row else {'clips': [], 'aspect_ratio': '16:9'}
-    # A cut saved before clip ids existed gets stable ids the moment it's
-    # next saved (CutClip's default_factory, via save_cut below); until
-    # then each read hands out fresh ones so the frontend never sees a
-    # missing id.
-    for clip in payload.get('clips', []):
-        clip.setdefault('id', uuid.uuid4().hex)
+        if not row:
+            return {'clips': [], 'aspect_ratio': '16:9'}
+        payload = json.loads(row[0])
+        # A cut saved before clip ids existed gets stable ids right here,
+        # on first read, persisted immediately rather than handed out fresh
+        # on every call — a job (e.g. a regenerate request) can span a
+        # reload, and matching it back to its clip later needs that clip's
+        # id to still be what it was when the job was submitted.
+        migrated = False
+        for clip in payload.get('clips', []):
+            if 'id' not in clip:
+                clip['id'] = uuid.uuid4().hex
+                migrated = True
+        if migrated:
+            conn.execute('UPDATE film_cuts SET payload=? WHERE project=?', (json.dumps(payload), project))
     return payload
 
 
