@@ -181,8 +181,8 @@ def process(item, output):
             raise ValueError('The provider returned no processed video')
         raw = output.with_suffix('.processed.mp4')
         download(result['video']['url'], raw)
-    actual, _ = f.probe(raw)
-    expected, has_audio = f.probe(trimmed)
+    actual, _, _, _ = f.probe(raw)
+    expected, has_audio, _, _ = f.probe(trimmed)
     if abs(actual - expected) > .25:
         raise ValueError('Processed duration differs from the source. Original edit retained.')
     args = ['-i', str(raw), '-i', str(trimmed)]

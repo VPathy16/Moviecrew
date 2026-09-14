@@ -10,29 +10,56 @@
  #edit-time{font-variant-numeric:tabular-nums;font-size:12px;color:#a5abb5}.edit-transport{display:flex;align-items:center;gap:16px;margin:10px 0}#edit-seek{flex:1;padding:0;accent-color:#f27656}
  #cut-clips{display:flex;align-items:center;gap:6px;overflow-x:auto;padding:12px 0 18px;min-height:100px}.edit-tile{flex-shrink:0;height:90px;min-width:110px;border:1px solid #34383f;border-radius:9px;padding:0;overflow:hidden;background:#24272d;text-align:left}.edit-tile[aria-pressed=true]{border:2px solid #f27656}.edit-tile video{width:100%;height:55px;object-fit:cover;pointer-events:none}.edit-tile small{display:block;padding:3px 8px;font-size:10px;white-space:nowrap}.edit-add{padding:4px 8px;border:0;background:transparent;color:#f4f1eb;font-size:20px;flex-shrink:0}
  #edit-inspector{padding:12px 16px;border:1px solid #34383f;border-radius:12px}.trim-control{display:flex;align-items:center;gap:8px;font-size:12px}.trim-control input[type=range]{width:130px;padding:0;accent-color:#f27656}.trim-control input[type=number]{width:70px;padding:6px;font-size:12px}#edit-inspector .edit-toolbar{margin:6px 0}
- #editor-dialog{width:min(620px,90vw);max-height:85vh;overflow:auto;padding:24px}#editor-dialog h2{font-size:20px}#editor-dialog p{font-size:13px;color:#a5abb5}#editor-dialog button{font-size:12px}#editor-dialog video{width:100%;max-height:250px}.edit-library{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.edit-library button{padding:6px}.edit-library img,.edit-library video{height:90px;width:100%;object-fit:cover}.edit-library small{display:block;font-size:11px}.edit-job{border-top:1px solid #34383f;padding:12px 0}.edit-job video{max-height:200px;width:100%}
+ #editor-dialog{width:min(620px,90vw);max-height:85vh;overflow:auto;padding:24px;position:relative}#editor-dialog h2{font-size:20px}#editor-dialog p{font-size:13px;color:#a5abb5}#editor-dialog button{font-size:12px}#editor-dialog video{width:100%;max-height:250px}.edit-library{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.edit-library button{padding:6px}.edit-library img,.edit-library video{height:90px;width:100%;object-fit:cover}.edit-library small{display:block;font-size:11px}.edit-job{border-top:1px solid #34383f;padding:12px 0}.edit-job video{max-height:200px;width:100%}
+ .icon-btn{display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;min-height:0;padding:0;border-radius:8px;flex-shrink:0}.icon-btn svg{display:block}
+ .dialog-close{position:absolute;top:14px;right:14px;width:30px;height:30px;padding:0;border-radius:6px;background:transparent;border:0;color:#a5abb5}.dialog-close:hover{background:#ffffff10;color:#f4f1eb}
+ .zoom-control{display:flex;align-items:center;gap:6px;color:#a5abb5}
  @media(max-width:700px){#final-edit{padding:18px 12px}.edit-toolbar{gap:7px}.edit-library{grid-template-columns:repeat(2,1fr)}#edit-stage,#edit-player{max-height:320px}}
  `;document.head.append(style);
+ const SVG_NS='http://www.w3.org/2000/svg';
+ function iconSvg(inner,size=16){const svg=document.createElementNS(SVG_NS,'svg');svg.setAttribute('viewBox','0 0 24 24');svg.setAttribute('width',size);svg.setAttribute('height',size);svg.setAttribute('fill','none');svg.setAttribute('stroke','currentColor');svg.setAttribute('stroke-width','2');svg.setAttribute('stroke-linecap','round');svg.setAttribute('stroke-linejoin','round');svg.style.display='block';svg.innerHTML=inner;return svg}
+ const ICONS={
+  play:'<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>',
+  pause:'<rect x="6" y="5" width="4" height="14" fill="currentColor" stroke="none"/><rect x="14" y="5" width="4" height="14" fill="currentColor" stroke="none"/>',
+  undo:'<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  redo:'<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+  close:'<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  zoom:'<circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>',
+ };
+ function setIcon(btn,name,label){btn.replaceChildren(iconSvg(ICONS[name]));btn.setAttribute('aria-label',label);btn.title=label}
+ function iconButton(name,fn,label,parent){const b=crewEl('button');b.type='button';b.className='icon-btn';setIcon(b,name,label);b.onclick=fn;if(parent)parent.append(b);return b}
  const toolbar=crewEl('div',undefined,'edit-toolbar');
  const format=host.querySelector(':scope > label');format.firstChild.textContent='Canvas ';toolbar.append(format);
  function select(label,id,choices){const l=crewEl('label',label+' '),s=crewEl('select');s.id=id;for(const [v,t] of choices){const o=crewEl('option',t);o.value=v;s.append(o)}l.append(s);toolbar.append(l);return s}
  const fit=select('Framing','edit-fit',[['contain','Fit · black bars'],['cover','Crop to fill']]);
- const resolution=select('Export size','edit-resolution',[['720p','720p'],['1080p','1080p'],['4K','4K']]);
+ const resolution=select('Export size','edit-resolution',[['720p','720p']]);
+ const RESOLUTION_TIERS=[['480p',480],['720p',720],['1080p',1080],['1440p',1440],['4K',2160]];
+ function sourceMaxHeight(){let max=0;for(const clip of cut.clips){const m=media(clip);if(m?.height)max=Math.max(max,m.height)}return max}
+ function refreshResolutionOptions(){
+  const maxH=sourceMaxHeight();
+  const desired=cut.resolution||'720p';
+  const applicable=maxH?RESOLUTION_TIERS.filter(([,h])=>h<=maxH):RESOLUTION_TIERS.filter(([,h])=>h<=1080);
+  const tiers=applicable.length?applicable:RESOLUTION_TIERS.slice(0,1);
+  resolution.replaceChildren();
+  for(const [name,h] of tiers){const o=crewEl('option',h===maxH?name+' · source quality':name);o.value=name;resolution.append(o)}
+  resolution.value=tiers.some(([name])=>name===desired)?desired:tiers[tiers.length-1][0];
+  cut.resolution=resolution.value;
+ }
  const stage=crewEl('div');stage.id='edit-stage';const player=crewEl('video');player.id='edit-player';player.controls=true;player.playsInline=true;stage.append(player);
  const hold=crewEl('canvas');hold.setAttribute('aria-hidden','true');hold.style.cssText='position:absolute;inset:0;width:100%;height:100%;pointer-events:none;display:none;background:#000';stage.style.position='relative';stage.append(hold);let loadVersion=0;
- const transport=crewEl('div',undefined,'edit-transport'),play=crewEl('button','▶ Play film'),seek=crewEl('input'),time=crewEl('span','0:00 / 0:00');seek.type='range';seek.id='edit-seek';seek.min=0;seek.step=.01;seek.setAttribute('aria-label','Film playhead');time.id='edit-time';transport.append(play,seek,time);
+ const transport=crewEl('div',undefined,'edit-transport'),play=iconButton('play',null,'Play film'),seek=crewEl('input'),time=crewEl('span','0:00 / 0:00');seek.type='range';seek.id='edit-seek';seek.min=0;seek.step=.01;seek.setAttribute('aria-label','Film playhead');time.id='edit-time';transport.append(play,seek,time);
  const inspector=crewEl('div');inspector.id='edit-inspector';inspector.hidden=true;const jobs=crewEl('div');jobs.id='edit-jobs';
  host.insertBefore(toolbar,$('cut-clips'));host.insertBefore(stage,$('cut-clips'));host.insertBefore(transport,$('cut-clips'));$('cut-clips').after(inspector,jobs);
  const dialog=crewEl('dialog');dialog.id='editor-dialog';document.body.append(dialog);
- let selected=0,playing=false,dragIndex=null,insertAt=0,pendingInsert=null,enhanceId=null,undo=[],dialogVersion=0;
+ let selected=0,playing=false,insertAt=0,pendingInsert=null,enhanceId=null,undo=[],redo=[],dialogVersion=0;
  const clock=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
  const total=()=>cut.clips.reduce((n,c)=>n+c.end-c.start,0);
  const offset=i=>cut.clips.slice(0,i).reduce((n,c)=>n+c.end-c.start,0);
  const media=c=>filmMedia.find(v=>v.id===c?.video_id);
- function remember(){undo.push(JSON.stringify(cut));if(undo.length>30)undo.shift()}
+ function remember(){undo.push(JSON.stringify(cut));if(undo.length>30)undo.shift();redo.length=0}
  function changed(){cutDirty=true;$('cut-status').textContent='Unsaved edit';renderInspector();}
  function applyCanvas(){const [w,h]=cut.aspect_ratio.split(':').map(Number);stage.style.aspectRatio=w+'/'+h;stage.style.width='min(100%, '+(420*w/h)+'px)';player.style.objectFit=cut.fit||'contain';}
- function stop(){playing=false;player.pause();play.textContent='▶ Play film'}
+ function stop(){playing=false;player.pause();setIcon(play,'play','Play film')}
  function loadClip(index,autoplay=false,position=null){
   const token=++loadVersion;
   // Keep the outgoing decoded frame visible while the replacement buffers/seeks.
@@ -54,15 +81,23 @@
  function refreshClock(){const c=cut.clips[selected];const now=c?offset(selected)+Math.max(0,Math.min(c.end,player.currentTime)-c.start):0;seek.max=total();seek.value=now;time.textContent=clock(now)+' / '+clock(total());const head=$('timeline-playhead');if(head){head.style.left=(24+now*pixelsPerSecond)+'px';head.setAttribute('aria-valuenow',now.toFixed(2))}}
  player.ontimeupdate=()=>{refreshClock();const c=cut.clips[selected];if(c&&player.currentTime>=c.end-.025){if(playing&&selected+1<cut.clips.length){loadClip(selected+1,true);renderTiles();renderInspector()}else stop()}};
  player.onended=()=>{if(playing&&selected+1<cut.clips.length){loadClip(selected+1,true);renderTiles();renderInspector()}else stop()};
- play.onclick=()=>{if(playing)return stop();if(!cut.clips.length)return;playing=true;play.textContent='Pause';loadClip(0,true);renderTiles();renderInspector()};
+ play.onclick=()=>{if(playing)return stop();if(!cut.clips.length)return;playing=true;setIcon(play,'pause','Pause film');loadClip(0,true);renderTiles();renderInspector()};
  seek.oninput=()=>{stop();let t=Number(seek.value),i=0;while(i<cut.clips.length-1&&t>cut.clips[i].end-cut.clips[i].start){t-=cut.clips[i].end-cut.clips[i].start;i++}loadClip(i,false,cut.clips[i]?.start+t);renderTiles();renderInspector()};
  for(const control of [$('cut-ratio'),fit,resolution])control.onchange=()=>{remember();cut.aspect_ratio=$('cut-ratio').value;cut.fit=fit.value;cut.resolution=resolution.value;changed();applyCanvas()};
  function button(text,fn,parent){const b=crewEl('button',text);b.onclick=fn;parent.append(b);return b}
- function modal(title){closeClipMenu();dialog.classList.remove('trim-dialog');dialogVersion++;dialog.replaceChildren();dialog.append(crewEl('h2',title));button('Close',()=>dialog.close(),dialog);if(!dialog.open)dialog.showModal();return dialog}
- let pixelsPerSecond=40,trimActive=false;
+ function modal(title){closeClipMenu();dialog.classList.remove('trim-dialog');dialogVersion++;dialog.replaceChildren();dialog.append(crewEl('h2',title));iconButton('close',()=>dialog.close(),'Close',dialog).className='dialog-close';if(!dialog.open)dialog.showModal();return dialog}
+ let pixelsPerSecond=40,trimActive=false,userZoomed=false;
  const zoomRow=crewEl('div',undefined,'edit-toolbar');zoomRow.append(crewEl('strong','Timeline'),crewEl('span','Drag edges to trim · right-click for options','muted'));
- const zoomLabel=crewEl('label','Zoom '),zoom=crewEl('input');zoom.type='range';zoom.min=16;zoom.max=100;zoom.value=pixelsPerSecond;zoom.setAttribute('aria-label','Timeline zoom');zoom.style.cssText='width:100px;padding:0;accent-color:#f27656';zoomLabel.append(zoom);zoomRow.append(zoomLabel);$('cut-clips').before(zoomRow);
- zoom.oninput=()=>{pixelsPerSecond=Number(zoom.value);renderTiles();refreshClock()};
+ const zoomLabel=crewEl('label',undefined,'zoom-control'),zoom=crewEl('input');zoomLabel.title='Timeline zoom';zoomLabel.append(iconSvg(ICONS.zoom,14));zoom.type='range';zoom.min=16;zoom.max=100;zoom.value=pixelsPerSecond;zoom.setAttribute('aria-label','Timeline zoom');zoom.style.cssText='width:100px;padding:0;accent-color:#f27656';zoomLabel.append(zoom);zoomRow.append(zoomLabel);$('cut-clips').before(zoomRow);
+ // Until the viewer picks a zoom level themselves, the timeline scales to
+ // fill the visible track instead of sitting at a fixed 40px/s — a short
+ // edit otherwise renders as a sliver against a mostly-empty bar. Manual
+ // zoom (the slider, or scrolling past what fits) always wins from then on.
+ function fitPixelsPerSecond(){
+  const available=$('cut-clips').clientWidth-48,duration=Math.max(total(),.001);
+  return Math.max(Number(zoom.min),Math.min(Number(zoom.max),available/duration));
+ }
+ zoom.oninput=()=>{userZoomed=true;pixelsPerSecond=Number(zoom.value);renderTiles();refreshClock()};
  const timelineStyle=crewEl('style');timelineStyle.textContent=`
  #edit-inspector{display:none}
  #cut-clips .clip-options{position:absolute;right:13px;top:5px;width:26px;height:24px;min-height:0;padding:0;border:1px solid #ffffff25;border-radius:6px;background:#111c;line-height:18px;font-size:20px;color:#fff;z-index:4;cursor:pointer}
@@ -71,9 +106,14 @@
  #editor-dialog.trim-dialog{width:min(360px,90vw);padding:20px;border-radius:14px}#editor-dialog.trim-dialog h2{font-size:17px;margin:0 0 12px}#editor-dialog.trim-dialog .trim-control{margin:16px 0;justify-content:space-between}#editor-dialog.trim-dialog .trim-control input[type=range]{flex:1;min-width:40px}#editor-dialog.trim-dialog .trim-control input[type=number]{width:76px}#editor-dialog.trim-dialog>button{padding:6px 12px}
  #cut-clips{display:block;position:relative;border:1px solid #34383f;background:#17191d;border-radius:12px;padding:0;min-height:164px;overflow-x:auto;touch-action:pan-x}
  .timeline-surface{position:relative;height:158px;min-width:100%}.timeline-ruler{position:absolute;top:0;left:24px;right:24px;height:30px;border-bottom:1px solid #34383f;cursor:crosshair;touch-action:none}.timeline-tick{position:absolute;top:0;height:29px;border-left:1px solid #34383f;color:#a5abb5;font-size:10px;padding:5px;pointer-events:none}.timeline-track{position:absolute;left:24px;right:24px;top:40px;height:80px;background:#24272d;border-radius:6px}
- #cut-clips .edit-tile{position:absolute;top:40px;height:80px;min-width:0;padding:0;box-sizing:border-box;cursor:grab;border-radius:5px;touch-action:none;user-select:none}
+ #cut-clips .edit-tile{position:absolute;top:40px;height:80px;min-width:0;padding:0;box-sizing:border-box;cursor:grab;border-radius:5px;touch-action:none;user-select:none;transition:box-shadow .12s}
+ #cut-clips .edit-tile.dragging{cursor:grabbing;z-index:6;box-shadow:0 8px 20px #000a;transition:none}
  #cut-clips .edit-tile video{height:52px;object-fit:cover;opacity:.8}#cut-clips .edit-tile small{padding:4px 10px;overflow:hidden;text-overflow:ellipsis;font-size:10px;pointer-events:none}#cut-clips .edit-tile[aria-pressed=true]{box-shadow:inset 0 0 0 1px #f27656}
- .timeline-handle{position:absolute;top:0;bottom:0;width:10px;min-height:0;padding:0!important;border:0!important;border-radius:0!important;background:#f2765699!important;cursor:ew-resize;touch-action:none;z-index:3}.timeline-handle::after{content:'';position:absolute;left:4px;top:28px;width:2px;height:20px;background:#17191d}.timeline-handle.start{left:0}.timeline-handle.end{right:0}.timeline-handle:focus{outline:2px solid #fff}
+ /* Above the playhead (z-index 5): the playhead can land exactly on a
+    clip boundary — right where its own trim handle sits — after simply
+    selecting or reordering a clip, and would otherwise silently swallow
+    the pointerdown meant for the handle. */
+ .timeline-handle{position:absolute;top:0;bottom:0;width:10px;min-height:0;padding:0!important;border:0!important;border-radius:0!important;background:#f2765699!important;cursor:ew-resize;touch-action:none;z-index:7}.timeline-handle::after{content:'';position:absolute;left:4px;top:28px;width:2px;height:20px;background:#17191d}.timeline-handle.start{left:0}.timeline-handle.end{right:0}.timeline-handle:focus{outline:2px solid #fff}
  #cut-clips .edit-add{position:absolute;top:126px;transform:translateX(-50%);font-size:17px;padding:0 7px;line-height:22px;border-radius:5px;background:#24272d;z-index:4}
  #timeline-playhead{position:absolute;top:19px;height:105px;width:12px;margin-left:-6px;border:0;padding:0;background:transparent;z-index:5;cursor:ew-resize;touch-action:none}#timeline-playhead::before{content:'';position:absolute;top:0;left:1px;border-top:9px solid var(--accent);border-left:5px solid transparent;border-right:5px solid transparent}#timeline-playhead::after{content:'';position:absolute;top:8px;bottom:0;left:5px;width:2px;background:var(--accent);pointer-events:none}.timeline-drop{box-shadow:inset 5px 0 #fff!important}
  `;document.head.append(timelineStyle);
@@ -81,7 +121,9 @@
  function drawRuler(ruler){ruler.replaceChildren();const step=pixelsPerSecond<25?5:pixelsPerSecond<60?2:1;for(let t=0;t<=total()+step;t+=step){const tick=crewEl('span',clock(t),'timeline-tick');tick.style.left=t*pixelsPerSecond+'px';ruler.append(tick)}}
  function timelineGeometry(){const surface=$('cut-clips').querySelector('.timeline-surface');if(!surface)return;surface.style.width=(Math.max(total()*pixelsPerSecond+48,$('cut-clips').clientWidth))+'px';surface.querySelectorAll('.edit-tile').forEach((el,i)=>{const c=cut.clips[i];el.style.left=(24+offset(i)*pixelsPerSecond)+'px';el.style.width=Math.max(2,(c.end-c.start)*pixelsPerSecond)+'px';el.querySelector('small').textContent=`${i+1} · ${friendlyShot(media(c)?.shot_id||'Clip')} · ${(c.end-c.start).toFixed(2)}s`});surface.querySelectorAll('.edit-add').forEach((el,i)=>el.style.left=(24+offset(i)*pixelsPerSecond)+'px');drawRuler(surface.querySelector('.timeline-ruler'));refreshClock()}
  function renderTiles(){
-  if(trimActive)return;closeClipMenu();const list=$('cut-clips');list.replaceChildren();
+  if(trimActive)return;closeClipMenu();
+  if(!userZoomed&&cut.clips.length){pixelsPerSecond=fitPixelsPerSecond();zoom.value=pixelsPerSecond}
+  const list=$('cut-clips');list.replaceChildren();
   const surface=crewEl('div',undefined,'timeline-surface'),ruler=crewEl('div',undefined,'timeline-ruler'),track=crewEl('div',undefined,'timeline-track');list.append(surface);surface.append(ruler,track);
   function pointerTime(e){return (e.clientX-list.getBoundingClientRect().left+list.scrollLeft-24)/pixelsPerSecond}
   function scrub(e){if(e.button!==0)return;e.preventDefault();const target=e.currentTarget;target.setPointerCapture(e.pointerId);timelineSeek(pointerTime(e));target.onpointermove=move=>timelineSeek(pointerTime(move));target.onpointerup=target.onpointercancel=()=>{target.onpointermove=null};}
@@ -90,13 +132,46 @@
    const add=button('+',()=>showAdd(i),surface);add.className='edit-add';add.setAttribute('aria-label','Add clip at position '+(i+1));if(i===cut.clips.length)break;
    const c=cut.clips[i],m=media(c),tile=crewEl('div',undefined,'edit-tile');tile.setAttribute('role','button');tile.tabIndex=0;tile.setAttribute('aria-label','Select clip '+(i+1));tile.setAttribute('aria-pressed',String(i===selected));surface.append(tile);
    const selectClip=()=>{stop();loadClip(i);renderTiles();renderInspector()};tile.onclick=e=>{if(!e.target.closest('button'))selectClip()};tile.oncontextmenu=e=>{e.preventDefault();openClipMenu(i,e.clientX,e.clientY,tile)};tile.onkeydown=e=>{if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.preventDefault();const r=tile.getBoundingClientRect();openClipMenu(i,r.left+20,r.top,tile);return}if(e.target===tile&&['Enter',' '].includes(e.key)){e.preventDefault();selectClip()}};
-   tile.draggable=true;tile.ondragstart=e=>{if(trimActive){e.preventDefault();return}dragIndex=i;e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(i))};tile.ondragend=()=>{dragIndex=null;surface.querySelectorAll('.timeline-drop').forEach(el=>el.classList.remove('timeline-drop'))};
-   tile.ondragover=e=>{e.preventDefault();tile.classList.add('timeline-drop')};tile.ondragleave=()=>tile.classList.remove('timeline-drop');tile.ondrop=e=>{e.preventDefault();if(dragIndex===null)return;const from=dragIndex;let at=i+(e.clientX>tile.getBoundingClientRect().left+tile.clientWidth/2?1:0);if(from<at)at--;dragIndex=null;if(at!==from){remember();const [v]=cut.clips.splice(from,1);cut.clips.splice(at,0,v);selected=at;changed()}renderCut()};
-   if(m?.video_url){const thumb=crewEl('video');thumb.src=m.video_url+'#t='+c.start;thumb.preload='metadata';thumb.muted=true;tile.append(thumb)}tile.append(crewEl('small'));const more=button('⋯',e=>{e.stopPropagation();const r=more.getBoundingClientRect();openClipMenu(i,r.left,r.bottom+5,more)},tile);more.className='clip-options';more.setAttribute('aria-label',`Clip ${i+1} options`);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');more.ondragstart=e=>e.preventDefault();
+   // Pointer-based, not native HTML5 draggable=true: unifies mouse, touch
+   // and pen (native drag-and-drop never fires from a touch gesture at
+   // all, on any browser) and matches the same setPointerCapture pattern
+   // already used for scrubbing and trimming below.
+   tile.onpointerdown=e=>{
+    if(trimActive||e.button!==0||e.target.closest('button'))return;
+    const startX=e.clientX,startY=e.clientY,originIndex=i;
+    let moved=false,dropIndex=originIndex;
+    tile.setPointerCapture(e.pointerId);
+    tile.onpointermove=move=>{
+     const dx=move.clientX-startX;
+     if(!moved){
+      if(Math.abs(dx)<4&&Math.abs(move.clientY-startY)<12)return;
+      moved=true;tile.classList.add('dragging');
+     }
+     tile.style.transform=`translateX(${dx}px)`;
+     const tiles=[...surface.querySelectorAll('.edit-tile')];
+     dropIndex=tiles.length-1;
+     for(let k=0;k<tiles.length;k++){
+      if(k===originIndex)continue;
+      const r=tiles[k].getBoundingClientRect();
+      if(move.clientX<r.left+r.width/2){dropIndex=k>originIndex?k-1:k;break}
+     }
+     tiles.forEach((t,k)=>t.classList.toggle('timeline-drop',k===dropIndex&&k!==originIndex));
+    };
+    const finish=()=>{
+     tile.onpointermove=null;
+     if(moved&&dropIndex!==originIndex){
+      remember();const [v]=cut.clips.splice(originIndex,1);cut.clips.splice(dropIndex,0,v);selected=dropIndex;changed();renderCut();
+     }else if(moved){
+      renderTiles(); // snap back to its slot; also clears the drag styling and suppresses the phantom click
+     }
+    };
+    tile.onpointerup=finish;tile.onpointercancel=finish;
+   };
+   if(m?.video_url){const thumb=crewEl('video');thumb.src=m.video_url+'#t='+c.start;thumb.preload='metadata';thumb.muted=true;tile.append(thumb)}tile.append(crewEl('small'));const more=button('⋯',e=>{e.stopPropagation();const r=more.getBoundingClientRect();openClipMenu(i,r.left,r.bottom+5,more)},tile);more.className='clip-options';more.setAttribute('aria-label',`Clip ${i+1} options`);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');
    for(const edge of ['start','end']){
-    const handle=crewEl('button',undefined,'timeline-handle '+edge);handle.setAttribute('aria-label',`Clip ${i+1} trim ${edge}`);handle.title=`Drag to trim ${edge}. Arrow keys adjust 0.05 seconds.`;tile.append(handle);handle.onclick=e=>e.stopPropagation();handle.ondragstart=e=>e.preventDefault();
+    const handle=crewEl('button',undefined,'timeline-handle '+edge);handle.setAttribute('aria-label',`Clip ${i+1} trim ${edge}`);handle.title=`Drag to trim ${edge}. Arrow keys adjust 0.05 seconds.`;tile.append(handle);handle.onclick=e=>e.stopPropagation();
     function adjust(value){c[edge]=edge==='start'?Math.max(0,Math.min(value,c.end-.05)):Math.min(m?.duration_s||c.end,Math.max(value,c.start+.05));changed();timelineGeometry();player.currentTime=edge==='start'?c.start:Math.max(c.start,c.end-.03)}
-    handle.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();stop();selected=i;loadClip(i);remember();trimActive=true;tile.draggable=false;handle.setPointerCapture(e.pointerId);const x=e.clientX,initial=c[edge],scroll=list.scrollLeft;handle.onpointermove=move=>adjust(initial+(move.clientX-x+list.scrollLeft-scroll)/pixelsPerSecond);const finish=()=>{handle.onpointermove=null;trimActive=false;tile.draggable=true;renderTiles();renderInspector()};handle.onpointerup=finish;handle.onpointercancel=finish};
+    handle.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();stop();selected=i;loadClip(i);remember();trimActive=true;handle.setPointerCapture(e.pointerId);const x=e.clientX,initial=c[edge],scroll=list.scrollLeft;handle.onpointermove=move=>adjust(initial+(move.clientX-x+list.scrollLeft-scroll)/pixelsPerSecond);const finish=()=>{handle.onpointermove=null;trimActive=false;renderTiles();renderInspector()};handle.onpointerup=finish;handle.onpointercancel=finish};
     handle.onkeydown=e=>{if(!['ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();e.stopPropagation();stop();selected=i;remember();adjust(c[edge]+(e.key==='ArrowRight'?.05:-.05));renderInspector()};
    }
   }
@@ -134,10 +209,11 @@
   }
   button('Done',()=>dialog.close(),d);
  }
- function renderInspector(){undoButton.disabled=!undo.length;}
- const undoButton=button('↶ Undo',()=>{if(!undo.length)return;stop();cut=JSON.parse(undo.pop());changed();renderCut()},zoomRow);undoButton.disabled=true;
- renderCut=function(){stop();selected=Math.min(selected,Math.max(0,cut.clips.length-1));$('cut-ratio').value=cut.aspect_ratio;fit.value=cut.fit||'contain';resolution.value=cut.resolution||'720p';applyCanvas();renderTiles();renderInspector();loadClip(selected);refreshClock()};
- const oldLoad=loadFinalEdit;loadFinalEdit=async function(){undo=[];selected=0;await oldLoad()};
+ function renderInspector(){undoButton.disabled=!undo.length;redoButton.disabled=!redo.length;}
+ const undoButton=iconButton('undo',()=>{if(!undo.length)return;stop();redo.push(JSON.stringify(cut));if(redo.length>30)redo.shift();cut=JSON.parse(undo.pop());changed();renderCut()},'Undo',zoomRow);undoButton.disabled=true;
+ const redoButton=iconButton('redo',()=>{if(!redo.length)return;stop();undo.push(JSON.stringify(cut));if(undo.length>30)undo.shift();cut=JSON.parse(redo.pop());changed();renderCut()},'Redo',zoomRow);redoButton.disabled=true;
+ renderCut=function(){stop();selected=Math.min(selected,Math.max(0,cut.clips.length-1));$('cut-ratio').value=cut.aspect_ratio;fit.value=cut.fit||'contain';refreshResolutionOptions();applyCanvas();renderTiles();renderInspector();loadClip(selected);refreshClock()};
+ const oldLoad=loadFinalEdit;loadFinalEdit=async function(){undo=[];redo=[];selected=0;userZoomed=false;await oldLoad()};
  async function insert(item,index=insertAt){remember();cut.clips.splice(Math.min(index,cut.clips.length),0,{video_id:item.id,start:0,end:item.duration_s,mute:false});changed();dialog.close();renderCut();await saveCut()}
  function showAdd(index){insertAt=index;const d=modal('Add a clip');const row=crewEl('div',undefined,'edit-toolbar');d.append(row);button('Video library',()=>libraryPicker('video'),row);button('Generate from image',()=>libraryPicker('image'),row);button('Upload',()=>uploadPicker(),row);if(index>0){button('Extend previous clip',()=>extendClip(index-1,'after'),row)}if(index<cut.clips.length){button('Extend before next clip',()=>extendClip(index,'before'),row)}}
  function libraryPicker(kind){const d=modal(kind==='video'?'Video library':'Choose a starting image');const grid=crewEl('div',undefined,'edit-library');d.append(grid);const entries=kind==='video'?filmMedia.filter(i=>i.kind==='video'&&i.status==='complete'):project.versions.filter(i=>i.status==='ok'&&i.image_url);for(const entry of entries){const b=button('',()=>kind==='video'?insert(entry):prepareGeneration({version_id:entry.version_id},entry.shot_id),grid);const visual=crewEl(kind==='video'?'video':'img');visual.src=kind==='video'?entry.video_url:entry.image_url;if(kind==='video'){visual.preload='metadata';visual.muted=true}b.append(visual,crewEl('small',friendlyShot(entry.shot_id||'Clip')))}if(!entries.length)d.append(crewEl('p','No saved '+(kind==='video'?'videos':'images')+' yet. Upload one to get started.'));if(kind==='image')for(const ref of project.image_references||[]){const b=button('',()=>prepareGeneration({reference_id:ref.id}),grid);const img=crewEl('img');img.src='/api/projects/'+project.id+'/references/'+ref.id;b.append(img,crewEl('small',ref.name||'Reference'))}}
@@ -192,8 +268,8 @@
   await insert(item,matches[0].index+(e.direction==='after'?1:0));
  }
 
- const exportDialog=crewEl('dialog');exportDialog.id='export-dialog';exportDialog.style.cssText='width:min(580px,90vw);max-height:85vh;overflow:auto;padding:24px';document.body.append(exportDialog);
- exportDialog.append(crewEl('h2','Export your film'));button('Close',()=>exportDialog.close(),exportDialog);
+ const exportDialog=crewEl('dialog');exportDialog.id='export-dialog';exportDialog.style.cssText='width:min(580px,90vw);max-height:85vh;overflow:auto;padding:24px;position:relative';document.body.append(exportDialog);
+ exportDialog.append(crewEl('h2','Export your film'));iconButton('close',()=>exportDialog.close(),'Close',exportDialog).className='dialog-close';
  exportDialog.append(crewEl('p','Choose the export size. For AI detail enhancement, export first, then choose Upscale with FLUX on the saved film.'));
  exportDialog.append(resolution.parentElement);
  const exportAction=$('export-film').onclick;
