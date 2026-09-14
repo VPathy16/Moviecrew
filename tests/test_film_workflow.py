@@ -379,3 +379,48 @@ def test_character_guided_extension_preserves_metadata_without_anchor(setup, mon
     item=flow.get('film-a',req['request_id'])
     assert item['extension']['direction']=='after'
     assert item['reference_ids']==['sheet'] and item['source_path']==''
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'),reason='ffmpeg required')
+def test_waveform_extraction_and_silent_clip(setup):
+    client,_,s,tmp=setup
+    toned=tmp/'toned.mp4'
+    flow.run_ffmpeg(['-f','lavfi','-i','color=c=red:s=64x64:r=24','-f','lavfi','-i','sine=frequency=400:sample_rate=48000','-t','0.5','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac',str(toned)])
+    toned_item=dict(id=str(uuid.uuid4()),project='film-a',kind='video',status='complete',shot_id=s.board[0].shot_id,path=str(toned),duration_s=.5,has_audio=True)
+    flow.put(toned_item)
+    peaks=client.get('/api/projects/film-a/film-media/'+toned_item['id']+'/waveform').json()['peaks']
+    assert peaks and max(peaks)<=1 and min(peaks)>=0
+
+    silent=tmp/'silent.mp4'
+    flow.run_ffmpeg(['-f','lavfi','-i','color=c=blue:s=64x64:r=24','-t','0.5','-c:v','libx264','-pix_fmt','yuv420p',str(silent)])
+    silent_item=dict(id=str(uuid.uuid4()),project='film-a',kind='video',status='complete',shot_id=s.board[0].shot_id,path=str(silent),duration_s=.5,has_audio=False)
+    flow.put(silent_item)
+    assert client.get('/api/projects/film-a/film-media/'+silent_item['id']+'/waveform').json()['peaks']==[]
+    assert client.get('/api/projects/film-b/film-media/'+toned_item['id']+'/waveform').status_code==404
+
+
+def test_regenerate_of_round_trips_through_public(setup,monkeypatch):
+    client,_,s,_=setup
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    original=request_for(s)
+    assert client.post('/api/projects/film-a/videos',json=original).status_code==200
+    regen={**request_for(s),'request_id':str(uuid.uuid4()),
+           'regenerate_of':{'video_id':original['request_id'],'start':0,'end':1}}
+    result=client.post('/api/projects/film-a/videos',json=regen)
+    assert result.status_code==200,result.text
+    assert result.json()['regenerate_of']=={'video_id':original['request_id'],'start':0,'end':1}
+    listed={i['id']:i for i in client.get('/api/projects/film-a/videos').json()['items']}
+    assert listed[regen['request_id']]['regenerate_of']['video_id']==original['request_id']
+    assert listed[original['request_id']]['regenerate_of'] is None
+
+
+def test_shot_cast_endpoint(setup):
+    from moviecrew.portal import world
+    client,_,s,_=setup
+    world.initialize_sheets(s)
+    shot=s.board[0]
+    shot_obj=next(sh for scene in s.project.scenes for sh in scene.shots if sh.id==shot.shot_id)
+    shot_obj.visible_character_ids=[s.project.bible.characters[0].id]
+    chips=client.get('/api/projects/film-a/shots/'+shot.shot_id+'/cast').json()['chips']
+    assert any(c['entity_id']==s.project.bible.characters[0].id and c['kind']=='characters' for c in chips)
+    assert client.get('/api/projects/film-a/shots/does-not-exist/cast').status_code==404

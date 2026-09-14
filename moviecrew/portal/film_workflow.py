@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 import uuid
+from array import array
 from pathlib import Path
 from typing import Literal
 
@@ -111,6 +112,50 @@ def run_ffmpeg(args):
         raise ValueError('Video processing failed. Check the source clips and available disk space.')
 
 
+def run_ffmpeg_capture(args):
+    """Like run_ffmpeg, but returns stdout instead of discarding it.
+
+    A non-zero exit is treated as "no audio" (empty bytes), not raised: a
+    silent or video-only clip is an ordinary case for a waveform request,
+    not a processing failure.
+    """
+    result = subprocess.run(['ffmpeg', '-nostdin', '-hide_banner', '-loglevel', 'error', *args], capture_output=True, timeout=60)
+    if result.returncode:
+        logging.getLogger(__name__).error('ffmpeg waveform extraction failed: %s', result.stderr[-2000:].decode(errors='replace'))
+        return b''
+    return result.stdout
+
+
+def extract_waveform(path, buckets=400):
+    """Normalized (0-1) per-bucket peak amplitudes for a waveform lane; [] if silent/unreadable."""
+    raw = run_ffmpeg_capture(['-i', str(path), '-vn', '-ac', '1', '-ar', '8000', '-f', 's16le', '-acodec', 'pcm_s16le', 'pipe:1'])
+    if not raw:
+        return []
+    samples = array('h', raw[: len(raw) - len(raw) % 2])
+    if not samples:
+        return []
+    bucket_size = max(1, len(samples) // buckets)
+    peaks = [max(abs(s) for s in samples[i:i + bucket_size]) for i in range(0, len(samples), bucket_size)]
+    top = max(peaks) or 1
+    return [round(p / top, 4) for p in peaks]
+
+
+_waveform_cache = {}
+
+
+class RegenerateTarget(BaseModel):
+    """Marks a video request as a fresh take for an existing cut clip.
+
+    Purely a durable tag carried on the item (like `enhancement`/`extension`
+    elsewhere in this file) — it never triggers any server-side replace.
+    Editing owns the cut; the frontend decides whether/when to swap this
+    result in once it's ready for review.
+    """
+    video_id: str
+    start: float = Field(ge=0, allow_inf_nan=False)
+    end: float = Field(gt=0, allow_inf_nan=False)
+
+
 class VideoRequest(BaseModel):
     request_id: uuid.UUID
     shot_id: str
@@ -124,6 +169,7 @@ class VideoRequest(BaseModel):
     aspect_ratio: str = '16:9'
     resolution: str = '720p'
     audio: bool = False
+    regenerate_of: RegenerateTarget | None = None
 
 
 def frame_positions(client, model):
@@ -241,6 +287,7 @@ def create_video(project: str, req: VideoRequest):
                 'shot_id': req.shot_id, 'frame_id': req.frame_id, 'prompt': req.prompt,
                 'anchor_position': req.anchor_position,
                 'extension': frame.settings.get('extension') if frame else None,
+                'regenerate_of': req.regenerate_of.model_dump() if req.regenerate_of else None,
                 'model': req.model, 'backend': client.name, 'source_path': frame.image_path if req.reference_mode == 'shot' else '',
                 'reference_mode': req.reference_mode, 'reference_ids': req.reference_ids if req.reference_mode == 'character' else [],
                 'reference_paths': [next(r['path'] for r in session(project).image_references if r['id'] == rid) for rid in req.reference_ids] if req.reference_mode == 'character' else [],
@@ -375,8 +422,8 @@ def work(project, item_id):
                 item.update(status='waiting', error='Still processing. Resume to check the existing job.')
                 put(item)
                 return
-        duration, _, width, height = probe(output)
-        item.update(status='complete', path=str(output), duration_s=duration, width=width, height=height, error=None)
+        duration, has_audio, width, height = probe(output)
+        item.update(status='complete', path=str(output), duration_s=duration, width=width, height=height, has_audio=has_audio, error=None)
         put(item)
     except Exception as exc:
         state = 'uncertain' if item.get('status') == 'submitting' else ('waiting' if item.get('provider_id') and item.get('status') != 'failed' else 'failed')
@@ -410,6 +457,17 @@ def media(project: str, item_id: str, download: bool = False):
     if item['status'] != 'complete' or not item.get('path') or not Path(item['path']).is_file():
         raise HTTPException(404, 'Video is not ready')
     return FileResponse(item['path'], media_type='video/mp4', filename=(item_id+'.mp4') if download else None)
+
+
+@router.get('/api/projects/{project}/film-media/{item_id}/waveform')
+def waveform(project: str, item_id: str):
+    session(project)
+    item = get(project, item_id)
+    if item['status'] != 'complete' or not item.get('path') or not Path(item['path']).is_file():
+        raise HTTPException(404, 'Video is not ready')
+    if item_id not in _waveform_cache:
+        _waveform_cache[item_id] = [] if item.get('has_audio') is False else extract_waveform(item['path'])
+    return {'peaks': _waveform_cache[item_id]}
 
 
 @router.post('/api/projects/{project}/shots/{shot_id}/upload-video')
