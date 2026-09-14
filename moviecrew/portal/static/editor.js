@@ -42,14 +42,29 @@
  const fit=select('Framing','edit-fit',[['contain','Fit · black bars'],['cover','Crop to fill']]);
  const resolution=select('Export size','edit-resolution',[['720p','720p']]);
  const RESOLUTION_TIERS=[['480p',480],['720p',720],['1080p',1080],['1440p',1440],['4K',2160]];
- function sourceMaxHeight(){let max=0;for(const clip of cut.clips){const m=media(clip);if(m?.height)max=Math.max(max,m.height)}return max}
+ // The short edge, not raw height: a 1080x1920 portrait clip is 1080p-grade
+ // footage, not 1920p-grade, and comparing tiers against height alone would
+ // wrongly qualify it for 1440p.
+ function sourceMaxShortEdge(){
+  let max=0,allKnown=true;
+  for(const clip of cut.clips){
+   const m=media(clip);
+   if(m?.width&&m?.height)max=Math.max(max,Math.min(m.width,m.height));
+   else allKnown=false;
+  }
+  return {max,allKnown};
+ }
  function refreshResolutionOptions(){
-  const maxH=sourceMaxHeight();
+  const {max:maxEdge,allKnown}=sourceMaxShortEdge();
   const desired=cut.resolution||'720p';
-  const applicable=maxH?RESOLUTION_TIERS.filter(([,h])=>h<=maxH):RESOLUTION_TIERS.filter(([,h])=>h<=1080);
+  // Only cap the offered tiers when every clip's dimensions are actually
+  // known. Clips generated before width/height was recorded report none at
+  // all; treating "unknown" as "assume 1080p" would silently downgrade (and
+  // overwrite, via cut.resolution below) an already-saved 4K export choice.
+  const applicable=maxEdge&&allKnown?RESOLUTION_TIERS.filter(([,h])=>h<=maxEdge):RESOLUTION_TIERS;
   const tiers=applicable.length?applicable:RESOLUTION_TIERS.slice(0,1);
   resolution.replaceChildren();
-  for(const [name,h] of tiers){const o=crewEl('option',h===maxH?name+' · source quality':name);o.value=name;resolution.append(o)}
+  for(const [name,h] of tiers){const o=crewEl('option',h===maxEdge?name+' · source quality':name);o.value=name;resolution.append(o)}
   resolution.value=tiers.some(([name])=>name===desired)?desired:tiers[tiers.length-1][0];
   cut.resolution=resolution.value;
  }
