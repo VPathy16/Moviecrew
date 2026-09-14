@@ -25,7 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from .schema import Project, Shot, ShotIntent
+from .schema import Project, Scene, Shot, ShotIntent
 
 
 class UnknownShot(LookupError):
@@ -57,6 +57,14 @@ def find_shot(project: Project, shot_id: str) -> Optional[Shot]:
             if shot.id == shot_id:
                 return shot
     return None
+
+
+def find_scene_and_shot(project: Project, shot_id: str) -> tuple[Optional[Scene], Optional[Shot]]:
+    for scene in project.scenes:
+        for shot in scene.shots:
+            if shot.id == shot_id:
+                return scene, shot
+    return None, None
 
 
 def find_intent(project: Project, shot_id: str) -> Optional[ShotIntent]:

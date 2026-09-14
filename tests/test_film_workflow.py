@@ -89,7 +89,9 @@ def test_offline_video_cut_export_and_reopen(setup, monkeypatch):
     assert .9 < duration < 1.4 and audio
     assert width and height
     portal._sessions.pop('film-a')
-    assert client.get('/api/projects/film-a/cut').json()==cut
+    reopened=client.get('/api/projects/film-a/cut').json()
+    ids=[c.pop('id') for c in reopened['clips']]
+    assert reopened==cut and all(ids) and len(set(ids))==len(ids)
     assert client.get('/api/projects/film-a/film-media/'+export['id']).status_code==200
     assert client.get('/api/projects/film-b/film-media/'+export['id']).status_code==404
     # A silent uploaded video also exports with a synthesized silent audio track.
@@ -210,6 +212,47 @@ def test_canvas_modes_and_sizes_roundtrip(setup, monkeypatch):
     assert client.put('/api/projects/film-a/cut',json={**payload,'resolution':'1440p'}).status_code==200
     assert 'crop=1280:720' in flow.canvas_filter(1280,720,'cover')
     assert 'color=black' in flow.canvas_filter(1280,720,'contain')
+
+
+def test_cut_clips_get_distinct_stable_ids(setup, monkeypatch):
+    client,_,s,_=setup
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    req=request_for(s)
+    client.post('/api/projects/film-a/videos',json=req)
+    flow.work('film-a',req['request_id'])
+    video=flow.get('film-a',req['request_id'])
+    # Two clips with the exact same video_id/start/end - a duplicated trim -
+    # must still get distinct ids so a later lookup (e.g. Final Edit's
+    # "Replace this clip") can tell them apart.
+    dup={'video_id':video['id'],'start':0,'end':.5,'mute':False}
+    saved=client.put('/api/projects/film-a/cut',json={'clips':[dup,dup],'aspect_ratio':'16:9'}).json()
+    ids=[c['id'] for c in saved['clips']]
+    assert len(ids)==2 and ids[0] and ids[1] and ids[0]!=ids[1]
+
+    # A client-supplied id is honored and round-trips unchanged.
+    tagged={**dup,'id':'my-stable-id'}
+    saved=client.put('/api/projects/film-a/cut',json={'clips':[tagged],'aspect_ratio':'16:9'}).json()
+    assert saved['clips'][0]['id']=='my-stable-id'
+    assert client.get('/api/projects/film-a/cut').json()['clips'][0]['id']=='my-stable-id'
+
+
+def test_legacy_cut_id_backfill_is_persisted_not_regenerated(setup):
+    import json
+    client,_,_,_=setup
+    flow.init()
+    # A cut saved before clip ids existed - written straight into storage,
+    # bypassing CutClip's own id default, the way an actually-old row would
+    # look.
+    legacy={'clips':[{'video_id':'v1','start':0,'end':1,'mute':False}],'aspect_ratio':'16:9'}
+    with flow.db() as conn:
+        conn.execute('INSERT INTO film_cuts VALUES (?,?) ON CONFLICT(project) DO UPDATE SET payload=excluded.payload',
+                      ('film-a', json.dumps(legacy)))
+    first=client.get('/api/projects/film-a/cut').json()['clips'][0]['id']
+    second=client.get('/api/projects/film-a/cut').json()['clips'][0]['id']
+    # A regenerate job (or anything else) referencing this clip by id must
+    # still find it on a later read - reloading the page a second time
+    # without an intervening save must not hand out a different id.
+    assert first and first==second
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='ffmpeg required')
@@ -379,3 +422,49 @@ def test_character_guided_extension_preserves_metadata_without_anchor(setup, mon
     item=flow.get('film-a',req['request_id'])
     assert item['extension']['direction']=='after'
     assert item['reference_ids']==['sheet'] and item['source_path']==''
+
+
+@pytest.mark.skipif(not shutil.which('ffmpeg'),reason='ffmpeg required')
+def test_waveform_extraction_and_silent_clip(setup):
+    client,_,s,tmp=setup
+    toned=tmp/'toned.mp4'
+    flow.run_ffmpeg(['-f','lavfi','-i','color=c=red:s=64x64:r=24','-f','lavfi','-i','sine=frequency=400:sample_rate=48000','-t','0.5','-c:v','libx264','-pix_fmt','yuv420p','-c:a','aac',str(toned)])
+    toned_item=dict(id=str(uuid.uuid4()),project='film-a',kind='video',status='complete',shot_id=s.board[0].shot_id,path=str(toned),duration_s=.5,has_audio=True)
+    flow.put(toned_item)
+    peaks=client.get('/api/projects/film-a/film-media/'+toned_item['id']+'/waveform').json()['peaks']
+    assert peaks and max(peaks)<=1 and min(peaks)>=0
+
+    silent=tmp/'silent.mp4'
+    flow.run_ffmpeg(['-f','lavfi','-i','color=c=blue:s=64x64:r=24','-t','0.5','-c:v','libx264','-pix_fmt','yuv420p',str(silent)])
+    silent_item=dict(id=str(uuid.uuid4()),project='film-a',kind='video',status='complete',shot_id=s.board[0].shot_id,path=str(silent),duration_s=.5,has_audio=False)
+    flow.put(silent_item)
+    assert client.get('/api/projects/film-a/film-media/'+silent_item['id']+'/waveform').json()['peaks']==[]
+    assert client.get('/api/projects/film-b/film-media/'+toned_item['id']+'/waveform').status_code==404
+
+
+def test_regenerate_of_round_trips_through_public(setup,monkeypatch):
+    client,_,s,_=setup
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    original=request_for(s)
+    assert client.post('/api/projects/film-a/videos',json=original).status_code==200
+    regen={**request_for(s),'request_id':str(uuid.uuid4()),
+           'regenerate_of':{'video_id':original['request_id'],'start':0,'end':1,'clip_id':'clip-a'}}
+    result=client.post('/api/projects/film-a/videos',json=regen)
+    assert result.status_code==200,result.text
+    assert result.json()['regenerate_of']=={'video_id':original['request_id'],'start':0,'end':1,'clip_id':'clip-a'}
+    listed={i['id']:i for i in client.get('/api/projects/film-a/videos').json()['items']}
+    assert listed[regen['request_id']]['regenerate_of']['video_id']==original['request_id']
+    assert listed[regen['request_id']]['regenerate_of']['clip_id']=='clip-a'
+    assert listed[original['request_id']]['regenerate_of'] is None
+
+
+def test_shot_cast_endpoint(setup):
+    from moviecrew.portal import world
+    client,_,s,_=setup
+    world.initialize_sheets(s)
+    shot=s.board[0]
+    shot_obj=next(sh for scene in s.project.scenes for sh in scene.shots if sh.id==shot.shot_id)
+    shot_obj.visible_character_ids=[s.project.bible.characters[0].id]
+    chips=client.get('/api/projects/film-a/shots/'+shot.shot_id+'/cast').json()['chips']
+    assert any(c['entity_id']==s.project.bible.characters[0].id and c['kind']=='characters' for c in chips)
+    assert client.get('/api/projects/film-a/shots/does-not-exist/cast').status_code==404

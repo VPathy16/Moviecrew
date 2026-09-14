@@ -103,6 +103,18 @@ def read_world(project: str):
         return response(s)
 
 
+@router.get('/api/projects/{project}/shots/{shot_id}/cast')
+def shot_cast(project: str, shot_id: str):
+    """Cast/location/prop sheets relevant to a shot, for the editor's clip inspector."""
+    s=session(project)
+    from ..production import find_scene_and_shot
+    with s.plan_lock:
+        scene,shot=find_scene_and_shot(s.project,shot_id)
+        if not shot:
+            raise HTTPException(404,'Shot not found')
+        return {'chips':[{'entity_id':sheet['entity_id'],'name':sheet['name'],'kind':sheet['kind']} for sheet in shot_sheets(s,scene,shot)]}
+
+
 class SheetEdit(BaseModel):
     name: str = Field(min_length=1,max_length=200)
     description: str = Field(min_length=1,max_length=6000)
