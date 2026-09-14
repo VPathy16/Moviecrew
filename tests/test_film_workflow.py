@@ -89,7 +89,9 @@ def test_offline_video_cut_export_and_reopen(setup, monkeypatch):
     assert .9 < duration < 1.4 and audio
     assert width and height
     portal._sessions.pop('film-a')
-    assert client.get('/api/projects/film-a/cut').json()==cut
+    reopened=client.get('/api/projects/film-a/cut').json()
+    ids=[c.pop('id') for c in reopened['clips']]
+    assert reopened==cut and all(ids) and len(set(ids))==len(ids)
     assert client.get('/api/projects/film-a/film-media/'+export['id']).status_code==200
     assert client.get('/api/projects/film-b/film-media/'+export['id']).status_code==404
     # A silent uploaded video also exports with a synthesized silent audio track.
@@ -210,6 +212,28 @@ def test_canvas_modes_and_sizes_roundtrip(setup, monkeypatch):
     assert client.put('/api/projects/film-a/cut',json={**payload,'resolution':'1440p'}).status_code==200
     assert 'crop=1280:720' in flow.canvas_filter(1280,720,'cover')
     assert 'color=black' in flow.canvas_filter(1280,720,'contain')
+
+
+def test_cut_clips_get_distinct_stable_ids(setup, monkeypatch):
+    client,_,s,_=setup
+    monkeypatch.setattr(flow,'launch',lambda *args:None)
+    req=request_for(s)
+    client.post('/api/projects/film-a/videos',json=req)
+    flow.work('film-a',req['request_id'])
+    video=flow.get('film-a',req['request_id'])
+    # Two clips with the exact same video_id/start/end - a duplicated trim -
+    # must still get distinct ids so a later lookup (e.g. Final Edit's
+    # "Replace this clip") can tell them apart.
+    dup={'video_id':video['id'],'start':0,'end':.5,'mute':False}
+    saved=client.put('/api/projects/film-a/cut',json={'clips':[dup,dup],'aspect_ratio':'16:9'}).json()
+    ids=[c['id'] for c in saved['clips']]
+    assert len(ids)==2 and ids[0] and ids[1] and ids[0]!=ids[1]
+
+    # A client-supplied id is honored and round-trips unchanged.
+    tagged={**dup,'id':'my-stable-id'}
+    saved=client.put('/api/projects/film-a/cut',json={'clips':[tagged],'aspect_ratio':'16:9'}).json()
+    assert saved['clips'][0]['id']=='my-stable-id'
+    assert client.get('/api/projects/film-a/cut').json()['clips'][0]['id']=='my-stable-id'
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg'), reason='ffmpeg required')
@@ -405,12 +429,13 @@ def test_regenerate_of_round_trips_through_public(setup,monkeypatch):
     original=request_for(s)
     assert client.post('/api/projects/film-a/videos',json=original).status_code==200
     regen={**request_for(s),'request_id':str(uuid.uuid4()),
-           'regenerate_of':{'video_id':original['request_id'],'start':0,'end':1}}
+           'regenerate_of':{'video_id':original['request_id'],'start':0,'end':1,'clip_id':'clip-a'}}
     result=client.post('/api/projects/film-a/videos',json=regen)
     assert result.status_code==200,result.text
-    assert result.json()['regenerate_of']=={'video_id':original['request_id'],'start':0,'end':1}
+    assert result.json()['regenerate_of']=={'video_id':original['request_id'],'start':0,'end':1,'clip_id':'clip-a'}
     listed={i['id']:i for i in client.get('/api/projects/film-a/videos').json()['items']}
     assert listed[regen['request_id']]['regenerate_of']['video_id']==original['request_id']
+    assert listed[regen['request_id']]['regenerate_of']['clip_id']=='clip-a'
     assert listed[original['request_id']]['regenerate_of'] is None
 
 

@@ -154,6 +154,12 @@ class RegenerateTarget(BaseModel):
     video_id: str
     start: float = Field(ge=0, allow_inf_nan=False)
     end: float = Field(gt=0, allow_inf_nan=False)
+    # The specific cut clip instance this take is a candidate for, not just
+    # its content: two clips can share video_id/start/end (the same trim
+    # added twice, or an exact split), and matching only on those would let
+    # "Replace this clip" replace the wrong one. Optional so an older
+    # in-flight job created before this field existed still round-trips.
+    clip_id: str | None = None
 
 
 class VideoRequest(BaseModel):
@@ -510,6 +516,14 @@ EXPORT_RESOLUTIONS = {'480p': 480, '720p': 720, '1080p': 1080, '1440p': 1440, '4
 
 
 class CutClip(BaseModel):
+    # A clip's identity, not its position: two clips can share the same
+    # video_id/start/end (the same trim added twice, or an exact split), and
+    # a later operation targeting "this specific clip" — regenerate's
+    # "Replace this clip" chief among them — needs to find the exact
+    # instance it meant rather than the first lookalike. Server-defaulted so
+    # a payload saved before this field existed still loads (see read_cut's
+    # own backfill for the same reason).
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     video_id: str
     start: float = Field(default=0, ge=0, allow_inf_nan=False)
     end: float = Field(gt=0, allow_inf_nan=False)
@@ -540,7 +554,14 @@ def read_cut(project: str):
     init()
     with db() as conn:
         row = conn.execute('SELECT payload FROM film_cuts WHERE project=?', (project,)).fetchone()
-    return json.loads(row[0]) if row else {'clips': [], 'aspect_ratio': '16:9'}
+    payload = json.loads(row[0]) if row else {'clips': [], 'aspect_ratio': '16:9'}
+    # A cut saved before clip ids existed gets stable ids the moment it's
+    # next saved (CutClip's default_factory, via save_cut below); until
+    # then each read hands out fresh ones so the frontend never sees a
+    # missing id.
+    for clip in payload.get('clips', []):
+        clip.setdefault('id', uuid.uuid4().hex)
+    return payload
 
 
 @router.put('/api/projects/{project}/cut')
