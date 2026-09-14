@@ -51,7 +51,7 @@
  const inspector=crewEl('div');inspector.id='edit-inspector';inspector.hidden=true;const jobs=crewEl('div');jobs.id='edit-jobs';
  host.insertBefore(toolbar,$('cut-clips'));host.insertBefore(stage,$('cut-clips'));host.insertBefore(transport,$('cut-clips'));$('cut-clips').after(inspector,jobs);
  const dialog=crewEl('dialog');dialog.id='editor-dialog';document.body.append(dialog);
- let selected=0,playing=false,dragIndex=null,insertAt=0,pendingInsert=null,enhanceId=null,undo=[],redo=[],dialogVersion=0;
+ let selected=0,playing=false,insertAt=0,pendingInsert=null,enhanceId=null,undo=[],redo=[],dialogVersion=0;
  const clock=t=>`${Math.floor(t/60)}:${String(Math.floor(t%60)).padStart(2,'0')}`;
  const total=()=>cut.clips.reduce((n,c)=>n+c.end-c.start,0);
  const offset=i=>cut.clips.slice(0,i).reduce((n,c)=>n+c.end-c.start,0);
@@ -86,10 +86,18 @@
  for(const control of [$('cut-ratio'),fit,resolution])control.onchange=()=>{remember();cut.aspect_ratio=$('cut-ratio').value;cut.fit=fit.value;cut.resolution=resolution.value;changed();applyCanvas()};
  function button(text,fn,parent){const b=crewEl('button',text);b.onclick=fn;parent.append(b);return b}
  function modal(title){closeClipMenu();dialog.classList.remove('trim-dialog');dialogVersion++;dialog.replaceChildren();dialog.append(crewEl('h2',title));iconButton('close',()=>dialog.close(),'Close',dialog).className='dialog-close';if(!dialog.open)dialog.showModal();return dialog}
- let pixelsPerSecond=40,trimActive=false;
+ let pixelsPerSecond=40,trimActive=false,userZoomed=false;
  const zoomRow=crewEl('div',undefined,'edit-toolbar');zoomRow.append(crewEl('strong','Timeline'),crewEl('span','Drag edges to trim · right-click for options','muted'));
  const zoomLabel=crewEl('label',undefined,'zoom-control'),zoom=crewEl('input');zoomLabel.title='Timeline zoom';zoomLabel.append(iconSvg(ICONS.zoom,14));zoom.type='range';zoom.min=16;zoom.max=100;zoom.value=pixelsPerSecond;zoom.setAttribute('aria-label','Timeline zoom');zoom.style.cssText='width:100px;padding:0;accent-color:#f27656';zoomLabel.append(zoom);zoomRow.append(zoomLabel);$('cut-clips').before(zoomRow);
- zoom.oninput=()=>{pixelsPerSecond=Number(zoom.value);renderTiles();refreshClock()};
+ // Until the viewer picks a zoom level themselves, the timeline scales to
+ // fill the visible track instead of sitting at a fixed 40px/s — a short
+ // edit otherwise renders as a sliver against a mostly-empty bar. Manual
+ // zoom (the slider, or scrolling past what fits) always wins from then on.
+ function fitPixelsPerSecond(){
+  const available=$('cut-clips').clientWidth-48,duration=Math.max(total(),.001);
+  return Math.max(Number(zoom.min),Math.min(Number(zoom.max),available/duration));
+ }
+ zoom.oninput=()=>{userZoomed=true;pixelsPerSecond=Number(zoom.value);renderTiles();refreshClock()};
  const timelineStyle=crewEl('style');timelineStyle.textContent=`
  #edit-inspector{display:none}
  #cut-clips .clip-options{position:absolute;right:13px;top:5px;width:26px;height:24px;min-height:0;padding:0;border:1px solid #ffffff25;border-radius:6px;background:#111c;line-height:18px;font-size:20px;color:#fff;z-index:4;cursor:pointer}
@@ -98,9 +106,14 @@
  #editor-dialog.trim-dialog{width:min(360px,90vw);padding:20px;border-radius:14px}#editor-dialog.trim-dialog h2{font-size:17px;margin:0 0 12px}#editor-dialog.trim-dialog .trim-control{margin:16px 0;justify-content:space-between}#editor-dialog.trim-dialog .trim-control input[type=range]{flex:1;min-width:40px}#editor-dialog.trim-dialog .trim-control input[type=number]{width:76px}#editor-dialog.trim-dialog>button{padding:6px 12px}
  #cut-clips{display:block;position:relative;border:1px solid #34383f;background:#17191d;border-radius:12px;padding:0;min-height:164px;overflow-x:auto;touch-action:pan-x}
  .timeline-surface{position:relative;height:158px;min-width:100%}.timeline-ruler{position:absolute;top:0;left:24px;right:24px;height:30px;border-bottom:1px solid #34383f;cursor:crosshair;touch-action:none}.timeline-tick{position:absolute;top:0;height:29px;border-left:1px solid #34383f;color:#a5abb5;font-size:10px;padding:5px;pointer-events:none}.timeline-track{position:absolute;left:24px;right:24px;top:40px;height:80px;background:#24272d;border-radius:6px}
- #cut-clips .edit-tile{position:absolute;top:40px;height:80px;min-width:0;padding:0;box-sizing:border-box;cursor:grab;border-radius:5px;touch-action:none;user-select:none}
+ #cut-clips .edit-tile{position:absolute;top:40px;height:80px;min-width:0;padding:0;box-sizing:border-box;cursor:grab;border-radius:5px;touch-action:none;user-select:none;transition:box-shadow .12s}
+ #cut-clips .edit-tile.dragging{cursor:grabbing;z-index:6;box-shadow:0 8px 20px #000a;transition:none}
  #cut-clips .edit-tile video{height:52px;object-fit:cover;opacity:.8}#cut-clips .edit-tile small{padding:4px 10px;overflow:hidden;text-overflow:ellipsis;font-size:10px;pointer-events:none}#cut-clips .edit-tile[aria-pressed=true]{box-shadow:inset 0 0 0 1px #f27656}
- .timeline-handle{position:absolute;top:0;bottom:0;width:10px;min-height:0;padding:0!important;border:0!important;border-radius:0!important;background:#f2765699!important;cursor:ew-resize;touch-action:none;z-index:3}.timeline-handle::after{content:'';position:absolute;left:4px;top:28px;width:2px;height:20px;background:#17191d}.timeline-handle.start{left:0}.timeline-handle.end{right:0}.timeline-handle:focus{outline:2px solid #fff}
+ /* Above the playhead (z-index 5): the playhead can land exactly on a
+    clip boundary — right where its own trim handle sits — after simply
+    selecting or reordering a clip, and would otherwise silently swallow
+    the pointerdown meant for the handle. */
+ .timeline-handle{position:absolute;top:0;bottom:0;width:10px;min-height:0;padding:0!important;border:0!important;border-radius:0!important;background:#f2765699!important;cursor:ew-resize;touch-action:none;z-index:7}.timeline-handle::after{content:'';position:absolute;left:4px;top:28px;width:2px;height:20px;background:#17191d}.timeline-handle.start{left:0}.timeline-handle.end{right:0}.timeline-handle:focus{outline:2px solid #fff}
  #cut-clips .edit-add{position:absolute;top:126px;transform:translateX(-50%);font-size:17px;padding:0 7px;line-height:22px;border-radius:5px;background:#24272d;z-index:4}
  #timeline-playhead{position:absolute;top:19px;height:105px;width:12px;margin-left:-6px;border:0;padding:0;background:transparent;z-index:5;cursor:ew-resize;touch-action:none}#timeline-playhead::before{content:'';position:absolute;top:0;left:1px;border-top:9px solid var(--accent);border-left:5px solid transparent;border-right:5px solid transparent}#timeline-playhead::after{content:'';position:absolute;top:8px;bottom:0;left:5px;width:2px;background:var(--accent);pointer-events:none}.timeline-drop{box-shadow:inset 5px 0 #fff!important}
  `;document.head.append(timelineStyle);
@@ -108,7 +121,9 @@
  function drawRuler(ruler){ruler.replaceChildren();const step=pixelsPerSecond<25?5:pixelsPerSecond<60?2:1;for(let t=0;t<=total()+step;t+=step){const tick=crewEl('span',clock(t),'timeline-tick');tick.style.left=t*pixelsPerSecond+'px';ruler.append(tick)}}
  function timelineGeometry(){const surface=$('cut-clips').querySelector('.timeline-surface');if(!surface)return;surface.style.width=(Math.max(total()*pixelsPerSecond+48,$('cut-clips').clientWidth))+'px';surface.querySelectorAll('.edit-tile').forEach((el,i)=>{const c=cut.clips[i];el.style.left=(24+offset(i)*pixelsPerSecond)+'px';el.style.width=Math.max(2,(c.end-c.start)*pixelsPerSecond)+'px';el.querySelector('small').textContent=`${i+1} · ${friendlyShot(media(c)?.shot_id||'Clip')} · ${(c.end-c.start).toFixed(2)}s`});surface.querySelectorAll('.edit-add').forEach((el,i)=>el.style.left=(24+offset(i)*pixelsPerSecond)+'px');drawRuler(surface.querySelector('.timeline-ruler'));refreshClock()}
  function renderTiles(){
-  if(trimActive)return;closeClipMenu();const list=$('cut-clips');list.replaceChildren();
+  if(trimActive)return;closeClipMenu();
+  if(!userZoomed&&cut.clips.length){pixelsPerSecond=fitPixelsPerSecond();zoom.value=pixelsPerSecond}
+  const list=$('cut-clips');list.replaceChildren();
   const surface=crewEl('div',undefined,'timeline-surface'),ruler=crewEl('div',undefined,'timeline-ruler'),track=crewEl('div',undefined,'timeline-track');list.append(surface);surface.append(ruler,track);
   function pointerTime(e){return (e.clientX-list.getBoundingClientRect().left+list.scrollLeft-24)/pixelsPerSecond}
   function scrub(e){if(e.button!==0)return;e.preventDefault();const target=e.currentTarget;target.setPointerCapture(e.pointerId);timelineSeek(pointerTime(e));target.onpointermove=move=>timelineSeek(pointerTime(move));target.onpointerup=target.onpointercancel=()=>{target.onpointermove=null};}
@@ -117,13 +132,46 @@
    const add=button('+',()=>showAdd(i),surface);add.className='edit-add';add.setAttribute('aria-label','Add clip at position '+(i+1));if(i===cut.clips.length)break;
    const c=cut.clips[i],m=media(c),tile=crewEl('div',undefined,'edit-tile');tile.setAttribute('role','button');tile.tabIndex=0;tile.setAttribute('aria-label','Select clip '+(i+1));tile.setAttribute('aria-pressed',String(i===selected));surface.append(tile);
    const selectClip=()=>{stop();loadClip(i);renderTiles();renderInspector()};tile.onclick=e=>{if(!e.target.closest('button'))selectClip()};tile.oncontextmenu=e=>{e.preventDefault();openClipMenu(i,e.clientX,e.clientY,tile)};tile.onkeydown=e=>{if(e.key==='ContextMenu'||(e.shiftKey&&e.key==='F10')){e.preventDefault();const r=tile.getBoundingClientRect();openClipMenu(i,r.left+20,r.top,tile);return}if(e.target===tile&&['Enter',' '].includes(e.key)){e.preventDefault();selectClip()}};
-   tile.draggable=true;tile.ondragstart=e=>{if(trimActive){e.preventDefault();return}dragIndex=i;e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',String(i))};tile.ondragend=()=>{dragIndex=null;surface.querySelectorAll('.timeline-drop').forEach(el=>el.classList.remove('timeline-drop'))};
-   tile.ondragover=e=>{e.preventDefault();tile.classList.add('timeline-drop')};tile.ondragleave=()=>tile.classList.remove('timeline-drop');tile.ondrop=e=>{e.preventDefault();if(dragIndex===null)return;const from=dragIndex;let at=i+(e.clientX>tile.getBoundingClientRect().left+tile.clientWidth/2?1:0);if(from<at)at--;dragIndex=null;if(at!==from){remember();const [v]=cut.clips.splice(from,1);cut.clips.splice(at,0,v);selected=at;changed()}renderCut()};
-   if(m?.video_url){const thumb=crewEl('video');thumb.src=m.video_url+'#t='+c.start;thumb.preload='metadata';thumb.muted=true;tile.append(thumb)}tile.append(crewEl('small'));const more=button('⋯',e=>{e.stopPropagation();const r=more.getBoundingClientRect();openClipMenu(i,r.left,r.bottom+5,more)},tile);more.className='clip-options';more.setAttribute('aria-label',`Clip ${i+1} options`);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');more.ondragstart=e=>e.preventDefault();
+   // Pointer-based, not native HTML5 draggable=true: unifies mouse, touch
+   // and pen (native drag-and-drop never fires from a touch gesture at
+   // all, on any browser) and matches the same setPointerCapture pattern
+   // already used for scrubbing and trimming below.
+   tile.onpointerdown=e=>{
+    if(trimActive||e.button!==0||e.target.closest('button'))return;
+    const startX=e.clientX,startY=e.clientY,originIndex=i;
+    let moved=false,dropIndex=originIndex;
+    tile.setPointerCapture(e.pointerId);
+    tile.onpointermove=move=>{
+     const dx=move.clientX-startX;
+     if(!moved){
+      if(Math.abs(dx)<4&&Math.abs(move.clientY-startY)<12)return;
+      moved=true;tile.classList.add('dragging');
+     }
+     tile.style.transform=`translateX(${dx}px)`;
+     const tiles=[...surface.querySelectorAll('.edit-tile')];
+     dropIndex=tiles.length-1;
+     for(let k=0;k<tiles.length;k++){
+      if(k===originIndex)continue;
+      const r=tiles[k].getBoundingClientRect();
+      if(move.clientX<r.left+r.width/2){dropIndex=k>originIndex?k-1:k;break}
+     }
+     tiles.forEach((t,k)=>t.classList.toggle('timeline-drop',k===dropIndex&&k!==originIndex));
+    };
+    const finish=()=>{
+     tile.onpointermove=null;
+     if(moved&&dropIndex!==originIndex){
+      remember();const [v]=cut.clips.splice(originIndex,1);cut.clips.splice(dropIndex,0,v);selected=dropIndex;changed();renderCut();
+     }else if(moved){
+      renderTiles(); // snap back to its slot; also clears the drag styling and suppresses the phantom click
+     }
+    };
+    tile.onpointerup=finish;tile.onpointercancel=finish;
+   };
+   if(m?.video_url){const thumb=crewEl('video');thumb.src=m.video_url+'#t='+c.start;thumb.preload='metadata';thumb.muted=true;tile.append(thumb)}tile.append(crewEl('small'));const more=button('⋯',e=>{e.stopPropagation();const r=more.getBoundingClientRect();openClipMenu(i,r.left,r.bottom+5,more)},tile);more.className='clip-options';more.setAttribute('aria-label',`Clip ${i+1} options`);more.setAttribute('aria-haspopup','menu');more.setAttribute('aria-expanded','false');
    for(const edge of ['start','end']){
-    const handle=crewEl('button',undefined,'timeline-handle '+edge);handle.setAttribute('aria-label',`Clip ${i+1} trim ${edge}`);handle.title=`Drag to trim ${edge}. Arrow keys adjust 0.05 seconds.`;tile.append(handle);handle.onclick=e=>e.stopPropagation();handle.ondragstart=e=>e.preventDefault();
+    const handle=crewEl('button',undefined,'timeline-handle '+edge);handle.setAttribute('aria-label',`Clip ${i+1} trim ${edge}`);handle.title=`Drag to trim ${edge}. Arrow keys adjust 0.05 seconds.`;tile.append(handle);handle.onclick=e=>e.stopPropagation();
     function adjust(value){c[edge]=edge==='start'?Math.max(0,Math.min(value,c.end-.05)):Math.min(m?.duration_s||c.end,Math.max(value,c.start+.05));changed();timelineGeometry();player.currentTime=edge==='start'?c.start:Math.max(c.start,c.end-.03)}
-    handle.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();stop();selected=i;loadClip(i);remember();trimActive=true;tile.draggable=false;handle.setPointerCapture(e.pointerId);const x=e.clientX,initial=c[edge],scroll=list.scrollLeft;handle.onpointermove=move=>adjust(initial+(move.clientX-x+list.scrollLeft-scroll)/pixelsPerSecond);const finish=()=>{handle.onpointermove=null;trimActive=false;tile.draggable=true;renderTiles();renderInspector()};handle.onpointerup=finish;handle.onpointercancel=finish};
+    handle.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();e.stopPropagation();stop();selected=i;loadClip(i);remember();trimActive=true;handle.setPointerCapture(e.pointerId);const x=e.clientX,initial=c[edge],scroll=list.scrollLeft;handle.onpointermove=move=>adjust(initial+(move.clientX-x+list.scrollLeft-scroll)/pixelsPerSecond);const finish=()=>{handle.onpointermove=null;trimActive=false;renderTiles();renderInspector()};handle.onpointerup=finish;handle.onpointercancel=finish};
     handle.onkeydown=e=>{if(!['ArrowLeft','ArrowRight'].includes(e.key))return;e.preventDefault();e.stopPropagation();stop();selected=i;remember();adjust(c[edge]+(e.key==='ArrowRight'?.05:-.05));renderInspector()};
    }
   }
@@ -165,7 +213,7 @@
  const undoButton=iconButton('undo',()=>{if(!undo.length)return;stop();redo.push(JSON.stringify(cut));if(redo.length>30)redo.shift();cut=JSON.parse(undo.pop());changed();renderCut()},'Undo',zoomRow);undoButton.disabled=true;
  const redoButton=iconButton('redo',()=>{if(!redo.length)return;stop();undo.push(JSON.stringify(cut));if(undo.length>30)undo.shift();cut=JSON.parse(redo.pop());changed();renderCut()},'Redo',zoomRow);redoButton.disabled=true;
  renderCut=function(){stop();selected=Math.min(selected,Math.max(0,cut.clips.length-1));$('cut-ratio').value=cut.aspect_ratio;fit.value=cut.fit||'contain';refreshResolutionOptions();applyCanvas();renderTiles();renderInspector();loadClip(selected);refreshClock()};
- const oldLoad=loadFinalEdit;loadFinalEdit=async function(){undo=[];redo=[];selected=0;await oldLoad()};
+ const oldLoad=loadFinalEdit;loadFinalEdit=async function(){undo=[];redo=[];selected=0;userZoomed=false;await oldLoad()};
  async function insert(item,index=insertAt){remember();cut.clips.splice(Math.min(index,cut.clips.length),0,{video_id:item.id,start:0,end:item.duration_s,mute:false});changed();dialog.close();renderCut();await saveCut()}
  function showAdd(index){insertAt=index;const d=modal('Add a clip');const row=crewEl('div',undefined,'edit-toolbar');d.append(row);button('Video library',()=>libraryPicker('video'),row);button('Generate from image',()=>libraryPicker('image'),row);button('Upload',()=>uploadPicker(),row);if(index>0){button('Extend previous clip',()=>extendClip(index-1,'after'),row)}if(index<cut.clips.length){button('Extend before next clip',()=>extendClip(index,'before'),row)}}
  function libraryPicker(kind){const d=modal(kind==='video'?'Video library':'Choose a starting image');const grid=crewEl('div',undefined,'edit-library');d.append(grid);const entries=kind==='video'?filmMedia.filter(i=>i.kind==='video'&&i.status==='complete'):project.versions.filter(i=>i.status==='ok'&&i.image_url);for(const entry of entries){const b=button('',()=>kind==='video'?insert(entry):prepareGeneration({version_id:entry.version_id},entry.shot_id),grid);const visual=crewEl(kind==='video'?'video':'img');visual.src=kind==='video'?entry.video_url:entry.image_url;if(kind==='video'){visual.preload='metadata';visual.muted=true}b.append(visual,crewEl('small',friendlyShot(entry.shot_id||'Clip')))}if(!entries.length)d.append(crewEl('p','No saved '+(kind==='video'?'videos':'images')+' yet. Upload one to get started.'));if(kind==='image')for(const ref of project.image_references||[]){const b=button('',()=>prepareGeneration({reference_id:ref.id}),grid);const img=crewEl('img');img.src='/api/projects/'+project.id+'/references/'+ref.id;b.append(img,crewEl('small',ref.name||'Reference'))}}
