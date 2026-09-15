@@ -43,7 +43,14 @@ def save(session):
 
 def listing():
     with connect() as db:
-        return [dict(id=i, title=t, updated=u) for i,t,u in db.execute('SELECT id,title,updated FROM projects ORDER BY updated DESC')]
+        rows = db.execute('SELECT id,title,updated,payload FROM projects ORDER BY updated DESC').fetchall()
+    result = []
+    for project_id, title, updated, payload in rows:
+        board = json.loads(payload).get('board', [])
+        cover = next((f for f in board if f.get('image_path')), None)
+        result.append(dict(id=project_id, title=title, updated=updated,
+                            cover_version_id=cover['version_id'] if cover else None))
+    return result
 
 
 def load(session_id, image_provider):

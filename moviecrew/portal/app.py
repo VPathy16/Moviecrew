@@ -1335,7 +1335,11 @@ class ProjectEditRequest(BaseModel):
 
 @app.get('/api/projects')
 def project_library():
-    return {'projects': project_store.listing()}
+    projects = project_store.listing()
+    for p in projects:
+        cover = p.pop('cover_version_id')
+        p['thumbnail_url'] = f"/api/projects/{p['id']}/versions/{cover}/image" if cover else None
+    return {'projects': projects}
 
 
 @app.get('/api/projects/{session_id}')

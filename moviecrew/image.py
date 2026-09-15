@@ -8,7 +8,26 @@ providers (Imagen, Stable Diffusion, …) live here as they land.
 
 from __future__ import annotations
 
+import struct
+import zlib
 from abc import ABC, abstractmethod
+
+
+def _solid_png(rgb: tuple[int, int, int], size: int = 8) -> bytes:
+    """Build a minimal, valid solid-color PNG without a Pillow dependency."""
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data))
+
+    row = bytes(rgb) * size
+    raw = b"".join(b"\x00" + row for _ in range(size))
+    ihdr = struct.pack(">IIBBBBB", size, size, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
 
 
 class ImageProvider(ABC):
@@ -40,16 +59,8 @@ class MockImageProvider(ImageProvider):
     can write it to disk and serve it without needing a real image API.
     """
 
-    # Minimal 1×1 white pixel PNG (valid, 67 bytes).
-    _BYTES: bytes = (
-        b"\x89PNG\r\n\x1a\n"                      # PNG signature
-        b"\x00\x00\x00\rIHDR"                      # IHDR chunk
-        b"\x00\x00\x00\x01\x00\x00\x00\x01"        # 1x1
-        b"\x08\x02\x00\x00\x00\x90wS\xde"          # 8-bit RGB + CRC
-        b"\x00\x00\x00\x0cIDAT"                    # IDAT chunk
-        b"x\x9cc\xf8\x0f\x00\x00\x01\x01\x00\x05\x18\xd8N"  # compressed white pixel
-        b"\x00\x00\x00\x00IEND\xaeB`\x82"          # IEND
-    )
+    # Solid ink-panel-colored placeholder, valid and decodable.
+    _BYTES: bytes = _solid_png((0x24, 0x27, 0x2d))
 
     def generate(self, prompt: str, shot_id: str) -> bytes:
         return self._BYTES

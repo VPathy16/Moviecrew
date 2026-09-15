@@ -25,6 +25,26 @@ def test_restart_keeps_versions_drafts_and_selection(tmp_path, monkeypatch):
     assert restored.board[0].image_path != original.image_path
     assert Path(original.image_path).read_bytes() == original_bytes
     assert projects.listing()[0]['id'] == 'persistent'
+    assert projects.listing()[0]['cover_version_id'] == session.board[0].version_id
+
+
+def test_project_library_api_exposes_thumbnail_url(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from moviecrew.portal.app import app, _sessions
+    monkeypatch.setenv('MOVIECREW_PROJECTS_ROOT', str(tmp_path / 'db'))
+    with_image = StudioSession('with-image', Stage.SHOT_DEFS,
+        MovieCrew(MockLLMClient()).make('A lighthouse keeper.'), str(tmp_path / 'media'), MockImageProvider())
+    with_image.produce()
+    projects.save(with_image)
+    without_image = StudioSession('without-image', Stage.SHOT_DEFS,
+        MovieCrew(MockLLMClient()).make('A lighthouse keeper.'), str(tmp_path / 'media2'), MockImageProvider())
+    projects.save(without_image)
+    _sessions.clear()
+    client = TestClient(app)
+    listing = {p['id']: p for p in client.get('/api/projects').json()['projects']}
+    assert listing['with-image']['thumbnail_url'] == f"/api/projects/with-image/versions/{with_image.board[0].version_id}/image"
+    assert client.get(listing['with-image']['thumbnail_url']).status_code == 200
+    assert listing['without-image']['thumbnail_url'] is None
 
 
 def test_interrupted_plan_retains_partial_project(tmp_path, monkeypatch):
