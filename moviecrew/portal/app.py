@@ -56,7 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -1684,3 +1684,9 @@ app.include_router(director_router)
 @app.get('/director.js')
 def director_script():
     return FileResponse(_STATIC_DIR / 'director.js', media_type='text/javascript')
+
+@app.get('/fonts/{filename}')
+def font_file(filename: str):
+    if filename not in {'fraunces-normal.woff2', 'fraunces-italic.woff2'}:
+        raise HTTPException(404, 'Not found')
+    return FileResponse(_STATIC_DIR / 'fonts' / filename, media_type='font/woff2')
