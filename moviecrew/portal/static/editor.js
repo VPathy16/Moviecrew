@@ -133,7 +133,12 @@
  // then on; Fit hands control back to auto-fit.
  function fitPixelsPerSecond(){
   const available=$('cut-clips').clientWidth-48,duration=Math.max(total(),.001);
-  return Math.max(Number(zoom.min),Math.min(Number(zoom.max),available/duration));
+  const fit=Math.max(Number(zoom.min),available/duration);
+  // A short clip in a wide track needs more than the slider's usual range
+  // to actually fill it — raise the ceiling instead of leaving Fit capped
+  // at whatever the manual zoom max happens to be.
+  if(fit>Number(zoom.max))zoom.max=Math.ceil(fit);
+  return fit;
  }
  zoom.oninput=()=>{userZoomed=true;pixelsPerSecond=Number(zoom.value);renderTiles();refreshClock()};
  const timelineStyle=crewEl('style');timelineStyle.textContent=`
