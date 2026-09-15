@@ -391,13 +391,76 @@ def test_extensions_use_trimmed_boundaries_and_correct_anchor_positions(setup, m
     assert client.post('/api/projects/film-a/extension-boundary',json={**trim,'end':2}).status_code==400
 
 
+@pytest.mark.skipif(not shutil.which('ffmpeg') or not shutil.which('ffprobe'), reason='ffmpeg required')
+def test_connect_bridges_two_clips_with_both_boundary_frames(setup, monkeypatch):
+    from types import SimpleNamespace
+    from moviecrew.render_openrouter import OpenRouterRenderClient
+    client, _, s, tmp = setup
+    monkeypatch.setattr(flow, 'launch', lambda *args: None)
+    assert len(s.board) >= 2  # the before/after clips below must span two distinct shots
+    path = tmp/'48fps.mp4'
+    flow.run_ffmpeg(['-f','lavfi','-i','testsrc2=s=96x96:r=48','-t','1','-c:v','libx264','-pix_fmt','yuv420p',str(path)])
+    # Two different shots' clips, not two ranges of one shot: connect almost
+    # always bridges separate shots, and end_frame resolution must not
+    # require it to share req.shot_id with the starting frame.
+    source_a = dict(id=str(uuid.uuid4()), project='film-a', kind='video', status='complete', shot_id=s.board[0].shot_id, path=str(path), duration_s=1)
+    source_b = dict(id=str(uuid.uuid4()), project='film-a', kind='video', status='complete', shot_id=s.board[1].shot_id, path=str(path), duration_s=1)
+    flow.put(source_a); flow.put(source_b)
+    calls = []
+    def transport(method, url, headers, body):
+        if url.endswith('/videos/models'):
+            return {'data':[{'id':name,'supported_durations':[5],'supported_resolutions':['480p'],
+                             'supported_aspect_ratios':['16:9'],'supported_frame_images':positions}
+                            for name,positions in [('start-only',['first_frame']),('both',['first_frame','last_frame'])]]}
+        calls.append(body)
+        return {'status':'failed','error':'deliberate test stop'}
+    provider = OpenRouterRenderClient(transport=transport)
+    monkeypatch.setattr(portal, '_render_client', lambda: (provider, None))
+    class Store:
+        serves_public_urls = True
+        name = 'test'
+        calls = []
+        def put_reference(self, path, key):
+            self.calls.append(path)
+            return SimpleNamespace(url='https://example.test/before.png' if len(self.calls)==1 else 'https://example.test/after.png')
+    monkeypatch.setattr(portal, '_asset_store', lambda: Store())
+
+    before = client.post('/api/projects/film-a/extension-boundary', json={'video_id':source_a['id'],'start':0,'end':.2,'direction':'after'}).json()
+    after = client.post('/api/projects/film-a/extension-boundary', json={'video_id':source_b['id'],'start':.2,'end':.4,'direction':'before'}).json()
+    assert before['anchor_position']=='first_frame' and after['anchor_position']=='last_frame'
+    assert before['shot_id'] != after['shot_id']
+
+    req = {**request_for(s), 'shot_id':before['shot_id'], 'model':'both', 'duration_s':5, 'frame_id':before['frame_id'], 'end_frame_id':after['frame_id'],
+           'connect_of':{'before_clip_id':'clip-1','before_video_id':source_a['id'],'before_start':0,'before_end':.2,
+                         'after_clip_id':'clip-2','after_video_id':source_b['id'],'after_start':.2,'after_end':.4}}
+    # A model that only advertises first_frame cannot bridge two clips.
+    assert client.post('/api/projects/film-a/videos', json={**req, 'model':'start-only'}).status_code==400
+    assert client.post('/api/projects/film-a/video-estimate', json=req).status_code==200
+    created = client.post('/api/projects/film-a/videos', json=req)
+    assert created.status_code==200, created.text
+    assert created.json()['connect_of']['before_clip_id']=='clip-1' and created.json()['connect_of']['after_clip_id']=='clip-2'
+    # Both boundary frames carry extension-boundary metadata (they came
+    # through that same endpoint), but a connect job must not also be
+    # tagged 'extension' - that would surface a second, misleading
+    # "Insert ... source clip" action alongside "Insert between these clips".
+    assert created.json()['extension'] is None
+    assert 'end_source_path' not in created.json()  # server-side path never leaks to the client
+    flow.work('film-a', req['request_id'])
+    assert len(calls)==1
+    assert calls[0]['frame_images']==[
+        {'type':'image_url','image_url':{'url':'https://example.test/before.png'},'frame_type':'first_frame'},
+        {'type':'image_url','image_url':{'url':'https://example.test/after.png'},'frame_type':'last_frame'},
+    ]
+    assert 'input_references' not in calls[0]
+
+
 def test_text_only_video_has_no_image_inputs(setup, monkeypatch):
     client, fake, s, _ = setup
     monkeypatch.setattr(fake, 'name', 'test-live')
     monkeypatch.setattr(flow, 'launch', lambda *args: None)
     req = {**request_for(s), 'reference_mode':'text', 'frame_id':'', 'reference_ids':[]}
-    _, frame, spec = flow.prepare('film-a', flow.VideoRequest(**req))
-    assert frame is None and not spec.reference_images and not spec.first_frame and not spec.last_frame
+    _, frame, spec, end_frame = flow.prepare('film-a', flow.VideoRequest(**req))
+    assert frame is None and end_frame is None and not spec.reference_images and not spec.first_frame and not spec.last_frame
     assert client.post('/api/projects/film-a/video-estimate',json=req).status_code == 200
     assert client.post('/api/projects/film-a/videos',json=req).status_code == 200
     bad={**req,'frame_id':s.board[0].version_id}
@@ -415,7 +478,7 @@ def test_character_guided_extension_preserves_metadata_without_anchor(setup, mon
     path=root/'sheet.png';path.write_bytes(MockImageProvider._BYTES)
     s.image_references.append({'id':'sheet','path':str(path),'media_type':'image/png','name':'Character'})
     req={**request_for(s),'frame_id':frame.version_id,'reference_mode':'character','reference_ids':['sheet']}
-    _,_,spec=flow.prepare('film-a',flow.VideoRequest(**req))
+    _,_,spec,_=flow.prepare('film-a',flow.VideoRequest(**req))
     assert not spec.first_frame and not spec.last_frame
     result=client.post('/api/projects/film-a/videos',json=req)
     assert result.status_code==200,result.text
