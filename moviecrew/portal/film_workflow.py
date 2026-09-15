@@ -79,7 +79,7 @@ def folder(project):
 
 
 def public(item):
-    data = {k: v for k, v in item.items() if k not in {'path', 'source_path', 'provider_url', 'spec', 'reference_paths', 'fal_status_url', 'fal_response_url'}}
+    data = {k: v for k, v in item.items() if k not in {'path', 'source_path', 'end_source_path', 'provider_url', 'spec', 'reference_paths', 'fal_status_url', 'fal_response_url'}}
     data['video_url'] = f"/api/projects/{item['project']}/film-media/{item['id']}" if item.get('path') and item['status'] == 'complete' else None
     return data
 
@@ -162,11 +162,33 @@ class RegenerateTarget(BaseModel):
     clip_id: str | None = None
 
 
+class ConnectTarget(BaseModel):
+    """Marks a video request as a bridge between two adjacent cut clips.
+
+    Same non-destructive contract as RegenerateTarget: purely a durable tag,
+    never a server-side insert. The frontend splices the finished clip in
+    between the two once it's ready for review, after confirming both are
+    still adjacent and unchanged.
+    """
+    before_clip_id: str
+    before_video_id: str
+    before_start: float = Field(ge=0, allow_inf_nan=False)
+    before_end: float = Field(gt=0, allow_inf_nan=False)
+    after_clip_id: str
+    after_video_id: str
+    after_start: float = Field(ge=0, allow_inf_nan=False)
+    after_end: float = Field(gt=0, allow_inf_nan=False)
+
+
 class VideoRequest(BaseModel):
     request_id: uuid.UUID
     shot_id: str
     frame_id: str = ''
     anchor_position: Literal['first_frame', 'last_frame'] = 'first_frame'
+    # Set alongside frame_id to request a clip conditioned on BOTH a first
+    # and a last frame — the "Connect" feature bridging two clips. Only
+    # valid with reference_mode 'shot'; anchor_position is ignored.
+    end_frame_id: str = ''
     reference_mode: Literal['shot', 'character', 'text'] = 'shot'
     reference_ids: list[str] = Field(default_factory=list, max_length=9)
     prompt: str = Field(min_length=1, max_length=20000)
@@ -176,6 +198,7 @@ class VideoRequest(BaseModel):
     resolution: str = '720p'
     audio: bool = False
     regenerate_of: RegenerateTarget | None = None
+    connect_of: ConnectTarget | None = None
 
 
 def frame_positions(client, model):
@@ -197,18 +220,40 @@ def prepare(project, req):
     frame = next((f for f in s.versions if f.shot_id == req.shot_id and f.version_id == req.frame_id and f.status == 'ok' and f.image_path), None)
     if req.reference_mode == 'shot' and (frame is None or not Path(frame.image_path).is_file()):
         raise HTTPException(400, 'Choose an existing image version for this shot')
+    end_frame = None
+    if req.end_frame_id:
+        if req.reference_mode != 'shot':
+            raise HTTPException(400, 'Connecting two frames requires shot mode')
+        # Unlike frame_id, not constrained to req.shot_id: the two clips a
+        # connect job bridges usually belong to different shots. version_id
+        # is a uuid4, globally unique, so this stays unambiguous.
+        end_frame = next((f for f in s.versions if f.version_id == req.end_frame_id and f.status == 'ok' and f.image_path), None)
+        if end_frame is None or not Path(end_frame.image_path).is_file():
+            raise HTTPException(400, 'Choose an existing image version for the ending frame')
     client, error = _render_client()
     if error:
         raise HTTPException(503, 'Your video connection needs attention in Settings')
     if req.model not in {m['id'] for m in client.models()}:
         raise HTTPException(400, 'Choose an available video model')
     caps = client.capabilities(req.model)
-    if req.reference_mode == 'shot' and req.anchor_position not in frame_positions(client, req.model):
-        raise HTTPException(400, 'This model does not support the required '+req.anchor_position.replace('_', ' '))
-    if req.reference_mode == 'shot' and frame and frame.settings.get('extension'):
-        expected = 'last_frame' if frame.settings['extension']['direction'] == 'before' else 'first_frame'
-        if req.anchor_position != expected:
-            raise HTTPException(400, 'The extension boundary must be used as the '+expected.replace('_', ' '))
+    if req.reference_mode == 'shot' and end_frame:
+        positions = frame_positions(client, req.model)
+        if 'first_frame' not in positions or 'last_frame' not in positions:
+            raise HTTPException(400, 'This model does not support connecting two frames')
+        for candidate, role in ((frame, 'first_frame'), (end_frame, 'last_frame')):
+            extension = candidate.settings.get('extension') if candidate else None
+            if not extension:
+                continue
+            expected = 'last_frame' if extension['direction'] == 'before' else 'first_frame'
+            if role != expected:
+                raise HTTPException(400, 'The extension boundary must be used as the '+expected.replace('_', ' '))
+    elif req.reference_mode == 'shot':
+        if req.anchor_position not in frame_positions(client, req.model):
+            raise HTTPException(400, 'This model does not support the required '+req.anchor_position.replace('_', ' '))
+        if frame and frame.settings.get('extension'):
+            expected = 'last_frame' if frame.settings['extension']['direction'] == 'before' else 'first_frame'
+            if req.anchor_position != expected:
+                raise HTTPException(400, 'The extension boundary must be used as the '+expected.replace('_', ' '))
     if req.reference_mode == 'character':
         if client.name == 'fake':
             raise HTTPException(400, 'Character-only video requires a connected video provider')
@@ -240,11 +285,14 @@ def prepare(project, req):
         raise HTTPException(400, 'Choose a supported video resolution')
     if req.audio and not caps.supports_audio:
         raise HTTPException(400, 'This model does not support generated audio')
-    if req.reference_mode == 'shot' and client.name != 'fake' and frame.model in ('offline', 'MockImageProvider'):
+    if req.reference_mode == 'shot' and client.name != 'fake' and (
+        frame.model in ('offline', 'MockImageProvider')
+        or (end_frame and end_frame.model in ('offline', 'MockImageProvider'))
+    ):
         raise HTTPException(400, 'Create a real storyboard image before using paid video generation')
     spec = ShotSpec(shot_id=req.shot_id, prompt=req.prompt, duration_s=req.duration_s,
                     aspect_ratio=req.aspect_ratio, resolution=req.resolution, generate_audio=req.audio)
-    return client, frame, spec
+    return client, frame, spec, end_frame
 
 
 @router.get('/api/projects/{project}/video-models')
@@ -269,10 +317,13 @@ def models(project: str):
 
 @router.post('/api/projects/{project}/video-estimate')
 def estimate(project: str, req: VideoRequest):
-    client, frame, spec = prepare(project, req)
+    client, frame, spec, end_frame = prepare(project, req)
     # Estimating never uploads media or submits a generation.
-    spec.reference_images = ([r['path'] for r in session(project).image_references if r['id'] in req.reference_ids]
-                             if req.reference_mode == 'character' else [] if req.reference_mode == 'text' else [str(frame.image_path)])
+    if end_frame:
+        spec.first_frame, spec.last_frame = str(frame.image_path), str(end_frame.image_path)
+    else:
+        spec.reference_images = ([r['path'] for r in session(project).image_references if r['id'] in req.reference_ids]
+                                 if req.reference_mode == 'character' else [] if req.reference_mode == 'text' else [str(frame.image_path)])
     return {'cost': client.estimate_cost(spec, model=req.model), 'offline': client.name == 'fake'}
 
 
@@ -287,14 +338,21 @@ def create_video(project: str, req: VideoRequest):
             existing = None
         if existing:
             return public(existing)
-        client, frame, spec = prepare(project, req)
+        client, frame, spec, end_frame = prepare(project, req)
         from dataclasses import asdict
         item = {'id': request_id, 'project': project, 'kind': 'video', 'status': 'queued',
                 'shot_id': req.shot_id, 'frame_id': req.frame_id, 'prompt': req.prompt,
                 'anchor_position': req.anchor_position,
-                'extension': frame.settings.get('extension') if frame else None,
+                'end_frame_id': req.end_frame_id,
+                # A connect job's boundary frames come through the same
+                # extension-boundary endpoint and carry the same metadata,
+                # but this is not an extend job — tagging it 'extension'
+                # too would surface a second, misleading insert action.
+                'extension': frame.settings.get('extension') if frame and not req.end_frame_id else None,
                 'regenerate_of': req.regenerate_of.model_dump() if req.regenerate_of else None,
+                'connect_of': req.connect_of.model_dump() if req.connect_of else None,
                 'model': req.model, 'backend': client.name, 'source_path': frame.image_path if req.reference_mode == 'shot' else '',
+                'end_source_path': end_frame.image_path if end_frame else '',
                 'reference_mode': req.reference_mode, 'reference_ids': req.reference_ids if req.reference_mode == 'character' else [],
                 'reference_paths': [next(r['path'] for r in session(project).image_references if r['id'] == rid) for rid in req.reference_ids] if req.reference_mode == 'character' else [],
                 'spec': asdict(spec), 'duration_s': req.duration_s, 'created': time.time(), 'offline': client.name == 'fake'}
@@ -388,6 +446,13 @@ def work(project, item_id):
                     spec.reference_images = [asset.url]
                     spec.first_frame = asset.url if item.get('anchor_position', 'first_frame') == 'first_frame' else None
                     spec.last_frame = asset.url if item.get('anchor_position') == 'last_frame' else None
+                    if item.get('end_source_path'):
+                        end_mime = media_type(Path(item['end_source_path']).read_bytes())
+                        end_suffix = {'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp'}[end_mime]
+                        end_asset = store.put_reference(item['end_source_path'], f"films/{project}/frames/{item['end_frame_id']}.{end_suffix}")
+                        spec.reference_images = []
+                        spec.first_frame = asset.url
+                        spec.last_frame = end_asset.url
                 # Persist non-secret input evidence, without expiring signed URLs.
                 item['input_evidence'] = {'mode': item.get('reference_mode', 'shot'),
                                           'frame_images': 1 if item.get('reference_mode', 'shot') == 'shot' else 0,

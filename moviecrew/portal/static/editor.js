@@ -271,7 +271,8 @@
   action(c.mute?'Unmute':'Mute',()=>{remember();c.mute=!c.mute;player.muted=c.mute;changed()});divider();
   action('Extend before…',()=>extendClip(index,'before'));action('Extend after…',()=>extendClip(index,'after'));
   action('Expand canvas…',()=>showEnhance(m,c,'expand'));action('Upscale · FLUX…',()=>showEnhance(m,c,'upscale'));
-  action('Regenerate take…',()=>showRegenerate(index));divider();
+  action('Regenerate take…',()=>showRegenerate(index));
+  action('Connect to next clip…',()=>showConnect(index),index>=cut.clips.length-1);divider();
   action('Remove from edit',()=>{remember();cut.clips.splice(index,1);changed();renderCut()}).className='clip-menu-remove';
   clipMenu.hidden=false;clipMenu.style.left=Math.max(8,Math.min(x,innerWidth-clipMenu.offsetWidth-8))+'px';clipMenu.style.top=Math.max(8,Math.min(y,innerHeight-clipMenu.offsetHeight-8))+'px';clipMenu.querySelector('button').focus({preventScroll:true});
  }
@@ -431,6 +432,52 @@
   if(matches.length!==1)return notify('The source clip has moved or changed, or appears more than once. Use + and select this extension from the library.');
   await insert(item,matches[0].index+(e.direction==='after'?1:0));
  }
+ async function showConnect(index){
+  stop();const before=cut.clips[index],after=cut.clips[index+1],owner=project.id;
+  if(!before||!after)return;
+  const requestId=crypto.randomUUID();
+  const d=modal('Connect these clips'),ticket=dialogVersion;
+  d.append(crewEl('p','Generates a new clip that bridges the last frame of the first clip to the first frame of the second. Creates a new take for review; your current clips stay in the edit until you insert it.'));
+  const status=crewEl('p','Preparing the boundary frames…');d.append(status);
+  try{
+   const [beforeBoundary,afterBoundary,available]=await Promise.all([
+    api('/api/projects/'+owner+'/extension-boundary','POST',{video_id:before.video_id,start:before.start,end:before.end,direction:'after'}),
+    api('/api/projects/'+owner+'/extension-boundary','POST',{video_id:after.video_id,start:after.start,end:after.end,direction:'before'}),
+    api('/api/projects/'+owner+'/video-models')
+   ]);
+   if(project.id!==owner||!d.open||ticket!==dialogVersion)return;
+   const pics=crewEl('div',undefined,'edit-toolbar');
+   for(const [label,boundary] of [['Ends on',beforeBoundary],['Starts on',afterBoundary]]){
+    const col=crewEl('div');col.style.cssText='flex:1;min-width:0';col.append(crewEl('small',label,'muted'));
+    const img=crewEl('img');img.src=boundary.image_url;img.alt=label;img.style.cssText='width:100%;max-height:140px;object-fit:contain;background:#000;border-radius:8px;display:block';col.append(img);pics.append(col);
+   }
+   d.append(pics);
+   const prompt=crewEl('textarea');prompt.rows=3;prompt.placeholder='Describe the motion that bridges these two shots.';prompt.setAttribute('aria-label','Connecting direction');d.append(prompt);
+   const row=crewEl('div',undefined,'edit-toolbar');d.append(row);
+   function field(label){const l=crewEl('label',label+' '),select=crewEl('select');select.setAttribute('aria-label',label);l.append(select);row.append(l);return select}
+   const model=field('Model'),duration=field('Seconds'),quality=field('Resolution'),ratio=field('Ratio');
+   const audioLabel=crewEl('label','Generate audio '),audio=crewEl('input');audio.type='checkbox';audio.style.width='auto';audioLabel.prepend(audio);d.append(audioLabel);
+   // Only a model advertising BOTH boundary types can condition on two
+   // frames at once — a plain first-frame-only model cannot bridge them.
+   const choices=available.models.filter(m=>(m.frame_positions||[]).includes('first_frame')&&(m.frame_positions||[]).includes('last_frame'));
+   function fill(select,values){select.replaceChildren();for(const value of values){const o=crewEl('option',String(value));o.value=value;select.append(o)}}
+   for(const m of choices){const o=crewEl('option',m.name||m.id);o.value=m.id;model.append(o)}
+   const price=crewEl('p');d.append(price);
+   const submit=button('Generate connecting clip',async()=>{
+    submit.disabled=true;try{const job=await api('/api/projects/'+owner+'/videos','POST',body());if(project.id!==owner)return;filmMedia.unshift(job);dialog.close();renderExports();startMediaPoll();notify('Connecting clip generating. Preview it below before inserting.')}catch(e){price.textContent=e.message;submit.disabled=false}
+   },d);submit.disabled=true;
+   function body(){return {request_id:requestId,shot_id:beforeBoundary.shot_id,frame_id:beforeBoundary.frame_id,end_frame_id:afterBoundary.frame_id,
+    reference_mode:'shot',prompt:prompt.value.trim(),model:model.value,duration_s:Number(duration.value),aspect_ratio:ratio.value,resolution:quality.value,audio:audio.checked,
+    connect_of:{before_clip_id:before.id,before_video_id:before.video_id,before_start:before.start,before_end:before.end,
+                after_clip_id:after.id,after_video_id:after.video_id,after_start:after.start,after_end:after.end}}}
+   let version=0;
+   async function estimate(){const token=++version;submit.disabled=true;if(!choices.length||!prompt.value.trim()){price.textContent='Describe the transition to see the estimate.';return}try{const result=await api('/api/projects/'+owner+'/video-estimate','POST',body());if(token!==version||project.id!==owner||ticket!==dialogVersion||!d.open)return;price.textContent=result.offline?'Offline preview · no charge':result.cost==null?'Paid generation · estimate unavailable':'Estimated cost: $'+Number(result.cost).toFixed(4);submit.disabled=false}catch(e){if(token===version&&ticket===dialogVersion)price.textContent=e.message}}
+   function sync(){const m=choices.find(x=>x.id===model.value);if(!m)return;fill(duration,m.durations?.length?m.durations:Array.from({length:m.duration_max},(_,i)=>i+1));if([...duration.options].some(o=>o.value==='5'))duration.value='5';fill(quality,m.resolutions);fill(ratio,m.ratios);if(m.ratios.includes(cut.aspect_ratio))ratio.value=cut.aspect_ratio;audio.disabled=!m.audio;audio.checked=false;estimate()}
+   model.onchange=sync;for(const el of [duration,quality,ratio,audio])el.onchange=estimate;let timer;prompt.oninput=()=>{++version;submit.disabled=true;clearTimeout(timer);timer=setTimeout(estimate,350)};
+   status.textContent=choices.length?'':'No connected model supports both a first and last frame. Choose another provider in Settings.';
+   if(choices.length)sync();
+  }catch(e){status.textContent=e.message}
+ }
 
  const exportDialog=crewEl('dialog');exportDialog.id='export-dialog';exportDialog.style.cssText='width:min(580px,90vw);max-height:85vh;overflow:auto;padding:24px;position:relative';document.body.append(exportDialog);
  exportDialog.append(crewEl('h2','Export your film'));iconButton('close',()=>exportDialog.close(),'Close',exportDialog).className='dialog-close';
@@ -440,14 +487,23 @@
  const createExport=button('Create export',async()=>{createExport.disabled=true;try{await exportAction();exportNotice.textContent=$('cut-status').textContent}catch(e){exportNotice.textContent=e.message}finally{createExport.disabled=false}},exportDialog);
  const exportNotice=crewEl('p');exportNotice.setAttribute('role','status');exportDialog.append(exportNotice,$('film-exports'));
  $('export-film').onclick=()=>{exportNotice.textContent='';renderExports();exportDialog.showModal()};
- const oldExports=renderExports;renderExports=function(){oldExports();if(exportDialog.open)exportNotice.textContent=$('cut-status').textContent;if(cutDirty)$('cut-status').textContent='Unsaved edit';jobs.replaceChildren();for(const item of filmMedia.filter(i=>i.backend==='fal-enhance'||i.backend==='openrouter-enhance'||i.id===pendingInsert?.id||i.regenerate_of)){const card=crewEl('div',undefined,'edit-job');card.append(crewEl('strong',item.model+' · '+item.status));if(item.error)card.append(crewEl('p',item.error));if(item.video_url){const v=crewEl('video');v.src=item.video_url;v.controls=true;card.append(v);if(item.extension)button('Insert '+item.extension.direction+' source clip',()=>insertExtension(item),card);else button('Add to edit',()=>insert(item,cut.clips.length),card);if(item.enhancement)button('Replace matching selection',async()=>{const spec=item.enhancement;const index=cut.clips.findIndex(c=>c.video_id===item.source_id&&Math.abs(c.start-spec.start)<.01&&Math.abs(c.end-spec.end)<.01);if(index<0)return notify('The original selection has changed. Add this version from the library instead.');remember();cut.clips[index]={video_id:item.id,start:0,end:item.duration_s,mute:cut.clips[index].mute};changed();renderCut();await saveCut()},card);if(item.regenerate_of)button('Replace this clip',async()=>{const spec=item.regenerate_of;const index=spec.clip_id?cut.clips.findIndex(c=>c.id===spec.clip_id):cut.clips.findIndex(c=>c.video_id===spec.video_id&&Math.abs(c.start-spec.start)<.01&&Math.abs(c.end-spec.end)<.01);const target=cut.clips[index];
+ const oldExports=renderExports;renderExports=function(){oldExports();if(exportDialog.open)exportNotice.textContent=$('cut-status').textContent;if(cutDirty)$('cut-status').textContent='Unsaved edit';jobs.replaceChildren();for(const item of filmMedia.filter(i=>i.backend==='fal-enhance'||i.backend==='openrouter-enhance'||i.id===pendingInsert?.id||i.regenerate_of||i.connect_of)){const card=crewEl('div',undefined,'edit-job');card.append(crewEl('strong',item.model+' · '+item.status));if(item.error)card.append(crewEl('p',item.error));if(item.video_url){const v=crewEl('video');v.src=item.video_url;v.controls=true;card.append(v);if(item.extension)button('Insert '+item.extension.direction+' source clip',()=>insertExtension(item),card);else button('Add to edit',()=>insert(item,cut.clips.length),card);if(item.enhancement)button('Replace matching selection',async()=>{const spec=item.enhancement;const index=cut.clips.findIndex(c=>c.video_id===item.source_id&&Math.abs(c.start-spec.start)<.01&&Math.abs(c.end-spec.end)<.01);if(index<0)return notify('The original selection has changed. Add this version from the library instead.');remember();cut.clips[index]={video_id:item.id,start:0,end:item.duration_s,mute:cut.clips[index].mute};changed();renderCut();await saveCut()},card);if(item.regenerate_of)button('Replace this clip',async()=>{const spec=item.regenerate_of;const index=spec.clip_id?cut.clips.findIndex(c=>c.id===spec.clip_id):cut.clips.findIndex(c=>c.video_id===spec.video_id&&Math.abs(c.start-spec.start)<.01&&Math.abs(c.end-spec.end)<.01);const target=cut.clips[index];
    // Identity (clip_id) alone isn't enough: the clip could since have been
    // re-trimmed or had its own source swapped by an earlier replace, and
    // both keep its id. Confirm its content still matches what regeneration
    // actually started from before overwriting it - otherwise a trim or
    // swap made while the job was running would be silently discarded.
    const unchanged=target&&target.video_id===spec.video_id&&Math.abs(target.start-spec.start)<.01&&Math.abs(target.end-spec.end)<.01;
-   if(index<0||!unchanged)return notify('The original clip has moved or changed. Add this take from the library instead.');remember();cut.clips[index]={id:target.id,video_id:item.id,start:0,end:item.duration_s,mute:target.mute};changed();renderCut();await saveCut()},card)}else if(item.status==='waiting')button('Resume',async()=>{await api('/api/projects/'+project.id+'/videos/'+item.id+'/resume','POST',{});startMediaPoll()},card);jobs.append(card)}
+   if(index<0||!unchanged)return notify('The original clip has moved or changed. Add this take from the library instead.');remember();cut.clips[index]={id:target.id,video_id:item.id,start:0,end:item.duration_s,mute:target.mute};changed();renderCut();await saveCut()},card);if(item.connect_of)button('Insert between these clips',async()=>{
+   const spec=item.connect_of;
+   const beforeIndex=cut.clips.findIndex(x=>x.id===spec.before_clip_id),afterIndex=cut.clips.findIndex(x=>x.id===spec.after_clip_id);
+   const beforeClip=cut.clips[beforeIndex],afterClip=cut.clips[afterIndex];
+   // Adjacency, not just identity: the two clips must still be next to
+   // each other, or the generated bridge no longer connects anything.
+   const unchanged=beforeIndex>=0&&afterIndex===beforeIndex+1&&beforeClip.video_id===spec.before_video_id&&Math.abs(beforeClip.start-spec.before_start)<.01&&Math.abs(beforeClip.end-spec.before_end)<.01&&afterClip.video_id===spec.after_video_id&&Math.abs(afterClip.start-spec.after_start)<.01&&Math.abs(afterClip.end-spec.after_end)<.01;
+   if(!unchanged)return notify('The original clips have moved or changed. Add this take from the library instead.');
+   remember();cut.clips.splice(afterIndex,0,{id:crypto.randomUUID(),video_id:item.id,start:0,end:item.duration_s,mute:false});changed();renderCut();await saveCut()
+  },card)}else if(item.status==='waiting')button('Resume',async()=>{await api('/api/projects/'+project.id+'/videos/'+item.id+'/resume','POST',{});startMediaPoll()},card);jobs.append(card)}
  if(pendingInsert?.id){const item=filmMedia.find(i=>i.id===pendingInsert.id);if(item?.status==='complete'){const at=pendingInsert.index;pendingInsert=null;insert(item,at).catch(report)}}
  for(const card of $('film-exports').children){const video=card.querySelector('video');if(!video)continue;const item=filmMedia.find(i=>i.video_url===video.getAttribute('src'));if(item)button('Upscale film · FLUX',()=>{exportDialog.close();showEnhance(item,{start:0,end:item.duration_s},'upscale')},card)}};
  const priorSection=showFilmSection;showFilmSection=function(){if(filmSection!=='edit'){stop();closeClipMenu()}priorSection()};
