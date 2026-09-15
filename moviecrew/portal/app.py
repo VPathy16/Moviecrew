@@ -56,7 +56,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -1335,7 +1335,11 @@ class ProjectEditRequest(BaseModel):
 
 @app.get('/api/projects')
 def project_library():
-    return {'projects': project_store.listing()}
+    projects = project_store.listing()
+    for p in projects:
+        cover = p.pop('cover_version_id')
+        p['thumbnail_url'] = f"/api/projects/{p['id']}/versions/{cover}/image" if cover else None
+    return {'projects': projects}
 
 
 @app.get('/api/projects/{session_id}')
@@ -1684,3 +1688,9 @@ app.include_router(director_router)
 @app.get('/director.js')
 def director_script():
     return FileResponse(_STATIC_DIR / 'director.js', media_type='text/javascript')
+
+@app.get('/fonts/{filename}')
+def font_file(filename: str):
+    if filename not in {'fraunces-normal.woff2', 'fraunces-italic.woff2'}:
+        raise HTTPException(404, 'Not found')
+    return FileResponse(_STATIC_DIR / 'fonts' / filename, media_type='font/woff2')
