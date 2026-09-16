@@ -95,6 +95,31 @@ class Bible:
 
 
 @dataclass
+class Beat:
+    """One timed micro-action inside a shot's duration.
+
+    Shots are the unit of narrative structure (and of generation); beats are
+    the unit of physical detail inside one. A shot with several beats is
+    still one shot — a subject's eyes moving, then their expression
+    changing, then their body turning, are beats of a single 6-second shot,
+    not a reason to split it into three. Only `Shot.cut_reason` on the
+    *next* shot creates a new one.
+    """
+
+    start_s: float
+    end_s: float
+    action: str
+
+    def __post_init__(self) -> None:
+        if self.end_s <= self.start_s:
+            raise ValueError(
+                f"beat end_s ({self.end_s}) must be after start_s ({self.start_s})"
+            )
+        if not isinstance(self.action, str) or not self.action.strip():
+            raise ValueError("beat needs a non-empty action")
+
+
+@dataclass
 class Shot:
     """One shot as the production intends it — not as a backend can render it.
 
@@ -107,6 +132,13 @@ class Shot:
     `reference_image_ids` is likewise uncapped. A backend that accepts three
     references truncates to three at its own boundary; the shot keeps what
     the production attached to it.
+
+    `beats` is optional temporal detail inside this one shot — see `Beat`.
+    `cut_reason` names the editorial reason a *new* shot starts here (a
+    reveal, a POV change, a reaction, a geography change, ...); it is
+    required for every shot after a scene's first, enforced once a scene's
+    shots are assembled (a shot in isolation cannot know its own position
+    within its scene, so this is not checked in `__post_init__`).
     """
 
     id: str
@@ -131,6 +163,8 @@ class Shot:
     screen_direction: str = ''
     audio_intent: str = ''
     transition: str = 'cut'  # cut | continuous | ellipsis
+    beats: list[Beat] = field(default_factory=list)
+    cut_reason: str = ''
 
 
     def __post_init__(self) -> None:
@@ -164,6 +198,10 @@ class Scene:
     obstacle: str = ''
     turning_point: str = ''
     acting_tasks: dict[str, str] = field(default_factory=dict)
+    # How long this scene's shots should sum to, in seconds. None (the
+    # default, and every pre-existing project) means no budget is enforced —
+    # the cinematographer plans freely, exactly as before this field existed.
+    target_duration_s: Optional[float] = None
 
 
 # --- Generated artifacts ----------------------------------------------------
@@ -252,6 +290,11 @@ class Project:
     scenes: list[Scene] = field(default_factory=list)
     render_plan: Optional[RenderPlan] = None
     sheet_notes: dict[str, dict[str, str]] = field(default_factory=dict)
+    # The whole film's requested runtime, if the brief asked for one. None
+    # for every pre-existing project. Divided across scenes (see crew.make)
+    # as each Scene's own target_duration_s; kept here too so the number
+    # that was actually asked for survives independently of how it was split.
+    target_duration_s: Optional[float] = None
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from .schema import Bible, Project, Scene, Shot, ShotIntent, RenderPlan, ContinuityFlag
+from .schema import Beat, Bible, Project, Scene, Shot, ShotIntent, RenderPlan, ContinuityFlag
 from .studio import StudioSession, Stage, PlanProgress, StoryboardFrame
 
 
@@ -61,7 +61,7 @@ def load(session_id, image_provider):
     data = json.loads(row[0])
     project = data.pop('project')
     project['bible'] = Bible.from_dict(project['bible'])
-    project['scenes'] = [Scene(**{**s, 'shots': [Shot(**shot) for shot in s['shots']]}) for s in project['scenes']]
+    project['scenes'] = [Scene(**{**s, 'shots': [Shot(**{**shot, 'beats': [Beat(**b) for b in shot.get('beats', [])]}) for shot in s['shots']]}) for s in project['scenes']]
     if project.get('render_plan'):
         plan = project['render_plan']
         project['render_plan'] = RenderPlan(**{**plan, 'intents':[ShotIntent(**i) for i in plan['intents']], 'flags':[ContinuityFlag(**f) for f in plan['flags']]})
