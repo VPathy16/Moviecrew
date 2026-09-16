@@ -38,7 +38,12 @@ class Technique:
     `category` groups techniques for UI/validation purposes (shot_scale,
     angle, movement, composition, focus, lighting, edit_relation).
     `supports_intent` lists NARRATIVE_INTENTS this technique can express.
-    `requires`/`conflicts_with`/`pairs_with` reference other Technique ids;
+    `conflicts_with`/`pairs_with` reference other Technique ids (checked by
+    check_conflicts below). `requires` is different in kind, matching the
+    research this module is based on: abstract preconditions a technique
+    needs to read as intended — 'sufficient_duration', 'spatial_depth',
+    'stable_subject' — not other technique ids, so it is not (and should
+    not be) validated against TECHNIQUES the way the other two are.
     `provider_reliability` is intentionally empty here — Phase 5 (empirical
     learning) is what would populate it from observed generation outcomes,
     not authored guesses.
@@ -270,6 +275,21 @@ TECHNIQUES: dict[str, Technique] = {t.id: t for t in _TECHNIQUES}
 CATEGORIES: tuple[str, ...] = (
     "shot_scale", "angle", "movement", "composition", "focus", "lighting", "edit_relation",
 )
+
+# Self-checks at import time, not left for a caller to discover at runtime:
+# a duplicate id would silently overwrite a technique in the dict above,
+# and conflicts_with/pairs_with (unlike requires — see Technique's
+# docstring) must only ever reference real ids or check_conflicts's own
+# "unknown ids are ignored" contract would quietly hide an authoring typo.
+if len(TECHNIQUES) != len(_TECHNIQUES):
+    _seen: set[str] = set()
+    _dupes = sorted({t.id for t in _TECHNIQUES if t.id in _seen or _seen.add(t.id)})
+    raise ValueError(f"duplicate technique id(s): {_dupes}")
+for _t in _TECHNIQUES:
+    for _attr in ("conflicts_with", "pairs_with"):
+        for _ref in getattr(_t, _attr):
+            if _ref not in TECHNIQUES:
+                raise ValueError(f"technique {_t.id!r} has {_attr}={_ref!r}, which is not a known technique id")
 
 
 def get_technique(technique_id: str) -> Technique | None:

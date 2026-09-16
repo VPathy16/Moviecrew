@@ -36,6 +36,24 @@ def test_technique_rejects_an_intent_outside_the_shared_vocabulary():
                   supports_intent=("not_a_real_intent",))
 
 
+def test_registry_has_no_dangling_conflicts_with_or_pairs_with_references():
+    # requires deliberately may reference non-technique preconditions (see
+    # Technique's docstring) - conflicts_with/pairs_with must not; the module
+    # self-checks this at import time, this test re-asserts it explicitly
+    # so a future regression fails a test, not just a fresh interpreter start.
+    for technique in TECHNIQUES.values():
+        for attr in ("conflicts_with", "pairs_with"):
+            for ref in getattr(technique, attr):
+                assert ref in TECHNIQUES, f"{technique.id}.{attr} references unknown id {ref!r}"
+
+
+def test_registry_has_no_duplicate_ids_and_every_supports_intent_is_valid():
+    ids = [t.id for t in TECHNIQUES.values()]
+    assert len(ids) == len(set(ids))
+    for technique in TECHNIQUES.values():
+        assert set(technique.supports_intent) <= set(NARRATIVE_INTENTS)
+
+
 def test_check_conflicts_is_symmetric_regardless_of_which_side_declares_it():
     # handheld declares conflicts_with=('static',); static does not declare the reverse.
     assert check_conflicts(["handheld", "static"]) == [("handheld", "static")]
@@ -52,6 +70,52 @@ def test_cinematic_spec_round_trips_through_its_own_dict():
         rationale="villain enters",
     )
     assert CinematicSpec.from_dict(spec.to_dict()) == spec
+
+
+def test_cinematic_spec_from_dict_tolerates_extra_llm_metadata_without_crashing():
+    # The exact failure mode crew._shot_from_raw's own docstring names as
+    # routine LLM behavior ("note", "rationale", "transition" have all shown
+    # up unasked-for in practice) - CameraSpec(**raw) would crash on it.
+    spec = CinematicSpec.from_dict({
+        "camera": {"shot_scale_start": "cu", "note": "dramatic reveal", "confidence": 0.9},
+        "focus": {"mode": "rack", "reasoning": "draws the eye"},
+    })
+    assert spec.camera.shot_scale_start == "cu"
+    assert spec.focus.mode == "rack"
+
+
+def test_cinematic_spec_from_dict_tolerates_wrong_types_without_crashing():
+    spec = CinematicSpec.from_dict({"camera": "wide shot", "technique_ids": "not_a_list", "rationale": None})
+    assert spec.camera == CameraSpec()
+    assert spec.technique_ids == []
+    assert spec.rationale == ""
+
+
+def test_cinematic_spec_from_dict_coerces_lens_mm_to_int():
+    assert CinematicSpec.from_dict({"camera": {"lens_mm": 65.0}}).camera.lens_mm == 65
+    assert CinematicSpec.from_dict({"camera": {"lens_mm": "not-a-number"}}).camera.lens_mm is None
+
+
+def test_cinematic_spec_from_dict_coerces_nested_list_fields_not_just_top_level():
+    # Same risk as technique_ids/narrative_intents, one level deeper: a
+    # string where composition.techniques/acceptance.* expect a list would
+    # otherwise iterate character-by-character downstream instead of
+    # erroring or emptying cleanly.
+    spec = CinematicSpec.from_dict({
+        "composition": {"techniques": "wide"},
+        "acceptance": {"must": "identity", "prefer": ["65mm_feel"], "avoid": 42},
+    })
+    assert spec.composition.techniques == []
+    assert spec.acceptance.must == []
+    assert spec.acceptance.prefer == ["65mm_feel"]
+    assert spec.acceptance.avoid == []
+
+    good = CinematicSpec.from_dict({
+        "composition": {"techniques": ["thirds", "negative_space"]},
+        "acceptance": {"must": ["identity", "reveal"]},
+    })
+    assert good.composition.techniques == ["thirds", "negative_space"]
+    assert good.acceptance.must == ["identity", "reveal"]
 
 
 def test_shot_cinematic_spec_defaults_to_none():

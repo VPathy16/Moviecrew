@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from typing import Optional
 
 _ASPECT_RATIO_RE = re.compile(r"^(\d+):(\d+)$")
@@ -168,15 +168,54 @@ class CinematicSpec:
 
     @classmethod
     def from_dict(cls, data: dict) -> "CinematicSpec":
+        """Build from a Cinematographer's raw dict for it, the same way
+        crew._shot_from_raw builds a Shot: filtered to each nested
+        dataclass's own declared fields, never `Cls(**raw)` directly. The
+        agent is a language model, and harmless extra metadata alongside a
+        known key ("note", "reasoning", ...) is routine, not exceptional —
+        `CameraSpec(**raw)` would crash the whole pipeline on it instead of
+        silently ignoring it, exactly the failure this pattern exists to
+        avoid elsewhere in the schema/crew boundary.
+        """
+
+        def sub(target_cls, key):
+            raw = data.get(key)
+            raw = raw if isinstance(raw, dict) else {}
+            names = {f.name for f in dataclass_fields(target_cls)}
+            return target_cls(**{k: v for k, v in raw.items() if k in names})
+
+        def as_list(value):
+            return [str(v) for v in value] if isinstance(value, list) else []
+
+        camera = sub(CameraSpec, "camera")
+        if camera.lens_mm is not None:
+            try:
+                camera.lens_mm = int(camera.lens_mm)
+            except (TypeError, ValueError):
+                camera.lens_mm = None
+
+        # Field-name filtering (sub()) stops an unexpected key from crashing
+        # construction, but not an expected key holding the wrong container
+        # type (a string where a list was asked for) — coerce every list[str]
+        # field the same way technique_ids/narrative_intents are below, so a
+        # composition/acceptance typo degrades to an empty list instead of
+        # iterating a string's characters downstream.
+        composition = sub(CompositionSpec, "composition")
+        composition.techniques = as_list(composition.techniques)
+        acceptance = sub(AcceptanceSpec, "acceptance")
+        acceptance.must = as_list(acceptance.must)
+        acceptance.prefer = as_list(acceptance.prefer)
+        acceptance.avoid = as_list(acceptance.avoid)
+
         return cls(
-            camera=CameraSpec(**data.get("camera", {})),
-            focus=FocusSpec(**data.get("focus", {})),
-            lighting=LightingSpec(**data.get("lighting", {})),
-            composition=CompositionSpec(**data.get("composition", {})),
-            acceptance=AcceptanceSpec(**data.get("acceptance", {})),
-            technique_ids=list(data.get("technique_ids", [])),
-            narrative_intents=list(data.get("narrative_intents", [])),
-            rationale=data.get("rationale", ""),
+            camera=camera,
+            focus=sub(FocusSpec, "focus"),
+            lighting=sub(LightingSpec, "lighting"),
+            composition=composition,
+            acceptance=acceptance,
+            technique_ids=as_list(data.get("technique_ids")),
+            narrative_intents=as_list(data.get("narrative_intents")),
+            rationale=str(data.get("rationale") or ""),
         )
 
 
