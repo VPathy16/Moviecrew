@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as dataclass_fields
 from typing import Optional
 
 _ASPECT_RATIO_RE = re.compile(r"^(\d+):(\d+)$")
@@ -91,6 +91,134 @@ class Bible:
         )
 
 
+# --- Cinematography Intelligence Layer --------------------------------------
+#
+# Structured cinematography beside Shot's existing prose fields (camera_move,
+# lens, framing) — the seam those fields' own history anticipated: a
+# machine-readable layer that can be validated, searched and eventually
+# compiled per-provider, while the prose stays what models actually read.
+# Entirely optional throughout; a Shot without a cinematic_spec behaves
+# exactly as it always has. Technique ids referenced here (composition.
+# techniques, technique_ids) come from moviecrew.cinematography.TECHNIQUES —
+# not enforced here (schema.py stays a pure data layer; cross-referencing
+# the technique graph is a deterministic-guardrail concern, done in crew.py
+# the same way duration/continuity checks are).
+
+
+@dataclass
+class CameraSpec:
+    shot_scale_start: str = ""
+    shot_scale_end: str = ""
+    angle: str = ""
+    movement_type: str = ""
+    movement_speed: str = ""
+    movement_motivation: str = ""
+    lens_mm: Optional[int] = None
+
+
+@dataclass
+class FocusSpec:
+    mode: str = ""  # deep | shallow | rack | ''
+    rack_from: str = ""
+    rack_to: str = ""
+
+
+@dataclass
+class LightingSpec:
+    key: str = ""
+    contrast: str = ""  # high_key | low_key
+    continuity_locked: bool = False
+
+
+@dataclass
+class CompositionSpec:
+    techniques: list[str] = field(default_factory=list)  # technique ids
+
+
+@dataclass
+class AcceptanceSpec:
+    """What a generated take must/should/must-not satisfy to be accepted.
+
+    Evidence for a future evaluator (CIL Phase 4), not enforced by anything
+    today — recording it now costs nothing and means it doesn't have to be
+    reconstructed later from a shot's prose after the fact.
+    """
+
+    must: list[str] = field(default_factory=list)
+    prefer: list[str] = field(default_factory=list)
+    avoid: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CinematicSpec:
+    camera: CameraSpec = field(default_factory=CameraSpec)
+    focus: FocusSpec = field(default_factory=FocusSpec)
+    lighting: LightingSpec = field(default_factory=LightingSpec)
+    composition: CompositionSpec = field(default_factory=CompositionSpec)
+    acceptance: AcceptanceSpec = field(default_factory=AcceptanceSpec)
+    # Every technique id chosen for this shot, flattened across the nested
+    # fields above too, so a caller can check conflicts/intent-support
+    # without re-walking each one.
+    technique_ids: list[str] = field(default_factory=list)
+    narrative_intents: list[str] = field(default_factory=list)
+    rationale: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CinematicSpec":
+        """Build from a Cinematographer's raw dict for it, the same way
+        crew._shot_from_raw builds a Shot: filtered to each nested
+        dataclass's own declared fields, never `Cls(**raw)` directly. The
+        agent is a language model, and harmless extra metadata alongside a
+        known key ("note", "reasoning", ...) is routine, not exceptional —
+        `CameraSpec(**raw)` would crash the whole pipeline on it instead of
+        silently ignoring it, exactly the failure this pattern exists to
+        avoid elsewhere in the schema/crew boundary.
+        """
+
+        def sub(target_cls, key):
+            raw = data.get(key)
+            raw = raw if isinstance(raw, dict) else {}
+            names = {f.name for f in dataclass_fields(target_cls)}
+            return target_cls(**{k: v for k, v in raw.items() if k in names})
+
+        def as_list(value):
+            return [str(v) for v in value] if isinstance(value, list) else []
+
+        camera = sub(CameraSpec, "camera")
+        if camera.lens_mm is not None:
+            try:
+                camera.lens_mm = int(camera.lens_mm)
+            except (TypeError, ValueError):
+                camera.lens_mm = None
+
+        # Field-name filtering (sub()) stops an unexpected key from crashing
+        # construction, but not an expected key holding the wrong container
+        # type (a string where a list was asked for) — coerce every list[str]
+        # field the same way technique_ids/narrative_intents are below, so a
+        # composition/acceptance typo degrades to an empty list instead of
+        # iterating a string's characters downstream.
+        composition = sub(CompositionSpec, "composition")
+        composition.techniques = as_list(composition.techniques)
+        acceptance = sub(AcceptanceSpec, "acceptance")
+        acceptance.must = as_list(acceptance.must)
+        acceptance.prefer = as_list(acceptance.prefer)
+        acceptance.avoid = as_list(acceptance.avoid)
+
+        return cls(
+            camera=camera,
+            focus=sub(FocusSpec, "focus"),
+            lighting=sub(LightingSpec, "lighting"),
+            composition=composition,
+            acceptance=acceptance,
+            technique_ids=as_list(data.get("technique_ids")),
+            narrative_intents=as_list(data.get("narrative_intents")),
+            rationale=str(data.get("rationale") or ""),
+        )
+
+
 # --- Scenes / Shots ----------------------------------------------------------
 
 
@@ -163,6 +291,7 @@ class Shot:
     screen_direction: str = ''
     audio_intent: str = ''
     transition: str = 'cut'  # cut | continuous | ellipsis
+    cinematic_spec: Optional[CinematicSpec] = None
     beats: list[Beat] = field(default_factory=list)
     cut_reason: str = ''
 
