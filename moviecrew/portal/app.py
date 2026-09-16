@@ -308,6 +308,7 @@ def _run_plan_job(session: StudioSession, req: PlanRequest, checkpoint_path: str
             checkpoint_path=checkpoint_path,
             run_continuity=False,
             on_progress=on_progress,
+            target_duration_s=req.target_duration_s,
         )
     except Exception as exc:
         with session.plan_lock:
@@ -714,6 +715,10 @@ class PlanRequest(BaseModel):
     backend: str = ""
     detail: str = "cinematic"
     reference_dir: Optional[str] = None
+    # The whole film's requested runtime. None (the default) plans exactly
+    # as before this field existed: no budget, the cinematographer chooses
+    # shot durations freely with nothing to compare them against.
+    target_duration_s: Optional[float] = Field(default=None, gt=0, le=3600)
 
 
 class StoryboardRequest(BaseModel):

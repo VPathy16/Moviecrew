@@ -10,13 +10,14 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from .schema import Bible, CinematicSpec, Project, Scene, Shot, ShotIntent, RenderPlan, ContinuityFlag
+from .schema import Beat, Bible, CinematicSpec, Project, Scene, Shot, ShotIntent, RenderPlan, ContinuityFlag
 from .studio import StudioSession, Stage, PlanProgress, StoryboardFrame
 
 
 def _shot_from_stored(shot: dict) -> Shot:
     spec = shot.get('cinematic_spec')
-    return Shot(**{**shot, 'cinematic_spec': CinematicSpec.from_dict(spec) if spec else None})
+    return Shot(**{**shot, 'cinematic_spec': CinematicSpec.from_dict(spec) if spec else None,
+                   'beats': [Beat(**b) for b in shot.get('beats', [])]})
 
 
 def root():

@@ -40,6 +40,7 @@ from .rules import (
 from .cinematography import cinematic_spec_flags, compile_cinematic_spec_summary
 from .schema import (
     DEFAULT_ASPECT_RATIO,
+    Beat,
     Bible,
     Character,
     CinematicSpec,
@@ -131,6 +132,12 @@ def run_continuity_check(
         ], True
 
 
+# How far a scene's total shot duration may exceed its target before one
+# bounded replan attempt is triggered (see Crew.make). 1.5x, not 1.0x: shot
+# durations are creative judgment, not a hard cap, and re-planning on any
+# overage at all would fight the cinematographer over ordinary rounding.
+_DURATION_BUDGET_TOLERANCE = 1.5
+
 # The LLM -> Shot boundary. Computed from Shot's own dataclass fields, never
 # duplicated as a hardcoded list, so it can never drift out of sync with the
 # schema: _SHOT_FIELD_NAMES is every field Shot(**...) will accept,
@@ -160,6 +167,8 @@ def _shot_from_raw(raw: dict) -> Shot:
     fields_ = {k: v for k, v in raw.items() if k in _SHOT_FIELD_NAMES}
     if isinstance(fields_.get("cinematic_spec"), dict):
         fields_["cinematic_spec"] = CinematicSpec.from_dict(fields_["cinematic_spec"])
+    if isinstance(fields_.get("beats"), list):
+        fields_["beats"] = [Beat(**b) for b in fields_["beats"]]
     return Shot(**fields_)
 
 
@@ -200,6 +209,16 @@ def _shots_for_scene(
 
     if not shots:
         raise PipelineError(f"cinematographer returned no shots for scene {scene.id!r}")
+    # A shot in isolation cannot know its own position within its scene, so
+    # this is checked here rather than in Shot.__post_init__: every shot
+    # after a scene's first must say why the cut happens, or it should not
+    # have been a new shot at all.
+    for shot in shots[1:]:
+        if shot.story_contract_version == 1 and not shot.cut_reason.strip():
+            raise PipelineError(
+                f"cinematographer shot {shot.id!r} in scene {scene.id!r} is missing "
+                "cut_reason (every shot after a scene's first must say why the cut happens)"
+            )
     return shots
 
 
@@ -325,9 +344,23 @@ class MovieCrew:
         checkpoint_path: Optional[str] = None,
         run_continuity: bool = True,
         on_progress: Optional[Callable[..., None]] = None,
+        target_duration_s: Optional[float] = None,
     ) -> Project:
         """Run the pipeline: Director through Prompter, then, by default,
         the continuity check.
+
+        *target_duration_s*, if given, is the whole film's requested
+        runtime. It is divided evenly across scenes (a scene's own
+        `target_duration_s`, once a smarter split is worth building, can
+        override this — this call only ever fills in what a scene doesn't
+        already have) and handed to the Cinematographer as a budget, not a
+        suggestion: a scene that comes back badly over budget is replanned
+        once with that overage named explicitly. This exists because
+        nothing previously compared a shot's requested duration to what the
+        narrative moment actually needed, so a plan-once fully-free
+        Cinematographer would routinely turn a 10-second beat into eight
+        5-second shots. None (the default) keeps every prior behavior
+        exactly as it was — no budget is enforced anywhere.
 
         With *bible* (assets-first mode): the writer is asked to write FOR the
         provided cast and world; the designer only fills gaps (new locations or
@@ -410,9 +443,21 @@ class MovieCrew:
             bible = effective_bible
             sheet_notes = designer_out.get("sheet_notes", {})
 
+        # A deterministic guardrail, not a creative decision: split evenly
+        # rather than asking any agent to divide it, since dividing a number
+        # by a count needs no judgment. setdefault so a scene that already
+        # carries its own target_duration_s (a prior make() call's split,
+        # preserved through stop_after_design -> approved_project) is never
+        # overwritten with a fresh, differently-rounded split.
+        if target_duration_s is not None and raw_scenes:
+            per_scene_default = target_duration_s / len(raw_scenes)
+            for raw_scene in raw_scenes:
+                raw_scene.setdefault('target_duration_s', per_scene_default)
+
         if stop_after_design:
             draft = Project(title=title, logline=logline, outline=outline, bible=bible, sheet_notes=sheet_notes,
-                            scenes=[Scene(**{**scene, 'shots': []}) for scene in raw_scenes])
+                            scenes=[Scene(**{**scene, 'shots': []}) for scene in raw_scenes],
+                            target_duration_s=target_duration_s)
             if checkpoint_path:
                 write_checkpoint(draft, checkpoint_path)
             return draft
@@ -424,11 +469,45 @@ class MovieCrew:
         scenes: list[Scene] = []
         all_shots: list[Shot] = []
         seen_shot_ids: set[str] = set()
+        duration_flags: list[ContinuityFlag] = []
         for raw_scene in raw_scenes:
             scene = Scene(**raw_scene)
             cached_scene = (completed_scenes or {}).get(scene.id)
             cine_out = cached_scene if cached_scene is not None else self.cinematographer.run(scene=raw_scene)
             scene.shots = _shots_for_scene(scene, cine_out.get("shots", []), seen_shot_ids)
+
+            # A cached scene was already accepted in an earlier run; only a
+            # freshly-planned scene gets budget-checked and, if needed, one
+            # bounded replan attempt — never an unbounded retry loop.
+            if cached_scene is None and scene.target_duration_s:
+                total = sum(shot.duration_s for shot in scene.shots)
+                if total > scene.target_duration_s * _DURATION_BUDGET_TOLERANCE:
+                    seen_shot_ids.difference_update(shot.id for shot in scene.shots)
+                    overage_scene = {
+                        **raw_scene,
+                        "over_budget_notice": (
+                            f"Your previous attempt planned {len(scene.shots)} shots totalling "
+                            f"{total:.1f}s against a {scene.target_duration_s:.0f}s target for "
+                            "this scene - well over budget. Combine micro-actions (expression "
+                            "changes, eyeline shifts, small movements) into beats within fewer, "
+                            "longer shots instead of cutting for each one. Only create a new "
+                            "shot when cut_reason names a real editorial reason. Keep total "
+                            "shot duration close to the target."
+                        ),
+                    }
+                    cine_out = self.cinematographer.run(scene=overage_scene)
+                    scene.shots = _shots_for_scene(scene, cine_out.get("shots", []), seen_shot_ids)
+                    retotal = sum(shot.duration_s for shot in scene.shots)
+                    if retotal > scene.target_duration_s * _DURATION_BUDGET_TOLERANCE:
+                        duration_flags.append(ContinuityFlag(
+                            target=scene.id, kind="warning",
+                            message=(
+                                f"Scene {scene.id} used {retotal:.1f}s of shots against a "
+                                f"{scene.target_duration_s:.0f}s target even after one replan "
+                                "attempt."
+                            ),
+                        ))
+
             scenes.append(scene)
             all_shots.extend(scene.shots)
             if on_progress:
@@ -457,7 +536,7 @@ class MovieCrew:
             on_progress("editor_complete", order=order, chains=chains, shot_count=len(all_shots))
 
         intents: list[ShotIntent] = []
-        flags: list[ContinuityFlag] = list(direction_flags)
+        flags: list[ContinuityFlag] = list(direction_flags) + duration_flags
         for shot in all_shots:
             context = prompt_context(shot, scenes, order, bible, title, logline, outline, notes,
                                      world_approved=approved_project is not None)
@@ -511,6 +590,14 @@ class MovieCrew:
                 )
 
         est_duration_s = sum(shot.duration_s for shot in all_shots)
+        if target_duration_s and est_duration_s > target_duration_s * _DURATION_BUDGET_TOLERANCE:
+            flags.append(ContinuityFlag(
+                target="project", kind="warning",
+                message=(
+                    f"Planned runtime is {est_duration_s:.1f}s against a "
+                    f"{target_duration_s:.0f}s target, even after per-scene budgeting."
+                ),
+            ))
 
         # Everything above this line is real, spent generation — up to six
         # agent calls per scene/shot. The Project built here is already
@@ -537,6 +624,7 @@ class MovieCrew:
             scenes=scenes,
             render_plan=render_plan,
             sheet_notes=sheet_notes,
+            target_duration_s=target_duration_s,
         )
 
         if checkpoint_path:

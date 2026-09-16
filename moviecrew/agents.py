@@ -172,9 +172,27 @@ class CinematographerAgent(Agent):
         "are all legitimate; do not round to fit any particular renderer, which will "
         "clamp or split later if it must. Durations must be positive. "
         "For every shot provide visible_character_ids and visible_prop_ids containing only IDs actually visible in this framing (empty arrays for none). Also provide image_prompt describing ONE opening still frame, its composition, visible subjects, lighting and lens; exclude movement over time, dialogue and sound. "
-        "Plan cause and consequence. Each shot has story_contract_version=1, purpose, one observable "
-        "action, entry_state and exit_state (non-empty dictionaries of stable entity/property keys to "
-        "concise state labels), screen_direction, audio_intent and transition (cut, continuous, ellipsis). "
+        "Plan cause and consequence. Each shot has story_contract_version=1, purpose, action "
+        "(what the shot is about), entry_state and exit_state (non-empty dictionaries of stable "
+        "entity/property keys to concise state labels), screen_direction, audio_intent and "
+        "transition (cut, continuous, ellipsis). "
+        "A shot is not one atomic action — it is one continuous piece of coverage. Put its "
+        "temporal detail in optional beats: [{start_s, end_s, action}] covering the shot's own "
+        "duration_s (a 4s shot is typically one beat; an 8-10s shot is often 2-4 linked beats). "
+        "An expression change, an eyeline shift, a small movement, a focus rack, the camera "
+        "starting or changing speed — these are beats inside the current shot, never by "
+        "themselves a reason to start a new one. "
+        "Every shot after a scene's first must set cut_reason: the concrete editorial reason "
+        "this is a NEW shot rather than another beat of the last one — e.g. reveal new "
+        "information, change POV, reaction, geography change, time compression, power shift, "
+        "insert, transition. If you cannot name one, it is not a new shot — fold it into the "
+        "previous shot's beats instead. The first shot of a scene has no cut_reason. "
+        "If the scene carries target_duration_s, that is a budget: sum(shot.duration_s) for "
+        "this scene should land close to it. Reaching it should come from fewer, longer, "
+        "multi-beat shots, not from omitting story detail — the detail belongs in beats. If "
+        "the scene carries over_budget_notice, a prior attempt at this same scene blew well "
+        "past budget; read it and correct by merging shots, not by trimming actions out of the "
+        "story. "
         "Use identical labels when a state is unchanged. Adjacent shots in a scene must agree on shared "
         "exit/entry keys unless an explicit ellipsis advances time. A cut changes framing, not physical "
         "facts. Vary shot size with a story reason; carry prop ownership and physical condition. "
@@ -195,6 +213,7 @@ class CinematographerAgent(Agent):
         '"framing": str, "story_contract_version": 1, "purpose": str, "action": str, '
         '"entry_state": {str: str}, "exit_state": {str: str}, "screen_direction": str, '
         '"audio_intent": str, "transition": "cut"|"continuous"|"ellipsis", '
+        '"beats": [{"start_s": number, "end_s": number, "action": str}], "cut_reason": str, '
         '"cinematic_spec": {"camera": {"shot_scale_start": str, "shot_scale_end": str, "angle": str, '
         '"movement_type": str, "movement_speed": str, "movement_motivation": str, "lens_mm": number}, '
         '"focus": {"mode": str, "rack_from": str, "rack_to": str}, '
@@ -224,11 +243,15 @@ _PROMPTER_LEAD_RULE = (
     "Video models animate verbs, not adjectives. OPEN every prompt with one continuous physical "
     "action that has a beginning and end — concrete micro-movements for the subject AND "
     "the environment. Never a static state like 'stands looking concerned'; write what "
-    "the body does. A 4s shot is one beat; an 8s shot is a short arc of 2-3 linked "
-    "movements. Put camera move, lens, lighting and style AFTER the action, never before "
-    "it. Include readable in-scene text only when the shot explicitly requires it; "
-    "preserve requested wording instead of substituting invented text. Otherwise avoid "
-    "unrequested lettering. Rendering accuracy depends on the selected model and must be reviewed."
+    "the body does. If the shot supplies beats (its own timed sub-actions), narrate them in "
+    "order as the linked arc of this one shot — do not collapse them into a single moment or "
+    "treat any of them as needing their own shot; that decision was already made upstream. "
+    "Without supplied beats, use duration as a rough guide: a 4s shot is one beat, an 8s shot "
+    "a short arc of 2-3 linked movements. Put camera move, lens, lighting and style AFTER the "
+    "action, never before it. Include readable in-scene text only when the shot explicitly "
+    "requires it; preserve requested wording instead of substituting invented text. Otherwise "
+    "avoid unrequested lettering. Rendering accuracy depends on the selected model and must be "
+    "reviewed."
 )
 
 _PROMPTER_LAYERS = (

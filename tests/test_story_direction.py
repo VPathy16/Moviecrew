@@ -10,10 +10,11 @@ from moviecrew.story_direction import check_sequence
 def everest_shots():
     labels=['secure','testing','falling','suspended','anchor_checked']
     actions=['Tests the foothold','Foothold breaks and she falls','Rope arrests her fall','She checks the damaged anchor']
+    cut_reasons=['','consequence of the test','reaction to the fall','reveal remaining risk']
     return [dict(id=f'sc1-sh{i+1}',scene_id='sc1',description=action,duration_s=3,
                  story_contract_version=1,purpose=['Establish risk','Trigger danger','Survive','Reveal remaining risk'][i],
                  action=action,entry_state={'climber':labels[i]},exit_state={'climber':labels[i+1]},
-                 transition='cut') for i,action in enumerate(actions)]
+                 transition='cut',cut_reason=cut_reasons[i]) for i,action in enumerate(actions)]
 
 
 class StoryLLM(MockLLMClient):

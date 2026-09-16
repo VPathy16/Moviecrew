@@ -189,6 +189,7 @@ class _CILLLM(MockLLMClient):
                      }),
                 dict(id="sc1-sh2", scene_id="sc1", description="b", duration_s=3,
                      story_contract_version=1, purpose="confirm the dread", action="he looks away",
+                     cut_reason="Confirm the dread in a separate frame",
                      entry_state={"x": "shocked"}, exit_state={"x": "resolved"}, transition="cut",
                      cinematic_spec={"technique_ids": ["static", "handheld"]}),
             ]}
@@ -267,3 +268,179 @@ def test_cinematic_spec_round_trips_through_project_save_and_load(tmp_path, monk
     shot = next(s for scene in restored.project.scenes for s in scene.shots if s.id == "sc1-sh1")
     assert isinstance(shot.cinematic_spec, CinematicSpec)
     assert shot.cinematic_spec.camera.movement_type == "push_in"
+
+
+def test_cinematic_spec_and_beats_survive_pipeline_and_reload(tmp_path, monkeypatch):
+    """The duration-budget and cinematic-spec features must coexist on one shot."""
+    from moviecrew import projects
+    from moviecrew.agents import CinematographerAgent
+    from moviecrew.image import MockImageProvider
+    from moviecrew.schema import Beat
+    from moviecrew.studio import StudioSession, Stage
+
+    class CombinedLLM(_CILLLM):
+        def complete_json(self, *, task, system, user):
+            result = super().complete_json(task=task, system=system, user=user)
+            if task == 'writer':
+                result['scenes'][0]['target_duration_s'] = 7
+            if task == 'cinematographer':
+                result['shots'][0]['beats'] = [
+                    {'start_s': 0, 'end_s': 2, 'action': 'Read the message'},
+                    {'start_s': 2, 'end_s': 4, 'action': 'Look up in recognition'},
+                ]
+                result['shots'][1]['cut_reason'] = 'Reveal the reaction'
+            return result
+
+    llm = CombinedLLM()
+    project = MovieCrew(llm).make('A concept', run_continuity=False)
+    shot = project.scenes[0].shots[0]
+    assert isinstance(shot.beats[0], Beat)
+    assert shot.cinematic_spec.camera.movement_type == 'push_in'
+    context = project.render_plan.intents[0].direction_context
+    assert context['current_shot']['beats'][1]['end_s'] == 4
+    assert 'push-in' in context['cinematic_direction'].lower()
+    assert llm.cine_user['scene']['target_duration_s'] == 7
+
+    monkeypatch.setenv('MOVIECREW_PROJECTS_ROOT', str(tmp_path / 'db'))
+    session = StudioSession('combined', Stage.SHOT_DEFS, project,
+                            str(tmp_path / 'media'), MockImageProvider())
+    projects.save(session)
+    restored = projects.load('combined', MockImageProvider()).project
+    assert restored == project
+    assert isinstance(restored.scenes[0].shots[0].beats[0], Beat)
+    assert isinstance(restored.scenes[0].shots[0].cinematic_spec, CinematicSpec)
+
+
+def test_shot_from_raw_reconstructs_beats_and_cinematic_spec():
+    from moviecrew.crew import _shot_from_raw
+    from moviecrew.schema import Beat, CinematicSpec
+
+    raw = {
+        "id": "sc1-sh1",
+        "scene_id": "sc1",
+        "description": "Opening shot",
+        "duration_s": 6.0,
+        "story_contract_version": 1,
+        "purpose": "establish mood",
+        "action": "walking down alley",
+        "entry_state": {"loc": "street"},
+        "exit_state": {"loc": "doorway"},
+        "cut_reason": "reveal interior",
+        "beats": [
+            {"start_s": 0.0, "end_s": 3.0, "action": "walk forward"},
+            {"start_s": 3.0, "end_s": 6.0, "action": "pause at door"},
+        ],
+        "cinematic_spec": {
+            "camera": {"movement_type": "tracking", "lens_mm": 35},
+            "technique_ids": ["tracking"],
+            "rationale": "follow character pace",
+        },
+        "extraneous_key": "should be ignored",
+    }
+    shot = _shot_from_raw(raw)
+    assert shot.id == "sc1-sh1"
+    assert len(shot.beats) == 2
+    assert all(isinstance(b, Beat) for b in shot.beats)
+    assert shot.beats[0].action == "walk forward"
+    assert shot.cut_reason == "reveal interior"
+    assert isinstance(shot.cinematic_spec, CinematicSpec)
+    assert shot.cinematic_spec.camera.movement_type == "tracking"
+    assert shot.cinematic_spec.camera.lens_mm == 35
+    assert not hasattr(shot, "extraneous_key")
+
+
+def test_projects_load_backward_compatible_without_spec_or_beats(tmp_path, monkeypatch):
+    from moviecrew import projects
+    from moviecrew.image import MockImageProvider
+    from moviecrew.schema import Project, Scene, Shot, Bible
+    from moviecrew.studio import StudioSession, Stage
+
+    monkeypatch.setenv("MOVIECREW_PROJECTS_ROOT", str(tmp_path / "db"))
+    old_project = Project(
+        title="Old Film",
+        logline="Logline",
+        bible=Bible(style="noir", palette="monochrome", mood="tense"),
+        scenes=[
+            Scene(
+                id="sc1",
+                slug="s1",
+                title="Scene 1",
+                summary="summary",
+                shots=[
+                    Shot(
+                        id="sc1-sh1",
+                        scene_id="sc1",
+                        description="shot 1",
+                        duration_s=4.0,
+                    )
+                ],
+            )
+        ],
+    )
+    session = StudioSession("legacy-project", Stage.SHOT_DEFS, old_project,
+                            str(tmp_path / "media"), MockImageProvider())
+    projects.save(session)
+    restored = projects.load("legacy-project", MockImageProvider()).project
+    loaded_shot = restored.scenes[0].shots[0]
+    assert loaded_shot.cinematic_spec is None
+    assert loaded_shot.beats == []
+
+
+def test_duration_budget_replanning_with_cinematic_spec():
+    """Replanning triggered by over-budget duration works when cinematic_spec is present."""
+    class OverBudgetWithCineLLM(MockLLMClient):
+        def __init__(self):
+            self.cine_calls = 0
+
+        def complete_json(self, *, task, system, user):
+            if task == "writer":
+                return {"scenes": [dict(id="sc1", slug="s1", title="Scene 1", summary="s",
+                                         location_id="loc1", character_ids=["ch1"],
+                                         target_duration_s=10.0)]}
+            if task == "cinematographer":
+                self.cine_calls += 1
+                if self.cine_calls == 1:
+                    # Over-budget: 3 shots totaling 20s (> 10 * 1.5 = 15s)
+                    return {"shots": [
+                        dict(id="sc1-sh1", scene_id="sc1", description="a", duration_s=8,
+                             story_contract_version=1, purpose="p1", action="a1",
+                             entry_state={"x": "1"}, exit_state={"x": "2"}, transition="cut",
+                             cinematic_spec={"camera": {"movement_type": "push_in"}, "technique_ids": ["push_in"]}),
+                        dict(id="sc1-sh2", scene_id="sc1", description="b", duration_s=7,
+                             story_contract_version=1, purpose="p2", action="a2", cut_reason="cut to reaction",
+                             entry_state={"x": "2"}, exit_state={"x": "3"}, transition="cut",
+                             cinematic_spec={"camera": {"movement_type": "static"}, "technique_ids": ["static"]}),
+                        dict(id="sc1-sh3", scene_id="sc1", description="c", duration_s=5,
+                             story_contract_version=1, purpose="p3", action="a3", cut_reason="cut to reveal",
+                             entry_state={"x": "3"}, exit_state={"x": "4"}, transition="cut",
+                             cinematic_spec={"camera": {"movement_type": "static"}, "technique_ids": ["static"]}),
+                    ]}
+                else:
+                    # Replanned: 1 shot with 2 beats totaling 9s (under budget)
+                    return {"shots": [
+                        dict(id="sc1-sh1", scene_id="sc1", description="combined", duration_s=9,
+                             story_contract_version=1, purpose="p1", action="combined action",
+                             entry_state={"x": "1"}, exit_state={"x": "4"}, transition="cut",
+                             beats=[
+                                 {"start_s": 0.0, "end_s": 4.5, "action": "part 1"},
+                                 {"start_s": 4.5, "end_s": 9.0, "action": "part 2"},
+                             ],
+                             cinematic_spec={"camera": {"movement_type": "push_in"}, "technique_ids": ["push_in"]}),
+                    ]}
+            if task == "prompter":
+                data = json.loads(user)
+                return {"prompts": [{"shot_id": data["shot"]["id"],
+                                      "prompt": f"Prompt for {data['shot']['id']}.",
+                                      "negative_prompt": ""}]}
+            return super().complete_json(task=task, system=system, user=user)
+
+    llm = OverBudgetWithCineLLM()
+    project = MovieCrew(llm).make("A concept", target_duration_s=10.0, run_continuity=False)
+    assert llm.cine_calls == 2  # Replanning was triggered
+    assert len(project.scenes[0].shots) == 1
+    shot = project.scenes[0].shots[0]
+    assert shot.duration_s == 9
+    assert len(shot.beats) == 2
+    assert shot.cinematic_spec.camera.movement_type == "push_in"
+    assert not any("used" in f.message and "target" in f.message for f in project.render_plan.flags)
+
