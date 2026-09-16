@@ -37,10 +37,12 @@ from .rules import (
     normalize_order,
     select_anchors,
 )
+from .cinematography import cinematic_spec_flags, compile_cinematic_spec_summary
 from .schema import (
     DEFAULT_ASPECT_RATIO,
     Bible,
     Character,
+    CinematicSpec,
     ContinuityFlag,
     Location,
     Project,
@@ -155,7 +157,10 @@ def _shot_from_raw(raw: dict) -> Shot:
     have already checked every field in _SHOT_REQUIRED_FIELD_NAMES is
     present, so construction here should never itself raise.
     """
-    return Shot(**{k: v for k, v in raw.items() if k in _SHOT_FIELD_NAMES})
+    fields_ = {k: v for k, v in raw.items() if k in _SHOT_FIELD_NAMES}
+    if isinstance(fields_.get("cinematic_spec"), dict):
+        fields_["cinematic_spec"] = CinematicSpec.from_dict(fields_["cinematic_spec"])
+    return Shot(**fields_)
 
 
 def _shots_for_scene(
@@ -456,6 +461,12 @@ class MovieCrew:
         for shot in all_shots:
             context = prompt_context(shot, scenes, order, bible, title, logline, outline, notes,
                                      world_approved=approved_project is not None)
+            if shot.cinematic_spec is not None:
+                # The compiled, resolved phrase — not the raw spec (already
+                # present via context['current_shot']) and not its
+                # rationale: only what's actually render-relevant reaches
+                # the prompt-writing step from here.
+                context['cinematic_direction'] = compile_cinematic_spec_summary(shot.cinematic_spec)
             prompter_out = self.prompter.run(shot=asdict(shot), context=context)
             raw_prompt, extra_flags = _prompt_for_shot(shot, prompter_out.get("prompts", []))
             flags.extend(extra_flags)
@@ -471,9 +482,10 @@ class MovieCrew:
                 direction_context=context,
             )
             intents.append(intent)
-            # A lint, run here so its warnings reach the plan; it reads a
-            # shot's text and warns, and never constrains it.
+            # Lints, run here so their warnings reach the plan; they read a
+            # shot's text/spec and warn, and never constrain it.
             flags.extend(generative_video_flags(description, shot))
+            flags.extend(cinematic_spec_flags(shot))
             if on_progress:
                 on_progress("prompt_complete", shot_id=shot.id, intent=intent)
 

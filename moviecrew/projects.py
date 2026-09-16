@@ -10,8 +10,13 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from .schema import Bible, Project, Scene, Shot, ShotIntent, RenderPlan, ContinuityFlag
+from .schema import Bible, CinematicSpec, Project, Scene, Shot, ShotIntent, RenderPlan, ContinuityFlag
 from .studio import StudioSession, Stage, PlanProgress, StoryboardFrame
+
+
+def _shot_from_stored(shot: dict) -> Shot:
+    spec = shot.get('cinematic_spec')
+    return Shot(**{**shot, 'cinematic_spec': CinematicSpec.from_dict(spec) if spec else None})
 
 
 def root():
@@ -61,7 +66,7 @@ def load(session_id, image_provider):
     data = json.loads(row[0])
     project = data.pop('project')
     project['bible'] = Bible.from_dict(project['bible'])
-    project['scenes'] = [Scene(**{**s, 'shots': [Shot(**shot) for shot in s['shots']]}) for s in project['scenes']]
+    project['scenes'] = [Scene(**{**s, 'shots': [_shot_from_stored(shot) for shot in s['shots']]}) for s in project['scenes']]
     if project.get('render_plan'):
         plan = project['render_plan']
         project['render_plan'] = RenderPlan(**{**plan, 'intents':[ShotIntent(**i) for i in plan['intents']], 'flags':[ContinuityFlag(**f) for f in plan['flags']]})

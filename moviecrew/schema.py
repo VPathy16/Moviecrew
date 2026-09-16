@@ -91,6 +91,95 @@ class Bible:
         )
 
 
+# --- Cinematography Intelligence Layer --------------------------------------
+#
+# Structured cinematography beside Shot's existing prose fields (camera_move,
+# lens, framing) — the seam those fields' own history anticipated: a
+# machine-readable layer that can be validated, searched and eventually
+# compiled per-provider, while the prose stays what models actually read.
+# Entirely optional throughout; a Shot without a cinematic_spec behaves
+# exactly as it always has. Technique ids referenced here (composition.
+# techniques, technique_ids) come from moviecrew.cinematography.TECHNIQUES —
+# not enforced here (schema.py stays a pure data layer; cross-referencing
+# the technique graph is a deterministic-guardrail concern, done in crew.py
+# the same way duration/continuity checks are).
+
+
+@dataclass
+class CameraSpec:
+    shot_scale_start: str = ""
+    shot_scale_end: str = ""
+    angle: str = ""
+    movement_type: str = ""
+    movement_speed: str = ""
+    movement_motivation: str = ""
+    lens_mm: Optional[int] = None
+
+
+@dataclass
+class FocusSpec:
+    mode: str = ""  # deep | shallow | rack | ''
+    rack_from: str = ""
+    rack_to: str = ""
+
+
+@dataclass
+class LightingSpec:
+    key: str = ""
+    contrast: str = ""  # high_key | low_key
+    continuity_locked: bool = False
+
+
+@dataclass
+class CompositionSpec:
+    techniques: list[str] = field(default_factory=list)  # technique ids
+
+
+@dataclass
+class AcceptanceSpec:
+    """What a generated take must/should/must-not satisfy to be accepted.
+
+    Evidence for a future evaluator (CIL Phase 4), not enforced by anything
+    today — recording it now costs nothing and means it doesn't have to be
+    reconstructed later from a shot's prose after the fact.
+    """
+
+    must: list[str] = field(default_factory=list)
+    prefer: list[str] = field(default_factory=list)
+    avoid: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CinematicSpec:
+    camera: CameraSpec = field(default_factory=CameraSpec)
+    focus: FocusSpec = field(default_factory=FocusSpec)
+    lighting: LightingSpec = field(default_factory=LightingSpec)
+    composition: CompositionSpec = field(default_factory=CompositionSpec)
+    acceptance: AcceptanceSpec = field(default_factory=AcceptanceSpec)
+    # Every technique id chosen for this shot, flattened across the nested
+    # fields above too, so a caller can check conflicts/intent-support
+    # without re-walking each one.
+    technique_ids: list[str] = field(default_factory=list)
+    narrative_intents: list[str] = field(default_factory=list)
+    rationale: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CinematicSpec":
+        return cls(
+            camera=CameraSpec(**data.get("camera", {})),
+            focus=FocusSpec(**data.get("focus", {})),
+            lighting=LightingSpec(**data.get("lighting", {})),
+            composition=CompositionSpec(**data.get("composition", {})),
+            acceptance=AcceptanceSpec(**data.get("acceptance", {})),
+            technique_ids=list(data.get("technique_ids", [])),
+            narrative_intents=list(data.get("narrative_intents", [])),
+            rationale=data.get("rationale", ""),
+        )
+
+
 # --- Scenes / Shots ----------------------------------------------------------
 
 
@@ -131,6 +220,7 @@ class Shot:
     screen_direction: str = ''
     audio_intent: str = ''
     transition: str = 'cut'  # cut | continuous | ellipsis
+    cinematic_spec: Optional[CinematicSpec] = None
 
 
     def __post_init__(self) -> None:

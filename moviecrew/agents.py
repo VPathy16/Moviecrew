@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .cinematography import CATEGORIES, TECHNIQUES, NARRATIVE_INTENTS
 from .llm import LLMClient
 
 
@@ -176,16 +177,41 @@ class CinematographerAgent(Agent):
         "concise state labels), screen_direction, audio_intent and transition (cut, continuous, ellipsis). "
         "Use identical labels when a state is unchanged. Adjacent shots in a scene must agree on shared "
         "exit/entry keys unless an explicit ellipsis advances time. A cut changes framing, not physical "
-        "facts. Vary shot size with a story reason; carry prop ownership and physical condition.\n"
+        "facts. Vary shot size with a story reason; carry prop ownership and physical condition. "
+        "Optionally, also give a shot cinematic_spec: structured camera/focus/lighting/composition choices "
+        "expressing WHY this shot looks the way it does, not just what it shows. The user message includes "
+        "technique_catalogue — every valid technique id, grouped by category (shot_scale, angle, movement, "
+        "composition, focus, lighting, edit_relation). Use ONLY ids from that catalogue; inventing an id is "
+        "worse than omitting cinematic_spec entirely. Choose techniques because of story cause and effect, "
+        "never decoratively — every non-default technique needs a reason a director could defend. "
+        "camera.movement_type/angle/shot_scale_start/shot_scale_end and composition.techniques take technique "
+        "ids; lighting.key also may. focus.mode is 'deep', 'shallow' or 'rack' (with rack_from/rack_to as plain "
+        "words, not ids). narrative_intents are values from: " + ", ".join(NARRATIVE_INTENTS) + ". "
+        "technique_ids must list every technique id used anywhere in the spec, flattened. rationale is one "
+        "sentence: the story reason for this shot's choices, never rendered into any prompt. Omit "
+        "cinematic_spec entirely for a shot with no technique worth naming beyond the default.\n"
         'Respond with JSON only: {"shots": [{"id": str, "scene_id": str, '
         '"description": str, "image_prompt": str, "visible_character_ids": [str], "visible_prop_ids": [str], "duration_s": number, "camera_move": str, "lens": str, '
         '"framing": str, "story_contract_version": 1, "purpose": str, "action": str, '
         '"entry_state": {str: str}, "exit_state": {str: str}, "screen_direction": str, '
-        '"audio_intent": str, "transition": "cut"|"continuous"|"ellipsis"}]}.'
+        '"audio_intent": str, "transition": "cut"|"continuous"|"ellipsis", '
+        '"cinematic_spec": {"camera": {"shot_scale_start": str, "shot_scale_end": str, "angle": str, '
+        '"movement_type": str, "movement_speed": str, "movement_motivation": str, "lens_mm": number}, '
+        '"focus": {"mode": str, "rack_from": str, "rack_to": str}, '
+        '"lighting": {"key": str, "contrast": str, "continuity_locked": bool}, '
+        '"composition": {"techniques": [str]}, '
+        '"acceptance": {"must": [str], "prefer": [str], "avoid": [str]}, '
+        '"technique_ids": [str], "narrative_intents": [str], "rationale": str} (optional, omit if none)}]}.'
     )
 
+    _CATALOGUE = [
+        {"id": t.id, "category": t.category, "name": t.name}
+        for category in CATEGORIES
+        for t in sorted((t for t in TECHNIQUES.values() if t.category == category), key=lambda t: t.id)
+    ]
+
     def build_user(self, *, scene: dict[str, Any]) -> str:
-        return json.dumps({"scene": scene}, indent=2)
+        return json.dumps({"scene": scene, "technique_catalogue": self._CATALOGUE}, indent=2)
 
 
 DETAIL_LEVELS: dict[str, dict[str, Any]] = {
@@ -229,7 +255,10 @@ def _build_prompter_system_prompt(detail: str) -> str:
         "continuous action preserves motion direction. Preserve supplied character and world descriptors. "
         "Distinguish identity references from composition references. Never invent attached images. "
         "Integrate scene acting tasks through visible behaviour, feasible timing and sound. "
-        "The intended ending state must follow the current action. Prefer concrete positive descriptions.",
+        "The intended ending state must follow the current action. Prefer concrete positive descriptions. "
+        "When context includes cinematic_direction, it is the already-compiled camera, lens, focus and "
+        "lighting direction for this shot — reflect it in substance rather than inventing your own; only "
+        "the physical movement itself and its wording are yours to write.",
         "",
     ]
     if level["layered"]:
