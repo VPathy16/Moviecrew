@@ -251,11 +251,16 @@ class Beat:
 class Shot:
     """One shot as the production intends it — not as a backend can render it.
 
-    `duration_s` is whatever the shot wants, in seconds. It is deliberately
-    not snapped to any backend's legal clip lengths and deliberately a
-    float: 2.5 seconds and 11.5 seconds are ordinary creative intentions,
-    and a pipeline that rounds them on the way in has destroyed information
-    before anyone chose what would render the shot.
+    `duration_s` is a float, not snapped to any backend's legal clip
+    lengths here — a pipeline that rounds it on the way in has destroyed
+    information before anyone chose what would render the shot. It is,
+    however, subject to a pacing policy the pipeline enforces one layer up
+    (`crew.py`'s MIN_SHOT_DURATION_S/MAX_SHOT_DURATION_S, currently 5-15s):
+    not a backend quirk, but a product decision that a shot shorter than a
+    real cut or longer than good pacing should never reach a backend at
+    all. Not checked here, for the same reason cut_reason isn't: enforcing
+    it needs the bounded-retry-then-clamp handling `crew.py` already does
+    for its shots as a scene, not a hard crash on one shot in isolation.
 
     `reference_image_ids` is likewise uncapped. A backend that accepts three
     references truncates to three at its own boundary; the shot keeps what

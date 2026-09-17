@@ -80,7 +80,16 @@ class RenderCapabilities:
     cost_model: CostModel = CostModel(unit="usd")
 
     def clamp_duration(self, seconds: float) -> int:
-        """The nearest duration this backend will actually accept."""
+        """The nearest duration this backend will actually accept.
+
+        `supported_durations`, when the catalogue states it, is the
+        backend's real legal set — snap to the nearest of those rather
+        than only capping at the ceiling, or a too-short request (below
+        the backend's actual minimum, which this method previously never
+        looked at) goes out unmodified and the backend rejects it outright.
+        """
+        if self.supported_durations:
+            return min(self.supported_durations, key=lambda d: abs(d - seconds))
         return max(1, min(int(round(seconds)), self.max_duration_s))
 
     def cap_image_references(self, references: Sequence[str]) -> list[str]:

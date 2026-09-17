@@ -1,18 +1,20 @@
-"""Coverage for the scene duration-budget fix.
+"""Coverage for the scene duration-budget fix and the per-shot pacing policy.
 
 Root cause being fixed: nothing previously compared a shot's requested
 duration to what the narrative moment actually needed, so a plan-once
 Cinematographer would routinely turn a 10-second beat into eight 5-second
 shots. These tests cover: Beat/cut_reason schema validation, target_duration_s
 propagation from a film-level request down to each Scene, the bounded
-one-retry budget check, and that every bit of this is a no-op (byte-identical
-old behavior) when target_duration_s is never supplied.
+one-retry budget check, that every bit of this is a no-op (byte-identical
+old behavior) when target_duration_s is never supplied, and the always-on
+per-shot pacing floor/ceiling (MIN_SHOT_DURATION_S/MAX_SHOT_DURATION_S) that
+shares the same bounded-retry-then-clamp mechanism.
 """
 import json
 
 import pytest
 
-from moviecrew.crew import MovieCrew, PipelineError
+from moviecrew.crew import MAX_SHOT_DURATION_S, MIN_SHOT_DURATION_S, MovieCrew, PipelineError
 from moviecrew.mock import MockLLMClient
 from moviecrew.schema import Beat, Shot
 
@@ -210,3 +212,120 @@ def test_beats_round_trip_through_project_save_and_load(tmp_path, monkeypatch):
     assert len(shot.beats) == 2
     assert all(isinstance(b, Beat) for b in shot.beats)
     assert shot.beats[1].action == "notices the body"
+
+
+class _MicroShotLLM(MockLLMClient):
+    """First attempt has shots under the pacing floor; the retry is compliant."""
+
+    def __init__(self):
+        self.cine_calls = 0
+
+    def complete_json(self, *, task, system, user):
+        if task == "writer":
+            return {"scenes": [dict(id="sc1", slug="s1", title="Scene 1", summary="s",
+                                     location_id="loc1", character_ids=["ch1"])]}
+        if task == "cinematographer":
+            self.cine_calls += 1
+            if self.cine_calls == 1:
+                return {"shots": [
+                    _shot("sc1-sh1", index=0, duration_s=2, cut_reason=""),
+                    _shot("sc1-sh2", index=1, duration_s=2.5, cut_reason="reaction"),
+                ]}
+            return {"shots": [
+                _shot("sc1-sh1r", index=0, scene_id="sc1", duration_s=6, cut_reason=""),
+                _shot("sc1-sh2r", index=1, scene_id="sc1", duration_s=7, cut_reason="reaction"),
+            ]}
+        if task == "prompter":
+            shot_id = json.loads(user)["shot"]["id"]
+            return {"prompts": [{"shot_id": shot_id, "prompt": f"Placeholder for {shot_id}.",
+                                  "negative_prompt": ""}]}
+        return super().complete_json(task=task, system=system, user=user)
+
+
+def test_shots_under_the_pacing_floor_trigger_one_retry_then_succeed():
+    llm = _MicroShotLLM()
+    project = MovieCrew(llm).make("A concept")  # no target_duration_s at all — pacing still applies
+
+    assert llm.cine_calls == 2
+    scene = project.scenes[0]
+    assert [s.duration_s for s in scene.shots] == [6, 7]
+    assert not any(f.target == "sc1" for f in project.render_plan.flags)
+
+
+class _StillMicroAfterRetryLLM(MockLLMClient):
+    """Both attempts stay outside the pacing policy; the guardrail clamps."""
+
+    def complete_json(self, *, task, system, user):
+        if task == "writer":
+            return {"scenes": [dict(id="sc1", slug="s1", title="Scene 1", summary="s",
+                                     location_id="loc1", character_ids=["ch1"])]}
+        if task == "cinematographer":
+            return {"shots": [
+                _shot("sc1-sh1", index=0, duration_s=2, cut_reason=""),
+                _shot("sc1-sh2", index=1, duration_s=20, cut_reason="reaction"),
+            ]}
+        if task == "prompter":
+            shot_id = json.loads(user)["shot"]["id"]
+            return {"prompts": [{"shot_id": shot_id, "prompt": f"Placeholder for {shot_id}.",
+                                  "negative_prompt": ""}]}
+        return super().complete_json(task=task, system=system, user=user)
+
+
+def test_shots_still_out_of_range_after_retry_are_clamped_and_flagged():
+    project = MovieCrew(_StillMicroAfterRetryLLM()).make("A concept")
+    scene = project.scenes[0]
+    durations = {s.id: s.duration_s for s in scene.shots}
+    assert durations["sc1-sh1"] == MIN_SHOT_DURATION_S  # clamped up to the floor
+    assert durations["sc1-sh2"] == MAX_SHOT_DURATION_S  # clamped down to the ceiling
+    warnings = [f for f in project.render_plan.flags if f.target == scene.id and f.kind == "warning"]
+    assert warnings and "clamped" in warnings[0].message
+
+
+class _BudgetAndPacingLLM(MockLLMClient):
+    """A scene that is both over budget and has out-of-range shots on attempt
+    one; both problems must be described in the SAME single retry, and the
+    retry's own leftover pacing violation still gets clamped afterward."""
+
+    def __init__(self):
+        self.cine_calls = 0
+
+    def complete_json(self, *, task, system, user):
+        if task == "writer":
+            return {"scenes": [dict(id="sc1", slug="s1", title="Scene 1", summary="s",
+                                     location_id="loc1", character_ids=["ch1"])]}
+        if task == "cinematographer":
+            self.cine_calls += 1
+            scene = json.loads(user)["scene"]
+            if self.cine_calls == 1:
+                assert "over_budget_notice" not in scene
+                return {"shots": [
+                    _shot("sc1-sh1", index=0, duration_s=2, cut_reason=""),
+                    _shot("sc1-sh2", index=1, duration_s=20, cut_reason="reaction"),
+                    _shot("sc1-sh3", index=2, duration_s=20, cut_reason="reaction"),
+                ]}  # 42s total against a 10s target, and every shot out of range
+            notice = scene["over_budget_notice"]
+            assert "budget" in notice.lower()
+            assert "between 5 and 15" in notice
+            return {"shots": [
+                _shot("sc1-sh1r", index=0, scene_id="sc1", duration_s=6, cut_reason=""),
+                _shot("sc1-sh2r", index=1, scene_id="sc1", duration_s=4, cut_reason="reaction"),
+            ]}
+        if task == "prompter":
+            shot_id = json.loads(user)["shot"]["id"]
+            return {"prompts": [{"shot_id": shot_id, "prompt": f"Placeholder for {shot_id}.",
+                                  "negative_prompt": ""}]}
+        return super().complete_json(task=task, system=system, user=user)
+
+
+def test_budget_overage_and_pacing_violation_share_a_single_retry():
+    llm = _BudgetAndPacingLLM()
+    project = MovieCrew(llm).make("A concept", target_duration_s=10)
+
+    assert llm.cine_calls == 2  # one retry covers both problems, not two
+    scene = project.scenes[0]
+    durations = {s.id: s.duration_s for s in scene.shots}
+    assert durations == {"sc1-sh1r": 6, "sc1-sh2r": MIN_SHOT_DURATION_S}  # sh2r's 4s clamped up
+
+    warnings = [f for f in project.render_plan.flags if f.target == scene.id]
+    assert any("clamped" in w.message for w in warnings)
+    assert not any("budget" in w.message.lower() for w in warnings)  # 10s retotal is within the 15s budget tolerance
