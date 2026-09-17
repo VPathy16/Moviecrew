@@ -44,6 +44,15 @@ def test_clamp_duration_respects_the_ceiling():
     assert caps.clamp_duration(0) == 1
 
 
+def test_clamp_duration_snaps_to_the_nearest_supported_value_including_the_floor():
+    caps = RenderCapabilities(max_duration_s=30, supported_durations=(4, 8, 12, 30))
+    assert caps.clamp_duration(2) == 4  # below the real minimum - was silently sent as-is before
+    assert caps.clamp_duration(1) == 4
+    assert caps.clamp_duration(9) == 8
+    assert caps.clamp_duration(11) == 12
+    assert caps.clamp_duration(100) == 30
+
+
 # ---------------------------------------------------------------------- #
 # ShotSpec                                                                #
 # ---------------------------------------------------------------------- #

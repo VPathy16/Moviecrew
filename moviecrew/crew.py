@@ -138,6 +138,16 @@ def run_continuity_check(
 # overage at all would fight the cinematographer over ordinary rounding.
 _DURATION_BUDGET_TOLERANCE = 1.5
 
+# Product policy, not a renderer quirk: a shot under 5s barely registers as
+# its own cut, and most video providers reject or misrender clips that
+# short; a shot over 15s drags pacing even inside a long scene. Enforced
+# here (not in Shot.__post_init__ — a shot in isolation cannot know it's
+# violating policy any more than it can know its own cut_reason) with the
+# same bounded-retry-then-clamp handling as the budget check above, so one
+# model's overshoot warns and self-corrects instead of crashing the run.
+MIN_SHOT_DURATION_S = 5.0
+MAX_SHOT_DURATION_S = 15.0
+
 # The LLM -> Shot boundary. Computed from Shot's own dataclass fields, never
 # duplicated as a hardcoded list, so it can never drift out of sync with the
 # schema: _SHOT_FIELD_NAMES is every field Shot(**...) will accept,
@@ -220,6 +230,11 @@ def _shots_for_scene(
                 "cut_reason (every shot after a scene's first must say why the cut happens)"
             )
     return shots
+
+
+def _out_of_range_shots(shots: list[Shot]) -> list[Shot]:
+    """Shots whose duration_s falls outside the [MIN, MAX] pacing policy."""
+    return [s for s in shots if not (MIN_SHOT_DURATION_S <= s.duration_s <= MAX_SHOT_DURATION_S)]
 
 
 def _prompt_for_shot(
@@ -477,15 +492,20 @@ class MovieCrew:
             scene.shots = _shots_for_scene(scene, cine_out.get("shots", []), seen_shot_ids)
 
             # A cached scene was already accepted in an earlier run; only a
-            # freshly-planned scene gets budget-checked and, if needed, one
-            # bounded replan attempt — never an unbounded retry loop.
-            if cached_scene is None and scene.target_duration_s:
+            # freshly-planned scene gets budget/pacing-checked and, if
+            # needed, one bounded replan attempt — never an unbounded retry
+            # loop. Budget (aggregate, target-driven) and pacing (per-shot,
+            # always-on [MIN,MAX] policy) are independent problems, but a
+            # single scene can have both at once, so they share one retry.
+            if cached_scene is None:
                 total = sum(shot.duration_s for shot in scene.shots)
-                if total > scene.target_duration_s * _DURATION_BUDGET_TOLERANCE:
+                over_budget = bool(scene.target_duration_s) and total > scene.target_duration_s * _DURATION_BUDGET_TOLERANCE
+                out_of_range = _out_of_range_shots(scene.shots)
+                if over_budget or out_of_range:
                     seen_shot_ids.difference_update(shot.id for shot in scene.shots)
-                    overage_scene = {
-                        **raw_scene,
-                        "over_budget_notice": (
+                    notice_parts = []
+                    if over_budget:
+                        notice_parts.append(
                             f"Your previous attempt planned {len(scene.shots)} shots totalling "
                             f"{total:.1f}s against a {scene.target_duration_s:.0f}s target for "
                             "this scene - well over budget. Combine micro-actions (expression "
@@ -493,18 +513,40 @@ class MovieCrew:
                             "longer shots instead of cutting for each one. Only create a new "
                             "shot when cut_reason names a real editorial reason. Keep total "
                             "shot duration close to the target."
-                        ),
-                    }
+                        )
+                    if out_of_range:
+                        detail = ", ".join(f"{shot.id} at {shot.duration_s:.1f}s" for shot in out_of_range)
+                        notice_parts.append(
+                            f"Every shot's duration_s must be between {MIN_SHOT_DURATION_S:.0f} and "
+                            f"{MAX_SHOT_DURATION_S:.0f} seconds - a hard production limit, not a "
+                            f"suggestion. Out of range last attempt: {detail}. Vary durations across "
+                            "shots to match what each beat actually needs within that range; giving "
+                            "every shot the same duration reads as monotonous, mechanical cutting."
+                        )
+                    overage_scene = {**raw_scene, "over_budget_notice": " ".join(notice_parts)}
                     cine_out = self.cinematographer.run(scene=overage_scene)
                     scene.shots = _shots_for_scene(scene, cine_out.get("shots", []), seen_shot_ids)
                     retotal = sum(shot.duration_s for shot in scene.shots)
-                    if retotal > scene.target_duration_s * _DURATION_BUDGET_TOLERANCE:
+                    if over_budget and retotal > scene.target_duration_s * _DURATION_BUDGET_TOLERANCE:
                         duration_flags.append(ContinuityFlag(
                             target=scene.id, kind="warning",
                             message=(
                                 f"Scene {scene.id} used {retotal:.1f}s of shots against a "
                                 f"{scene.target_duration_s:.0f}s target even after one replan "
                                 "attempt."
+                            ),
+                        ))
+                    still_out_of_range = _out_of_range_shots(scene.shots)
+                    if still_out_of_range:
+                        detail = ", ".join(f"{shot.id} ({shot.duration_s:.1f}s)" for shot in still_out_of_range)
+                        for shot in still_out_of_range:
+                            shot.duration_s = min(MAX_SHOT_DURATION_S, max(MIN_SHOT_DURATION_S, shot.duration_s))
+                        duration_flags.append(ContinuityFlag(
+                            target=scene.id, kind="warning",
+                            message=(
+                                f"Scene {scene.id} still had shot(s) outside the "
+                                f"{MIN_SHOT_DURATION_S:.0f}-{MAX_SHOT_DURATION_S:.0f}s pacing policy "
+                                f"after one replan attempt and was clamped to fit: {detail}."
                             ),
                         ))
 
