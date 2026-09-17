@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from moviecrew.crew import MovieCrew, PipelineError
+from moviecrew.crew import MAX_SHOT_DURATION_S, MIN_SHOT_DURATION_S, MovieCrew, PipelineError
 from moviecrew.llm import LLMClient
 from moviecrew.production import resolve_shot
 from moviecrew.render import ShotSpec
@@ -133,13 +133,21 @@ def test_a_cinematographer_duration_of_11_5_reaches_the_intent():
     assert intent.duration_s not in VEO_LEGAL_DURATIONS_S
 
 
-@pytest.mark.parametrize("duration", [2.5, 5, 11.5, 18])
-def test_a_range_of_intended_durations_all_survive(duration):
+@pytest.mark.parametrize(
+    "duration,expected",
+    [
+        (2.5, MIN_SHOT_DURATION_S),  # below the pacing floor: clamped up
+        (5, 5),
+        (11.5, 11.5),
+        (18, MAX_SHOT_DURATION_S),  # above the pacing ceiling: clamped down
+    ],
+)
+def test_durations_within_the_pacing_policy_survive_others_clamp_to_it(duration, expected):
     cine = _base_script()["cinematographer"]
     cine["shots"][0]["duration_s"] = duration
     project = _make(cinematographer=cine)
     intent = next(i for i in project.render_plan.intents if i.shot_id == "sc1-sh1")
-    assert intent.duration_s == duration
+    assert intent.duration_s == expected
 
 
 def test_the_veo_adapter_clamps_that_duration_without_touching_the_intent():

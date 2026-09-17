@@ -1,15 +1,14 @@
 """End-to-end test for the MovieCrew orchestrator, fully offline.
 
 Runs the whole pipeline against MockLLMClient and checks the resulting
-Project against the schema's hard constraints: legal shot durations, full
-prompt coverage, and a complete render order. With the default null
-reference provider, nothing has a real reference still, so no shot anchors
-(see tests/test_anchors.py for anchoring behavior).
+Project against the schema's hard constraints: pacing-policy shot
+durations, full prompt coverage, and a complete render order. With the
+default null reference provider, nothing has a real reference still, so no
+shot anchors (see tests/test_anchors.py for anchoring behavior).
 """
 
-from moviecrew.crew import MovieCrew
+from moviecrew.crew import MIN_SHOT_DURATION_S, MAX_SHOT_DURATION_S, MovieCrew
 from moviecrew.mock import MockLLMClient
-from moviecrew.video import VEO_LEGAL_DURATIONS_S
 
 
 def test_make_returns_a_consistent_project():
@@ -23,7 +22,7 @@ def test_make_returns_a_consistent_project():
     for scene in project.scenes:
         assert len(scene.shots) >= 1
         for shot in scene.shots:
-            assert shot.duration_s in VEO_LEGAL_DURATIONS_S
+            assert MIN_SHOT_DURATION_S <= shot.duration_s <= MAX_SHOT_DURATION_S
 
     all_shot_ids = {shot.id for scene in project.scenes for shot in scene.shots}
 
