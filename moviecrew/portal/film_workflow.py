@@ -34,6 +34,28 @@ TERMINAL = {'complete', 'failed', 'uncertain'}
 # Explicitly documented reference-to-video support; do not infer it from I2V.
 CHARACTER_VIDEO_MODELS = {'minimax/hailuo-3', 'bytedance/seedance-2.5', 'bytedance/seedance-2.0-fast'}
 
+# Provider error codes worth translating into plain, actionable language
+# before they reach the user, instead of a raw vendor JSON fragment. Not a
+# workaround — these are hard content-policy rejections with no parameter
+# to disable them (Seedance refuses any reference image with a detectable
+# real human face, to prevent non-consensual likeness generation) — only
+# the wording changes, never the outcome.
+_KNOWN_PROVIDER_ERRORS = {
+    'InputImageSensitiveContentDetected.PrivacyInformation': (
+        'This model refused the reference image because it detected a real '
+        'human face. Seedance does not generate video from real-person '
+        'likenesses under any settings - use an illustrated or stylized '
+        'reference image, or choose a different video model for this shot.'
+    ),
+}
+
+
+def _friendly_provider_error(detail: str) -> str:
+    for code, message in _KNOWN_PROVIDER_ERRORS.items():
+        if code in detail:
+            return message
+    return ''
+
 
 def db():
     return projects.connect()
@@ -464,7 +486,9 @@ def work(project, item_id):
                     detail = re.sub(r'https?://\S+', '[provider URL]', str(job.error or ''))
                     detail = re.sub(r'sk-or-v1-[A-Za-z0-9]+', '[redacted]', detail)[:500]
                     rejected = (job.raw or {}).get('http_status') in (400, 401, 402, 403, 404, 422, 429)
-                    item.update(status='failed' if rejected else 'uncertain', error=('The provider rejected this request.' if rejected else 'The provider did not return a job ID. Check its history before retrying.') + (' Details: '+detail if detail else ''))
+                    friendly = _friendly_provider_error(detail) if rejected else ''
+                    message = friendly or (('The provider rejected this request.' if rejected else 'The provider did not return a job ID. Check its history before retrying.') + (' Details: '+detail if detail else ''))
+                    item.update(status='failed' if rejected else 'uncertain', error=message)
                     put(item)
                     return
                 item.update(provider_id=job.job_id, status='running')
@@ -487,7 +511,7 @@ def work(project, item_id):
                     return
                 if job.is_terminal:
                     item['status'] = 'failed'
-                    raise ValueError(job.error or 'Video generation did not complete')
+                    raise ValueError(_friendly_provider_error(job.error or '') or job.error or 'Video generation did not complete')
                 time.sleep(3)
             else:
                 item.update(status='waiting', error='Still processing. Resume to check the existing job.')
