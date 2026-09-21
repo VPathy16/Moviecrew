@@ -531,3 +531,16 @@ def test_shot_cast_endpoint(setup):
     chips=client.get('/api/projects/film-a/shots/'+shot.shot_id+'/cast').json()['chips']
     assert any(c['entity_id']==s.project.bible.characters[0].id and c['kind']=='characters' for c in chips)
     assert client.get('/api/projects/film-a/shots/does-not-exist/cast').status_code==404
+
+
+def test_friendly_provider_error_translates_the_known_seedance_rejection():
+    detail = ('POST https://openrouter.ai/api/v1/videos failed (400): '
+              '{"error":{"code":"InputImageSensitiveContentDetected.PrivacyInformation",'
+              '"message":"The request failed because the input image may contain a real person"}}')
+    friendly = flow._friendly_provider_error(detail)
+    assert 'real human face' in friendly
+    assert 'InputImageSensitiveContentDetected' not in friendly
+
+
+def test_friendly_provider_error_passes_through_unknown_errors():
+    assert flow._friendly_provider_error('the provider had some other problem') == ''

@@ -40,6 +40,17 @@ API_ROOT = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "bytedance/seedance-2.5"
 API_KEY_ENV = "OPENROUTER_API_KEY"
 
+# `allowed_passthrough_parameters` containing "generate_audio" is the
+# documented catalogue signal for audio support, but is not reliable in
+# practice: a live-captured bytedance/seedance-2.5 catalogue entry omitted
+# "generate_audio" from that list despite OpenRouter's own announcement
+# that Seedance 2.5 supports it (and bills identically whether audio is on
+# or off) — https://openrouter.ai/blog/insights/seedance-2-5-review/.
+# Listed here as a hand-verified override, the same precedent as
+# CHARACTER_VIDEO_MODELS in film_workflow.py: documented fact, not an
+# inference from a catalogue field that has already been wrong once.
+KNOWN_AUDIO_CAPABLE_MODELS = {"bytedance/seedance-2.5"}
+
 # Keys inside a catalogue entry's `pricing_skus`. The second one is how a
 # model declares it accepts a driving video: there is no separate flag, but a
 # model that prices video input takes video input.
@@ -279,7 +290,20 @@ class OpenRouterRenderClient(RenderClient):
                 if entry.get("max_image_references") is not None
                 else None
             ),
-            supports_audio=bool(entry.get("supports_audio", False)),
+            # OpenRouter's real /videos/models schema has no dedicated audio
+            # capability field at all — "supports_audio" was a plausible-
+            # looking guess that never matched anything, so this silently
+            # read False for every model, on every request, same failure
+            # shape as the frame_images guess above. The documented signal
+            # is whether "generate_audio" (the actual request parameter) is
+            # in the model's own allowed_passthrough_parameters list. The
+            # legacy key is still checked first so a differently shaped
+            # catalogue does not regress, exactly as above.
+            supports_audio=bool(
+                entry.get("supports_audio")
+                or "generate_audio" in (entry.get("allowed_passthrough_parameters") or ())
+                or (model or self.model) in KNOWN_AUDIO_CAPABLE_MODELS
+            ),
             cost_model=CostModel(unit=unit, amount=amount),
         )
 

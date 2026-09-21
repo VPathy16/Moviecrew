@@ -287,6 +287,27 @@ def test_legacy_pricing_keeps_its_own_unit():
     assert caps.cost_model.unit == "usd"
 
 
+def test_audio_support_falls_back_to_the_hand_verified_override():
+    """The live-captured fixture's allowed_passthrough_parameters omits
+    "generate_audio" for bytedance/seedance-2.5, but OpenRouter's own
+    announcement says the model supports it - KNOWN_AUDIO_CAPABLE_MODELS
+    is the override for exactly this catalogue gap."""
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([_MODELS_LIVE]))
+    assert client.capabilities("bytedance/seedance-2.5").supports_audio is True
+
+
+def test_audio_support_read_from_allowed_passthrough_parameters():
+    catalogue = {"data": [{"id": "someone/audio-model", "allowed_passthrough_parameters": ["generate_audio"]}]}
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([catalogue]))
+    assert client.capabilities("someone/audio-model").supports_audio is True
+
+
+def test_audio_support_false_without_any_signal():
+    catalogue = {"data": [{"id": "someone/silent-model", "allowed_passthrough_parameters": ["watermark"]}]}
+    client = OpenRouterRenderClient(api_key="k", transport=_transport([catalogue]))
+    assert client.capabilities("someone/silent-model").supports_audio is False
+
+
 def test_empty_frame_image_list_is_not_support():
     catalogue = {"data": [{"id": "m", "supported_frame_images": []}]}
     client = OpenRouterRenderClient(api_key="k", transport=_transport([catalogue]))
