@@ -1,0 +1,100 @@
+Solo professionals (consultants, lawyers, accountants) as first customers
+Small businesses under 20 people
+Mid-market companies 200-2000 employees
+Large enterprises with strict compliance
+Regulated finance (banks, insurers, wealth managers)
+Healthcare clinics and doctors
+Legal firms
+Real estate agents
+Sales teams (field + inside sales)
+Customer support teams
+Recruiters and HR teams
+Software engineering teams
+Founders and executives (chief-of-staff agents)
+Executive assistants being augmented
+Creators and influencers
+Freelancers on marketplaces
+Students and researchers
+Academic labs
+Government and public sector
+Defence / air-gapped environments
+Frontline workers (retail, logistics, field service)
+Construction and field engineering
+Manufacturing plants
+Hospitality and restaurants (operations, not food ordering)
+Nonprofits and NGOs
+Families / household management as a paid plan
+Elder care and caregivers
+People with disabilities (accessibility-first)
+Privacy-maximalists (on-device first)
+Sovereign AI in the EU (data residency)
+Open-source, self-hosted Vanaras
+Model-neutral layer that works with any LLM
+Agent memory as the core product (shared memory layer)
+Agent-to-agent protocol / sync layer sold to other agent builders
+Agent identity, permissions and approvals as the product
+Agent observability and audit for companies
+Marketplace of vanaras (third-party agent roles)
+Vanaras as an OS / launcher for new phones (OEM deals)
+Vanaras on company-issued devices via MDM
+Desktop-first (Windows/Mac) entry, phone later
+Cloud-first (projects) entry, devices later
+Phone-first entry leveraging existing UNO
+Voice-first everything
+Messaging-native (lives in Slack/Teams/WhatsApp as a surface)
+Email-native (inbox as the main surface)
+Calendar and time as the core
+Meetings (before, during, after) as the core
+Documents and knowledge work as the core
+Personal finance and bills
+Travel for business travellers
+Procurement and purchasing inside companies
+IT helpdesk automation
+Security operations teams
+Compliance and audit teams
+Finance operations (AP/AR, expenses)
+Marketing teams
+Product managers
+Designers
+Data analysts
+DevOps / on-call engineers
+Agencies running many clients
+Franchise networks
+Multi-location retail chains
+Supply chain and logistics coordinators
+Insurance claims handlers
+Property management
+Education (teachers)
+Sports teams / coaches
+Churches and communities
+Language-diverse markets (multilingual agents)
+Emerging markets outside India (SE Asia, Africa, LatAm)
+Japan / Korea (high agent adoption, different platforms)
+Middle East enterprises (sovereign cloud)
+Pricing: per-agent 'salary' model (hire a vanara)
+Pricing: outcome-based
+Pricing: freemium consumer to team upgrade
+Pricing: enterprise seat licences
+Bottom-up adoption (employees bring their own vanaras to work)
+Top-down sale to CIOs
+Partnership with a model lab (Anthropic/Mistral/OpenAI)
+Partnership with a device maker
+Partnership with a telco
+Acquisition target positioning (build to be bought)
+Wedge: a single killer vanara role first
+Wedge: cross-device handoff demo ('start on phone, finish on desktop')
+Wedge: 24/7 cloud vanaras watching things for you
+Wedge: trust — agents that can't overstep (scopes + approvals)
+Wedge: digital twin of an employee for handover when they leave/vacation
+Wedge: onboarding new employees with a ready-made vanara team
+Wedge: meeting-to-action (agents execute what was decided)
+Wedge: personal CRM (relationships maintained by agents)
+Wedge: life admin (paperwork, renewals, forms)
+Wedge: health and wellness coordination
+Contrarian: no chat UI at all, agents work silently and report
+Contrarian: agents for teams, not individuals, from day one
+Contrarian: hardware (a dedicated device or hub)
+Contrarian: sell the backend to other assistant apps (white-label Vanaras)
+Contrarian: games/gamified management of your vanara company
+Moonshot: the AI-native company where most staff are vanaras
+Wild card: ignore all lenses and propose the idea you believe is strongest
