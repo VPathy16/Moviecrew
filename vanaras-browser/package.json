@@ -1,0 +1,30 @@
+{
+  "name": "vanaras-browser",
+  "version": "0.1.0",
+  "description": "A browser for Vanaras agents over MCP: personal data never reaches the model, risky clicks need your approval.",
+  "type": "module",
+  "bin": {
+    "vanaras-browser": "dist/cli.js"
+  },
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "playwright-core": "^1.56.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
