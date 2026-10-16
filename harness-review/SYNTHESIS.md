@@ -59,3 +59,8 @@ Items 1-4 of the build order are done (fuzz + rendered-turn test, exact-yes cons
 backstop: 146/146 labelled leaks caught, 0/57 fine answers blocked on the DPO data). Answers from the training team: TOOLS goes after the
 question; an unknown call route sends no AUDIO_ROUTE line; **the 999 DPO pairs are not a holdout** (v4 was trained on all of them), so the
 real-model replay harness (item 8) must use the locked eval sets: call safety, eval_hard, the probes, menu_eval_unseen.
+
+## Status update 2
+Items 5 and 6 (one output gate with a tool table and typed errors; Trace v2 with replay cases) are done. `OutputGate` now also covers a
+memory read back without a model and Gemini's answer on a call, which the first backstop missed. Next: SecretFilter v2 (spoken digits) and the
+real-model replay on the locked eval sets (call_safety, eval_hard, probes, menu_eval_unseen), which have not arrived on this machine yet.
