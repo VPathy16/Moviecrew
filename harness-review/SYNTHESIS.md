@@ -53,3 +53,9 @@ Phone latency numbers are their estimates (30 tok/s prefill, 5-8 tok/s decode), 
 
 Next tier: fast path in shadow mode, disk KV snapshot of the system prompt, stream-after-gate, extractive copy, Pending persistence.
 Ship gate for v4 as default: backstop 0 leaks on all DPO rows + fuzz; model ask-rate >= 95%; over-confirm <= 10%; unrunnable plans <= 2%.
+
+## Status update
+Items 1-4 of the build order are done (fuzz + rendered-turn test, exact-yes consent with code-written confirm, single-turn serving, speaker
+backstop: 146/146 labelled leaks caught, 0/57 fine answers blocked on the DPO data). Answers from the training team: TOOLS goes after the
+question; an unknown call route sends no AUDIO_ROUTE line; **the 999 DPO pairs are not a holdout** (v4 was trained on all of them), so the
+real-model replay harness (item 8) must use the locked eval sets: call safety, eval_hard, the probes, menu_eval_unseen.
