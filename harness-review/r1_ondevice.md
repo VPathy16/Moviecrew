@@ -1,0 +1,31 @@
+# r1 On-device specialist: Hanu (Gemma 4 E2B Q4_K_M) on a mid-range phone
+Paths relative to /home/user/mealmate/app/src/main. (Brief says repo is Moviecrew; code is in /home/user/mealmate.)
+
+## Verdict
+The engine is better than the harness around it. Two-slot KV with token-level prefix reuse (cpp/local_engine.cpp:182-196), swa_full so any prefix can be rolled back (:101), and the "sample first, ask grammar about that one token" trick (:148-163, exact same output as grammar-first, avoids a 262k-vocab mask per token) are the right moves. The weakness is call count and what is asked of a 2B model, not the runtime.
+
+## Latency reality (inference, not measured on a phone)
+Desktop: 13 tok/s decode, 16 s cold read of 1,250 tokens = ~78 tok/s prefill. A mid-range phone is 2-3x slower: assume ~30 tok/s prefill, 5-8 tok/s decode, and clocks that drop after 60-90 s sustained load. Cold prompt = 40 s+. Only the warm path is viable, so the warm KV is the product.
+- Per turn today: plan (reads new user text, decodes 30-100 tokens = 5-15 s on phone) + copy (SIDE slot, prompt differs from the plan prefix, PlanRunner.kt:304-306) + often a wording call + up to MORE_PAGES extra copy calls (:289-293). That is 3-5 decodes serial = 20-40 s on a thermally throttled phone. Too slow for a voice call.
+
+## Ranked changes
+1. **Fast path that skips the model (S, very high).** Needle+EmbeddingGemma router exists (LocalBrain.kt:123-151) but plan() is the only door for v4. Alarm/timer/open-app/"what time is it"/yes-no/stop/cancel should be deterministic templates (Connectors.minutes already parses durations, PlanRunner.kt:211). Target: 50%+ of turns never touch the 2B model. Also removes the biggest class of bugs (#4 invented reminder time).
+2. **Stream the say to TTS and start speaking from the plan's first `say(`  (M, high).** engine already emits per-UTF-8 piece via on_text (local_engine.cpp:236-244) but plan() uses llamaGenerateGrammar with no listener (LocalBrain.kt:243, local_jni.cpp:83). For chat/refuse replies the plan is one `say(chat, {text: "..."})`; stream text after the opening quote. Cuts perceived latency from total to first-sentence. Keep the safe-to-say gate per sentence (PlanRunner.kt:445), not per turn.
+3. **Pin context math; kill the silent "" (S, high).** v4 loads 6144 ctx (LocalModels.kt:48) but each slot gets n_ctx/2 = 3072 (local_engine.cpp:180). System 1,250 + 2 earlier plans + notes + 500 reply can exceed it, and generate returns "" silently. Return a typed error, trim `earlier` first (it is untrained-for single-turn data anyway, brief item), and log to the failure set. Drop to ONE earlier turn.
+4. **Persist the system-prompt KV to disk (M, high).** llama_state_seq_save/load_file for slot 0 after warmPlan (LocalBrain.kt:216-226). A cold start becomes a file read (~tens of MB) instead of 40 s. Key it by model sha + prompt sha (already pinned, LocalModels.kt:49). The memory-note and MODE lines must come AFTER the pinned prefix; verify with the reused_tokens stat.
+5. **Collapse copy+wording into one constrained call, and make copy extractive in code first (M, medium-high).** copy() asks the LLM to copy 15 words, then Facts.isIn verifies (:307). Good verifier, but do regex/embedding-sentence extraction first for dates/numbers/times (candidate spans from Passages.best), and call the model only to pick among numbered candidates (output = one digit, grammar `[0-9]`, 2 decode tokens, like pickStory LocalBrain.kt:178-190). 40 greedy tokens becomes 2; hallucination becomes impossible by construction. Also read two pages in parallel only if thermal state is OK.
+6. **Temperature: keep 0 for plan, but add one self-consistency retry only on validator failure (S, medium).** Plan is greedy via hard-coded 0f (local_jni.cpp:83). Right call. On PlanCheck failure, retry once at temp 0.3 with the failure reason appended as a USER line (not a new prompt) before falling back. GBNF guarantees syntax only: confirm order, invented times, wrong enum value, and leaked private fact all pass the grammar.
+7. **Thermal and battery governor (S-M, medium).** threads = cores/2 clamp 2-4 (LocalBrain.kt:43) is static. Read PowerManager thermal status; at THERMAL_STATUS_MODERATE drop to the fast path only / cloud fallback, and cut max tokens. Log tok/s per turn (SpeedLog already) to detect throttling.
+8. **Cloud fallback policy (M, medium).** Fall back when: plan empty/unparseable after the retry, PlanCheck refuses twice, thermal >= moderate, estimated latency > N s, or the kind is search-heavy with a reachable network. Never fall back on speaker-privacy cases; those stay local and ask.
+
+## Do NOT ask the model to
+- Do arithmetic (tip+split miss, brief). Route to compute() or code; the model supplies only the operands.
+- Produce times/dates (bug 4), enums outside the TOOLS menu, or any private-fact decision. Speaker/company leak (3/20) belongs in a code backstop keyed on AUDIO_ROUTE + SecretFilter + a "private fact" lexicon, with the model's confirm() as defence in depth.
+- Copy free text from a page (see 5). Rank which tool to use (embedding rank already picks the top 3-5).
+## Should be a model call that is code today
+- Intent among close paraphrases ("remind me" vs "note"): currently keyword ranking in Connectors.kt. A 1-token classifier call on the SIDE slot (cheap, prefix-cached) would beat keywords on Hindi/Hinglish.
+- Yes/No on a pending confirm in free speech ("haan, but not the second one"): YesNo is regexish; ambiguous replies should go to a 1-token grammar call.
+
+## Fine-tune/DPO feed loop
+Log every on-phone failure as (exact prompt text, plan, failure class): PlanCheck refusal, parse failure, `rejected>0` grammar refusals (GenerateStats.rejected, local_engine.cpp:154) , copy thrown away as made up (PlanRunner.kt:308), user correction within 20 s ("no I meant"), empty return. Redact via SecretFilter on-device, opt-in upload. Chosen = repaired plan from the validator/cloud model; rejected = Hanu's. Rejected-token counts are a free uncertainty signal: high `rejected` means the model is off-distribution.
+Quantization: Q4_K_M+imatrix is right for 2.7 GB; imatrix calibration data should be the real app turns (Hinglish, TOOLS menus), not generic text. Don't go lower than Q4 for grammar-heavy output.
