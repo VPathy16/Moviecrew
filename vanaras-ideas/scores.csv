@@ -1,0 +1,101 @@
+n,title,lens,market,defens,feas,fit,excite,total
+100,"Leash — the phone-held authority layer that lets any AI agent act for you, within limits you set","Wild card (strongest idea, ignoring lenses)",8,6,8,10,8,40
+35,"Warrant — a portable identity, permission and approval layer for every AI agent an employee runs","Agent identity, permissions and approvals as the product",8,6,7,10,8,39
+5,Ledgerhand — a compliance-safe agent team for every relationship manager at a wealth firm,"Regulated finance (banks, insurers, wealth managers)",8,7,6,9,8,38
+26,"Hearth — a household chief-of-staff: one agent team for the whole family, each member's private, all sharing one home memory",Families / household management as a paid plan,8,6,7,9,8,38
+27,Kinfolk — a paid agent team for the family that coordinates an aging parent's care,Elder care and caregivers,8,6,7,9,8,38
+29,Keepwell — a privacy-first agent team for people whose work is confidential: their memory never leaves their hardware,Privacy-maximalists (on-device first),6,7,7,10,8,38
+78,"Sherpa Seat — the personal AI team an employee brings to work, that IT can finally say yes to",Bottom-up adoption (employees bring their own vanaras to work),8,6,7,9,8,38
+87,Leash — a scoped-permission and approval layer that lets a company's employees run AI agents without overstepping,Wedge: trust — agents that can't overstep (scopes + approvals),8,6,7,9,8,38
+99,Kishkinda — the back office of a company that has one human and twelve vanaras,Moonshot: the AI-native company where most staff are vanaras,8,6,7,8,9,38
+7,"Briefkeep — a scoped agent team for every lawyer in small and mid-size firms, with client data that never reaches the model",Legal firms,8,6,7,9,7,37
+28,"Tendril — a team of agents that runs the admin of disability, across phone, cloud and desktop",People with disabilities (accessibility-first),7,6,7,9,8,37
+33,"Ledgerlore — a portable, permissioned memory vault that every agent a person or team uses reads from and writes to",Agent memory as the core product (shared memory layer),8,6,7,8,8,37
+37,"Vanaras Guild — a vetted marketplace of scoped, permission-locked agent roles that install into any team's Vanaras",Marketplace of vanaras (third-party agent roles),8,6,6,9,8,37
+67,Marginalia — a team of AI agents that carries a teacher's weekly admin so they get their evenings back,Education (teachers),7,6,8,9,7,37
+75,Cashvana — a crew of agents that chases your unpaid invoices and only gets paid when money lands,Pricing: outcome-based,8,6,7,8,8,37
+80,"Keelson — the on-device trust layer that lets a model lab's agents run on employees' phones, clouds and desktops",Partnership with a model lab (Anthropic/Mistral/OpenAI),8,6,6,9,8,37
+92,"Renewly — agents that own your household's paperwork, renewals and forms end to end","Wedge: life admin (paperwork, renewals, forms)",7,6,8,9,7,37
+93,Carebench — a team of agents that runs the paperwork of chronic illness for the patient and their family,Wedge: health and wellness coordination,8,6,6,9,8,37
+1,"Retainer — a Vanaras team that runs a solo practice's client work, with a privilege wall built in","Solo professionals (consultants, lawyers, accountants) as first customers",7,6,7,9,7,36
+6,"Locum — a small AI care team for every independent clinician, that never lets patient data reach the model",Healthcare clinics and doctors,8,6,6,9,7,36
+9,"Cadence — a personal team of agents for every seller: field, phone and desk, one memory",Sales teams (field + inside sales),8,5,7,9,7,36
+13,"Proxy Table — a chief-of-staff agent team for founders that acts in their name, inside rules they set once",Founders and executives (chief-of-staff agents),7,6,6,9,8,36
+21,"Shiftmate — a pocket team of scoped agents that runs the paperwork, handoffs and follow-ups of a frontline shift","Frontline workers (retail, logistics, field service)",8,5,7,9,7,36
+31,"Keelhaul — self-hosted agent teams for regulated small firms, with a policy engine you own and can audit","Open-source, self-hosted Vanaras",7,6,7,9,7,36
+32,"Switchyard — the model-neutral control plane where every employee's agent team runs under company rules, on any LLM",Model-neutral layer that works with any LLM,8,6,6,9,7,36
+39,Tether — a per-employee agent team on Android Enterprise work profiles that keeps company data on the device,Vanaras on company-issued devices via MDM,8,6,6,9,7,36
+42,Brokerhand — a compliant AI crew in the pocket of every independent insurance and mortgage broker,Phone-first entry leveraging existing UNO,6,6,8,9,7,36
+49,"Ledgerkeeper — a scoped agent team that runs a household's or micro-business owner's bills, without ever seeing the numbers",Personal finance and bills,8,6,6,9,7,36
+55,"Ledgerkin — a personal team of finance agents for every AP/AR clerk, controller and founder-CFO, with spend rules enforced on the device","Finance operations (AP/AR, expenses)",8,6,6,9,7,36
+60,"Pagerhand — a personal team of agents for on-call engineers, from the phone in your pocket to the cloud runbook",DevOps / on-call engineers,7,5,7,9,8,36
+61,"Tendhand — every client gets their own scoped agent team, and the agency's staff supervise all of them from one phone",Agencies running many clients,7,6,7,9,7,36
+62,"Franchisee — a team of AI agents for every franchise owner, governed by the franchisor's rulebook",Franchise networks,7,6,6,9,8,36
+79,"Tether — a per-employee agent team with policy enforced on the device, sold to CIOs as the agent control plane",Top-down sale to CIOs,8,6,5,9,8,36
+84,Locum — an AI vanara that runs your one-person business's back office while you're on the job,Wedge: a single killer vanara role first,7,5,8,9,7,36
+91,"Kinfolk — a team of agents that keeps your relationships alive across phone, cloud and desktop",Wedge: personal CRM (relationships maintained by agents),7,5,8,9,7,36
+94,Quietly — a silent agent team for solo professionals that does the work and sends one morning brief,"Contrarian: no chat UI at all, agents work silently and report",7,6,7,9,7,36
+2,Foreman — an AI back-office crew that lives on the owner's phone and runs the business while they're on the job,Small businesses under 20 people,8,5,7,8,7,35
+3,"Tether — a personal agent team for every finance-ops and revenue-ops employee at mid-market companies, with controls IT can sign off in a day",Mid-market companies 200-2000 employees,8,6,5,8,8,35
+11,"Shortlist — a personal agent team for every recruiter that sources, screens and schedules without candidate data ever reaching the AI",Recruiters and HR teams,7,6,8,8,6,35
+12,"Handoff — every engineer's pocket agent that keeps their PRs, CI and on-call moving when the laptop is closed",Software engineering teams,8,5,7,8,7,35
+14,Chief of Staff Kit (working name: Aidewise) — a vanara team that multiplies the human executive assistant instead of replacing them,Executive assistants being augmented,6,6,7,9,7,35
+22,"SiteCrew — a team of scoped AI agents that keeps each site engineer's RFIs, punch lists and daily logs moving, on their phone, in the cloud and on their desktop",Construction and field engineering,7,6,7,8,7,35
+23,"Shiftmate — a team of AI agents for every plant supervisor, on the phone, in the cloud and at the PC",Manufacturing plants,8,6,6,8,7,35
+25,"GrantHands — a team of on-device AI agents for small NGOs that runs the grant cycle, donor comms and field reporting",Nonprofits and NGOs,6,6,7,9,7,35
+30,"Tresor Crew — an EU-resident AI team per employee, where personal data never leaves the country",Sovereign AI in the EU (data residency),7,6,6,9,7,35
+43,Hush Desk — a voice-first agent team for field professionals whose hands and eyes are busy,Voice-first everything,7,5,7,9,7,35
+44,Threadhands — a personal agent team that lives inside your Slack/Teams DMs and follows you to phone and desktop,Messaging-native (lives in Slack/Teams/WhatsApp as a surface),8,5,7,8,7,35
+46,"Tempo — an agent team that owns the calendars of small professional practices, across phone, cloud and desktop",Calendar and time as the core,7,5,7,9,7,35
+51,"Tailbuy — every employee's own procurement agent team that buys within policy, on the device",Procurement and purchasing inside companies,8,6,6,8,7,35
+52,Tickless — every employee's own IT agent team that fixes problems on their laptop and phone before a ticket exists,IT helpdesk automation,8,6,6,8,7,35
+54,Tally Crew — a per-employee agent team whose every action leaves audit-grade evidence for compliance teams,Compliance and audit teams,7,6,6,9,7,35
+56,"Campfire Crew — a private team of agents for every marketer, with brand rules enforced on-device",Marketing teams,7,5,7,9,7,35
+59,"Tallywise — a personal team of agents for every data analyst, with a memory of every metric definition you've ever agreed",Data analysts,7,6,7,8,7,35
+66,Keyhold — a team of AI agents for every small landlord and property manager,Property management,7,5,7,9,7,35
+70,Tolka — a per-employee agent team that works in the employee's own language and hands work across languages,Language-diverse markets (multilingual agents),8,6,6,8,7,35
+76,"Troop — your personal AI team is free; the moment you invite one person, it becomes a paid shared team",Pricing: freemium consumer to team upgrade,7,6,7,8,7,35
+83,Leash — the on-device permission and privacy layer that lets any AI agent act on a phone without seeing personal data,Acquisition target positioning (build to be bought),7,5,7,9,7,35
+86,Lookout — 24/7 cloud vanaras that watch your import supply chain and act within spend rules you set,Wedge: 24/7 cloud vanaras watching things for you,7,5,8,8,7,35
+90,"Closeout — the meeting ends, the agents start executing what was decided",Wedge: meeting-to-action (agents execute what was decided),8,6,6,8,7,35
+97,Tether — the on-device agent runtime that assistant apps embed instead of building their own,Contrarian: sell the backend to other assistant apps (white-label Vanaras),7,6,6,9,7,35
+98,"Rota — a management sim where your real AI agent team is the game, and the game is the audit trail",Contrarian: games/gamified management of your vanara company,6,5,8,8,8,35
+4,"Tether — a compliance-locked agent team for every regulated-industry employee, with policy enforced on the device",Large enterprises with strict compliance,8,6,4,9,7,34
+10,"Tether — a personal agent team for each support rep that drafts, remembers, and never lets customer PII touch the model",Customer support teams,7,6,6,8,7,34
+15,Handlr — a private agent team that runs a solo creator's business while they film,Creators and influencers,6,5,8,8,7,34
+17,Thesis Crew — a persistent team of agents that runs your research from reading list to defended thesis,Students and researchers,6,5,8,8,7,34
+19,Sealed Desk — a per-caseworker AI team for public agencies that keeps citizen data on the device and every action approved and logged,Government and public sector,8,6,4,9,7,34
+24,"Pass — a personal agent team for every restaurant and hotel manager, that keeps the shift running when they are off the floor","Hospitality and restaurants (operations, not food ordering)",7,5,7,8,7,34
+45,Threadhand — a team of agents that lives in your inbox and works by email,Email-native (inbox as the main surface),7,5,7,8,7,34
+47,"Huddlr — a meeting team for every employee: prep before, act during, close the loop after","Meetings (before, during, after) as the core",8,5,6,8,7,34
+48,"Redline Crew — a team of agents that keeps a small firm's contracts, quotes and client documents current, consistent and compliant, even while laptops are closed",Documents and knowledge work as the core,7,6,6,8,7,34
+53,"Nightwatch Vanaras — a per-analyst agent team that carries the SOC shift handover across phone, cloud and desktop",Security operations teams,7,6,5,8,8,34
+64,"Dockhand — a team of agents that chases, reconciles and re-plans for every freight coordinator",Supply chain and logistics coordinators,7,6,6,8,7,34
+65,"Claimwise — a team of scoped AI agents for every insurance claims handler, with the claim file's memory kept on the handler's own machine",Insurance claims handlers,7,6,6,8,7,34
+71,"Dukacrew — a phone-native back-office crew for informal shop owners, paid by their mobile-money float","Emerging markets outside India (SE Asia, Africa, LatAm)",8,5,6,8,7,34
+73,"Majlis — a sovereign, on-prem team of AI agents for every employee of Gulf enterprises",Middle East enterprises (sovereign cloud),8,6,4,8,8,34
+74,"Payroll for Agents — hire a vanara like an employee: fixed monthly salary, hard spend cap, audit trail",Pricing: per-agent 'salary' model (hire a vanara),7,5,7,8,7,34
+81,Troupe — the on-device agent team that mid-tier phone and laptop makers ship as their own AI,Partnership with a device maker,7,6,5,9,7,34
+88,"Hando — a departing or vacationing employee's agent team stays behind as a living, queryable handover",Wedge: digital twin of an employee for handover when they leave/vacation,7,5,7,8,7,34
+89,Dayone Crew — a ready-made vanara team that onboards every new hire for you,Wedge: onboarding new employees with a ready-made vanara team,7,5,7,8,7,34
+95,"Crewpact — a shared team of agents for small agencies, where each client gets its own scoped crew","Contrarian: agents for teams, not individuals, from day one",7,6,6,8,7,34
+8,"Keyhand — a three-surface AI team for every solo real estate agent, that never leaks client data",Real estate agents,7,5,7,8,6,33
+16,"Bidcrew — a personal team of agents that wins, delivers and gets paid on freelance marketplaces",Freelancers on marketplaces,6,5,8,8,6,33
+34,"Tether — a handoff and sync layer that lets agents on phone, cloud and desktop pass work, memory and approvals to each other",Agent-to-agent protocol / sync layer sold to other agent builders,7,5,6,8,7,33
+36,Blackbox — a flight recorder and audit ledger for every employee's AI agent team,Agent observability and audit for companies,7,6,6,8,6,33
+40,Tether — a desktop agent for accountants and bookkeepers that does the month-end grind and stays inside the rules,"Desktop-first (Windows/Mac) entry, phone later",7,6,6,7,7,33
+41,Nightshift — overnight AI agents that grind through a freelance developer's client backlog and hand a reviewed result to their phone by morning,"Cloud-first (projects) entry, devices later",6,5,7,8,7,33
+50,"Tether — a standing agent crew that keeps a business traveller's trip alive across phone, cloud and laptop",Travel for business travellers,7,5,6,8,7,33
+58,Handoff Crew — a team of agents that carries a freelance designer's client work from phone to cloud to desktop,Designers,6,5,7,8,7,33
+63,"Shelfhand — a pocket team of agents for the store manager, tied to the district's cloud crew",Multi-location retail chains,7,5,6,8,7,33
+68,"Sideline — a private agent team for every coach that runs practice, parents and logistics while the season is on",Sports teams / coaches,6,5,8,8,6,33
+69,Shepherd Crew — an agent team for the volunteer-run church that never sleeps,Churches and communities,5,5,8,9,6,33
+72,Nemawashi — every employee's agent team pre-wires consensus and paperwork through LINE WORKS / KakaoTalk approval culture,"Japan / Korea (high agent adoption, different platforms)",7,6,5,8,7,33
+77,"Clerkwise — a per-advisor team of AI agents for small wealth/insurance firms, licensed per seat, with client PII that never reaches the model",Pricing: enterprise seat licences,6,6,6,8,7,33
+85,"Walkback — walk the site talking to your phone; by the time you sit down, the paperwork is done on your desktop","Wedge: cross-device handoff demo ('start on phone, finish on desktop')",7,5,6,8,7,33
+96,"Vanaras Vault — a $199 always-on box that holds a small firm's client data, rules and agents, so AI never touches the raw files",hardware (a dedicated device or hub),6,6,7,8,6,33
+18,LabRelay — an agent team for every academic lab that keeps the lab's memory when students graduate,Academic labs,5,6,7,8,6,32
+57,Specwright — a personal agent team for every product manager that turns customer noise into shipped decisions,Product managers,6,5,7,8,6,32
+20,Bastion Crew — a per-employee agent team that runs fully offline inside air-gapped defence and secure-facility networks,Defence / air-gapped environments,6,7,3,8,7,31
+82,Tenlane — a telco-billed agent team for every small-business owner on the operator's network,Partnership with a telco,7,5,4,8,7,31
+38,"Tether — a white-label agent layer that phone makers ship as the default ""team"" on mid-range Android",Vanaras as an OS / launcher for new phones (OEM deals),6,5,4,8,6,29
